@@ -51,10 +51,22 @@ func (c *Client) WatchEvents(ctx context.Context, after int64, emit func(uvim.Ev
 	if err != nil {
 		return err
 	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
 	defer conn.Close()
 	for {
 		var event uvim.Event
 		if err := conn.ReadJSON(&event); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			return err
 		}
 		if emit != nil {
