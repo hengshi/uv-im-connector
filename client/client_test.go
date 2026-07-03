@@ -50,3 +50,45 @@ func TestWatchEventsReturnsOnContextCancelWhileIdle(t *testing.T) {
 		t.Fatal("WatchEvents did not return after context cancel")
 	}
 }
+
+func TestWatchEventsWithConnectRunsAfterDial(t *testing.T) {
+	connected := make(chan struct{})
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/events/ws" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- New(server.URL).WatchEventsWithConnect(ctx, 0, func() error {
+			close(connected)
+			return nil
+		}, nil)
+	}()
+	select {
+	case <-connected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("onConnect was not called")
+	}
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("WatchEventsWithConnect error = %v, want context canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("WatchEventsWithConnect did not return after context cancel")
+	}
+}

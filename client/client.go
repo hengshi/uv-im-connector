@@ -40,6 +40,10 @@ func (c *Client) Events(ctx context.Context, after int64) ([]uvim.Event, error) 
 }
 
 func (c *Client) WatchEvents(ctx context.Context, after int64, emit func(uvim.Event) error) error {
+	return c.WatchEventsWithConnect(ctx, after, nil, emit)
+}
+
+func (c *Client) WatchEventsWithConnect(ctx context.Context, after int64, onConnect func() error, emit func(uvim.Event) error) error {
 	u := strings.TrimRight(c.BaseURL, "/") + fmt.Sprintf("/v1/events/ws?after=%d", after)
 	u = strings.Replace(u, "http://", "ws://", 1)
 	u = strings.Replace(u, "https://", "wss://", 1)
@@ -50,6 +54,12 @@ func (c *Client) WatchEvents(ctx context.Context, after int64, emit func(uvim.Ev
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, u, header)
 	if err != nil {
 		return err
+	}
+	if onConnect != nil {
+		if err := onConnect(); err != nil {
+			_ = conn.Close()
+			return err
+		}
 	}
 	done := make(chan struct{})
 	go func() {
