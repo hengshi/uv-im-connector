@@ -1,0 +1,40 @@
+<svg width="840" height="520" viewBox="0 0 840 520" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">uv-im-connector data flow</title>
+  <desc id="desc">IM providers connect through provider adapters into normalized events and resources, then caller applications send outbound messages back through the connector.</desc>
+  <rect width="840" height="520" rx="36" fill="#0f172a"/>
+  <rect x="42" y="42" width="756" height="436" rx="28" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <text x="76" y="96" fill="#e2e8f0" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="700">Universal IM connector</text>
+  <text x="76" y="130" fill="#94a3b8" font-family="Inter, Arial, sans-serif" font-size="15">Inbound events, outbound messages, and resources share one protocol.</text>
+
+  <g font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">
+    <rect x="76" y="186" width="152" height="72" rx="14" fill="#134e4a" stroke="#2dd4bf"/>
+    <text x="110" y="216" fill="#ccfbf1">IM providers</text>
+    <text x="104" y="239" fill="#99f6e4" font-size="12" font-weight="500">WeCom · Lark · Slack</text>
+
+    <rect x="300" y="186" width="160" height="72" rx="14" fill="#1e3a8a" stroke="#60a5fa"/>
+    <text x="332" y="216" fill="#dbeafe">Adapters</text>
+    <text x="326" y="239" fill="#bfdbfe" font-size="12" font-weight="500">auth · decode · send</text>
+
+    <rect x="532" y="162" width="204" height="120" rx="18" fill="#312e81" stroke="#a5b4fc"/>
+    <text x="574" y="204" fill="#e0e7ff">uv-im-connector</text>
+    <text x="568" y="230" fill="#c7d2fe" font-size="12" font-weight="500">Event · ResourceRef</text>
+    <text x="568" y="250" fill="#c7d2fe" font-size="12" font-weight="500">OutboundMessage</text>
+  </g>
+
+  <path d="M232 222H292" stroke="#38bdf8" stroke-width="4" stroke-linecap="round"/>
+  <path d="M282 211L296 222L282 233" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M464 222H524" stroke="#38bdf8" stroke-width="4" stroke-linecap="round"/>
+  <path d="M514 211L528 222L514 233" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="108" y="348" width="276" height="78" rx="16" fill="#431407" stroke="#fb923c"/>
+  <text x="138" y="380" fill="#ffedd5" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="700">Caller application</text>
+  <text x="138" y="404" fill="#fed7aa" font-family="Inter, Arial, sans-serif" font-size="12">tasks · sessions · workspace · writeback</text>
+
+  <path d="M628 288C620 344 558 384 392 388" stroke="#fb923c" stroke-width="4" stroke-linecap="round"/>
+  <path d="M406 376L390 388L407 400" stroke="#fb923c" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M382 348C488 322 548 300 598 286" stroke="#34d399" stroke-width="4" stroke-linecap="round" stroke-dasharray="8 10"/>
+  <path d="M585 280L602 285L590 299" stroke="#34d399" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <text x="486" y="358" fill="#f8fafc" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">watch events</text>
+  <text x="454" y="322" fill="#bbf7d0" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="700">send replies</text>
+</svg>

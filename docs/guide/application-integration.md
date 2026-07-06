@@ -1,0 +1,86 @@
+# 应用接入
+
+本页描述应用、机器人、agent service、workflow worker 或自动化服务接入 `uv-im-connector` 时应遵守的边界。
+
+## 启动流程
+
+1. 在 connector 服务中配置 provider 凭证。
+2. 使用私有监听地址和 `UV_IM_AUTH_TOKEN` 启动 `uv-im-connector`。
+3. 调用 `GET /v1/meta` 记录 provider ID、connector ID、capabilities 和 health。
+4. 从最后处理过的 sequence 开始订阅事件。
+
+```text
+GET /v1/events/ws?after=<last-sequence>
+```
+
+## Inbound Flow
+
+```text
+provider event
+  -> provider adapter
+  -> normalized Event
+  -> event log
+  -> /v1/events/ws
+  -> caller application
+```
+
+调用方应用应该：
+
+- 按 event `sequence` 和协议 ID 去重；
+- 使用 `provider + connector + channel.id` 映射会话目标；
+- 默认把 `addressed=false` 的群消息视为 ambient；
+- 在启动长耗时任务前，把允许的资源复制到调用方自己的存储；
+- 持久化足够的 run state，以便后续通过 `POST /v1/message.create` 回复。
+
+## Outbound Flow
+
+```text
+caller application
+  -> OutboundMessage
+  -> /v1/message.create
+  -> provider adapter
+  -> provider send API
+```
+
+使用 event 字段发送回复：
+
+```json
+{
+  "provider": "lark",
+  "connector": "main",
+  "channel_id": "oc_xxx",
+  "channel_type": "group",
+  "text": "done",
+  "referrer": {
+    "message_id": "om_xxx",
+    "channel_id": "oc_xxx"
+  }
+}
+```
+
+调用方不应该直接调用 provider-native send API。Provider 特有发送逻辑属于 provider adapter。
+
+## 恢复
+
+事件日志按 sequence 递增。Consumer 可以带上最后处理过的 sequence 重连：
+
+```text
+/v1/events/ws?after=42
+```
+
+Connector 会先发送该 sequence 之后的 backlog，再继续推送新事件。
+
+## 调用方边界
+
+`uv-im-connector` 不负责：
+
+- product workflow lifecycle；
+- bot behavior；
+- agent task lifecycle；
+- run artifacts；
+- 原生 resume handle；
+- workspace 创建或清理；
+- 用户 / 团队可见性策略；
+- 业务重试或升级策略。
+
+这些职责属于调用方应用。
