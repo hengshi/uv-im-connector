@@ -225,6 +225,7 @@ type OutboundMessage struct {
 	Elements    []Element         `json:"elements,omitempty"`
 	Resources   []ResourceRef     `json:"resources,omitempty"`
 	Referrer    Referrer          `json:"referrer,omitempty"`
+	Final       bool              `json:"final,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 

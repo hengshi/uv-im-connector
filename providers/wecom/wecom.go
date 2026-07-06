@@ -274,7 +274,7 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 			"stream": map[string]any{
 				"id":      streamID,
 				"content": text,
-				"finish":  true,
+				"finish":  msg.Final,
 			},
 		}
 		if err := p.withReplyLock(ctx, reqID, func() error {
