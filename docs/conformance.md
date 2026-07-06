@@ -1,44 +1,44 @@
 # Conformance
 
-Provider conformance is the quality gate for adding channels.
+Provider conformance 是新增渠道的质量门。
 
-## Required Behavior
+## 必需行为
 
-Every provider must:
+每个 provider 必须：
 
-- implement the root `Provider` interface;
-- declare capabilities honestly;
-- keep provider-native secrets out of sanitized events and resources;
-- resolve downloadable inbound provider resources into `internal_url` before event persistence when the provider declares download support;
-- expose file/image/audio/video as `ResourceRef` values when the channel provides them;
-- support `Referrer` for reply/thread behavior when the channel provides it;
-- return explicit errors for unsupported outbound resources or rich elements instead of silently dropping them.
+- 实现根 `Provider` interface；
+- 如实声明 capabilities；
+- 不在 sanitized events 和 resources 中暴露 provider-native secrets；
+- 声明支持 download 时，在 event persistence 前把可下载 inbound provider resources 解析为 `internal_url`；
+- 当渠道提供文件 / 图片 / 音频 / 视频时，暴露为 `ResourceRef`；
+- 当渠道提供 reply/thread 能力时，支持 `Referrer`；
+- 对不支持的 outbound resources 或 rich elements 返回显式错误，而不是静默丢弃。
 
-## Test Shape
+## 测试形态
 
-Provider tests should cover:
+Provider tests 应覆盖：
 
-- inbound text message normalization;
-- inbound group/channel message normalization;
-- inbound resource normalization for all supported resource kinds;
-- outbound direct message;
-- outbound reply with `Referrer`;
-- resource download;
-- provider health;
-- duplicate event key stability.
+- inbound text message normalization；
+- inbound group/channel message normalization；
+- 支持的 resource kind inbound resource normalization；
+- outbound direct message；
+- 使用 `Referrer` 的 outbound reply；
+- resource download；
+- provider health；
+- duplicate event key stability。
 
-Providers that require live credentials should split tests into:
+需要 live credentials 的 provider 应拆分为：
 
-- local decoder/contract tests that always run;
-- live provider tests guarded by explicit test credentials.
+- 始终运行的 local decoder / contract tests；
+- 受显式 test credentials 保护的 live provider tests。
 
-## Current Local Coverage
+## 当前本地覆盖
 
-The repository contains local tests for:
+仓库当前包含这些本地测试：
 
-- provider metadata and health shape across all built-in providers;
-- inbound decoder normalization across DingTalk, Discord, KOOK, LINE, Mail, Matrix, OneBot, QQ, QQ Guild, Slack, Telegram, WeChat Official Account, WhatsApp, and Zulip;
-- WeCom and Lark provider-specific inbound/resource behavior;
-- representative outbound HTTP shapes for bearer token, bot token, URL token, and form-encoded providers;
-- webhook routing from `/v1/webhook/{provider}/{connector}` into the normalized event log;
-- resource download before event persistence and public resource sanitization.
+- 所有内置 provider 的 provider metadata 和 health shape；
+- DingTalk、Discord、KOOK、LINE、Mail、Matrix、OneBot、QQ、QQ Guild、Slack、Telegram、WeChat Official Account、WhatsApp 和 Zulip 的 inbound decoder normalization；
+- WeCom 和 Lark provider-specific inbound/resource 行为；
+- bearer token、bot token、URL token 和 form-encoded providers 的代表性 outbound HTTP shape；
+- 从 `/v1/webhook/{provider}/{connector}` 到 normalized event log 的 webhook routing；
+- event persistence 前的 resource download，以及 public resource sanitization。

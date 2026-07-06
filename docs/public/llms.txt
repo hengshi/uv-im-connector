@@ -1,0 +1,77 @@
+# uv-im-connector
+
+Repository: https://github.com/hengshi/uv-im-connector
+GitHub Pages target zh-CN: https://hengshi.github.io/uv-im-connector/
+GitHub Pages target en-US: https://hengshi.github.io/uv-im-connector/en/
+
+## 简体中文
+
+uv-im-connector 是面向应用、机器人、Agent 和自动化系统的 universal provider-neutral IM connector。uv 表示 universal。项目目标是提供所有人可以直接上手使用的通用 IM 接入层，把飞书 / Lark、企业微信 / WeCom、Slack、Telegram、Discord、DingTalk、Matrix、OneBot、QQ、WhatsApp 等渠道的入站事件、出站消息和文件资源归一化为同一套协议。
+
+uv-im-connector 负责：
+- provider credentials 和连接生命周期
+- inbound event normalization
+- outbound message delivery
+- provider health 和 capabilities
+- resource download / upload / redaction / internal resource URL
+
+调用方应用负责：
+- product workflows、bot behavior、agent sessions、tasks、runs、workspaces、resume handles
+- business routing 和 permission policy
+- durable run artifacts 和 user-facing status
+- retry、escalation 和 writeback policy
+
+关键文档：
+- /guide/getting-started.html：安装、本地 memory provider、鉴权、事件和第一条出站消息
+- /guide/why-uv.html：项目为什么存在，以及为什么其他 agent / bridge 产品会各自实现 IM connector
+- /guide/concepts.html：provider、connector、channel、addressed、referrer、capabilities
+- /guide/application-integration.html：调用方应用事件订阅和 outbound reply flow
+- /guide/resources.html：ResourceRef 和内部资源处理
+- /configuration.html：环境变量和 provider 配置
+- /architecture.html：协议和 server API 参考
+- /conformance.html：provider 行为要求
+- /guide/contributing.html：贡献和 provider 测试期望
+
+## English
+
+uv-im-connector is a universal, provider-neutral Go connector for IM inbound events, outbound messages, and files/resources. uv means universal. The project gives applications, bots, agents, and automation systems one ready-to-use IM connector instead of provider-native WeCom, Lark, Slack, Telegram, Discord, DingTalk, Matrix, OneBot, QQ, WhatsApp, and related APIs.
+
+Owned by uv-im-connector:
+- provider credentials and connection lifecycle
+- inbound event normalization
+- outbound message delivery
+- provider health and capabilities
+- resource download, upload, redaction, and internal resource URLs
+
+Owned by caller applications:
+- product workflows, bot behavior, agent sessions, tasks, runs, workspaces, and resume handles
+- business routing and permission policy
+- durable run artifacts and user-facing status
+- retry, escalation, and writeback policy
+
+Key docs:
+- /en/guide/getting-started.html: install, local memory provider, auth, events, first outbound message
+- /en/guide/why-uv.html: why this project exists and why other agent / bridge products implement their own IM connector
+- /en/guide/concepts.html: provider, connector, channel, addressed, referrer, capabilities
+- /en/guide/application-integration.html: event consumer and outbound reply flow for caller applications
+- /en/guide/resources.html: ResourceRef and internal resource handling
+- /en/configuration.html: environment variables and provider configuration
+- /en/architecture.html: protocol and server API reference
+- /en/conformance.html: provider behavior requirements
+- /en/guide/contributing.html: contribution and provider test expectations
+
+## API
+
+- GET /health
+- GET /v1/meta
+- GET /v1/events?after=<seq>
+- GET /v1/events/ws?after=<seq>
+- POST /v1/message.create
+- POST /v1/upload.create
+- POST /v1/resource.download
+- POST /v1/webhook/{provider}/{connector}
+- GET /v1/internal/<id>
+
+## Security
+
+Production deployments should set UV_IM_AUTH_TOKEN and keep the listener private or behind an authenticated reverse proxy. When UV_IM_AUTH_TOKEN is empty, public HTTP and WebSocket endpoints are unauthenticated.

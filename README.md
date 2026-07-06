@@ -1,12 +1,14 @@
 # uv-im-connector
 
-`uv-im-connector` is a provider-neutral Go connector for IM inbound events, outbound messages, and resources.
+`uv-im-connector` is a universal, provider-neutral Go connector for IM inbound events, outbound messages, and resources.
 
-It gives runtime agents and automation systems one stable IM surface:
+`uv` means universal: the project exists so applications, bots, agents, and automation systems can use one ready-to-run IM connector instead of reimplementing each channel.
+
+It gives caller applications one stable IM surface:
 
 ```text
-IM provider -> provider adapter -> normalized Event -> HTTP/WS API -> caller runtime
-caller runtime -> OutboundMessage -> HTTP API -> provider adapter -> IM provider
+IM provider -> provider adapter -> normalized Event -> HTTP/WS API -> caller application
+caller application -> OutboundMessage -> HTTP API -> provider adapter -> IM provider
 ```
 
 The core contract treats every channel equally:
@@ -15,7 +17,28 @@ The core contract treats every channel equally:
 - Providers send outbound messages through the same API.
 - Files, images, audio, and video use one resource reference model.
 - Provider differences are exposed through capabilities, not product hierarchy.
-- Runtime systems consume normalized events and do not parse provider-native payloads.
+- Caller applications consume normalized events and do not parse provider-native payloads.
+
+## Documentation Site
+
+This repository is configured to publish the VitePress documentation site with GitHub Pages:
+
+```text
+https://hengshi.github.io/uv-im-connector/
+```
+
+The site defaults to Simplified Chinese. English documentation is served under:
+
+```text
+https://hengshi.github.io/uv-im-connector/en/
+```
+
+Run the site locally with:
+
+```bash
+npm install
+npm run docs:dev
+```
 
 ## Boundary
 
@@ -27,14 +50,14 @@ The core contract treats every channel equally:
 - provider health and capability metadata;
 - resource download, upload, redaction, and internal resource URLs.
 
-Callers own:
+Caller applications own:
 
-- agent sessions, tasks, runs, workspaces, and resume handles;
+- product workflows, bot behavior, agent sessions, tasks, runs, workspaces, and resume handles;
 - business routing and permission policy;
 - durable run artifacts and status UI;
 - retry, escalation, and writeback policy.
 
-In other words, `uv-im-connector` is IM infrastructure. It is not an agent runtime.
+In other words, `uv-im-connector` is IM infrastructure. It is not a bot framework or an agent execution engine.
 
 ## Install
 
@@ -381,4 +404,4 @@ Provider quality expectations are documented in [docs/conformance.md](docs/confo
 - Route conversations by `provider + connector + channel.id`, not by `channel.id` alone.
 - Treat `addressed=false` group events as ambient and non-actionable by default; route them into workflows only when the caller explicitly opts into ambient group traffic.
 - Resolve and copy allowed `internal_url` resources into caller-owned storage before starting long-running work.
-- Send replies through `POST /v1/message.create`; do not call provider-native send APIs from the caller runtime.
+- Send replies through `POST /v1/message.create`; do not call provider-native send APIs from the caller application.
