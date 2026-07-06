@@ -1,20 +1,18 @@
 :root {
   --vp-c-brand-1: #0f766e;
-  --vp-c-brand-2: #0d9488;
-  --vp-c-brand-3: #14b8a6;
-  --vp-c-brand-soft: rgba(20, 184, 166, 0.14);
+  --vp-c-brand-2: #0b7285;
+  --vp-c-brand-3: #1d4ed8;
+  --vp-c-brand-soft: rgba(15, 118, 110, 0.12);
   --vp-home-hero-name-color: transparent;
-  --vp-home-hero-name-background: linear-gradient(115deg, #0f766e 0%, #2563eb 54%, #f97316 100%);
-  --vp-home-hero-image-background-image:
-    radial-gradient(circle at 25% 30%, rgba(20, 184, 166, 0.26), transparent 32%),
-    radial-gradient(circle at 72% 68%, rgba(37, 99, 235, 0.2), transparent 34%);
-  --vp-home-hero-image-filter: blur(48px);
+  --vp-home-hero-name-background: linear-gradient(115deg, #0f766e 0%, #1d4ed8 58%, #c2410c 100%);
+  --vp-home-hero-image-background-image: none;
+  --vp-home-hero-image-filter: none;
 }
 
 .dark {
   --vp-c-brand-1: #5eead4;
   --vp-c-brand-2: #2dd4bf;
-  --vp-c-brand-3: #14b8a6;
+  --vp-c-brand-3: #60a5fa;
   --vp-c-brand-soft: rgba(45, 212, 191, 0.16);
 }
 
@@ -60,16 +58,12 @@ body {
 
 .VPFeature {
   border: 1px solid var(--vp-c-divider);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(255, 255, 255, 0.36)),
-    var(--vp-c-bg-soft);
+  background: color-mix(in srgb, var(--vp-c-bg) 94%, var(--vp-c-brand-soft));
   border-radius: 8px;
 }
 
 .dark .VPFeature {
-  background:
-    linear-gradient(180deg, rgba(15, 23, 42, 0.78), rgba(15, 23, 42, 0.36)),
-    var(--vp-c-bg-soft);
+  background: color-mix(in srgb, var(--vp-c-bg) 90%, var(--vp-c-brand-soft));
 }
 
 .VPFeature .title {
@@ -111,10 +105,7 @@ body {
   margin-top: 56px;
   padding: 40px 0 8px;
   border-top: 1px solid var(--vp-c-divider);
-  background:
-    linear-gradient(135deg, rgba(20, 184, 166, 0.1), transparent 38%),
-    linear-gradient(315deg, rgba(249, 115, 22, 0.08), transparent 38%),
-    var(--vp-c-bg);
+  background: var(--vp-c-bg);
 }
 
 .home-section h2 {
@@ -142,7 +133,7 @@ body {
   padding: 20px;
   border: 1px solid var(--vp-c-divider);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--vp-c-bg-soft) 84%, transparent);
+  background: var(--vp-c-bg-soft);
 }
 
 .signal-card strong {
@@ -218,7 +209,7 @@ body {
 .provider-strip span {
   padding: 7px 11px;
   border: 1px solid var(--vp-c-divider);
-  border-radius: 999px;
+  border-radius: 8px;
   background: var(--vp-c-bg-soft);
   color: var(--vp-c-text-2);
   font-size: 13px;
@@ -237,7 +228,7 @@ body {
   align-items: center;
   min-height: 42px;
   padding: 0 16px;
-  border-radius: 999px;
+  border-radius: 8px;
   font-weight: 700;
   text-decoration: none;
 }
