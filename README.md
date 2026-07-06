@@ -2,8 +2,6 @@
 
 `uv-im-connector` is a universal, provider-neutral Go connector for IM inbound events, outbound messages, and resources.
 
-`uv` means universal: the project exists so applications, bots, agents, and automation systems can use one ready-to-run IM connector instead of reimplementing each channel.
-
 It gives caller applications one stable IM surface:
 
 ```text

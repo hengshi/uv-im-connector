@@ -4,7 +4,7 @@ layout: home
 hero:
   name: uv-im-connector
   text: Universal IM Connector
-  tagline: uv means universal. Normalize inbound events, outbound messages, and files across IM providers so applications, bots, agents, and automation systems do not reimplement every channel.
+  tagline: Normalize inbound events, outbound messages, and files across IM providers so applications, bots, agents, and automation systems do not reimplement every channel.
   image:
     src: /connector-flow-en.svg
     alt: uv-im-connector data flow

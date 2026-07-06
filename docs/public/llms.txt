@@ -6,7 +6,7 @@ GitHub Pages target en-US: https://hengshi.github.io/uv-im-connector/en/
 
 ## 简体中文
 
-uv-im-connector 是面向应用、机器人、Agent 和自动化系统的 universal provider-neutral IM connector。uv 表示 universal。项目目标是提供所有人可以直接上手使用的通用 IM 接入层，把飞书 / Lark、企业微信 / WeCom、Slack、Telegram、Discord、DingTalk、Matrix、OneBot、QQ、WhatsApp 等渠道的入站事件、出站消息和文件资源归一化为同一套协议。
+uv-im-connector 是面向应用、机器人、Agent 和自动化系统的 universal provider-neutral IM connector。项目目标是提供所有人可以直接上手使用的通用 IM 接入层，把飞书 / Lark、企业微信 / WeCom、Slack、Telegram、Discord、DingTalk、Matrix、OneBot、QQ、WhatsApp 等渠道的入站事件、出站消息和文件资源归一化为同一套协议。
 
 uv-im-connector 负责：
 - provider credentials 和连接生命周期
@@ -34,7 +34,7 @@ uv-im-connector 负责：
 
 ## English
 
-uv-im-connector is a universal, provider-neutral Go connector for IM inbound events, outbound messages, and files/resources. uv means universal. The project gives applications, bots, agents, and automation systems one ready-to-use IM connector instead of provider-native WeCom, Lark, Slack, Telegram, Discord, DingTalk, Matrix, OneBot, QQ, WhatsApp, and related APIs.
+uv-im-connector is a universal, provider-neutral Go connector for IM inbound events, outbound messages, and files/resources. The project gives applications, bots, agents, and automation systems one ready-to-use IM connector instead of provider-native WeCom, Lark, Slack, Telegram, Discord, DingTalk, Matrix, OneBot, QQ, WhatsApp, and related APIs.
 
 Owned by uv-im-connector:
 - provider credentials and connection lifecycle

@@ -4,7 +4,7 @@ layout: home
 hero:
   name: uv-im-connector
   text: Universal IM Connector
-  tagline: uv 代表 universal。把飞书、企业微信、Slack、Telegram 等渠道的消息、回复和文件统一成一套协议，让应用、机器人、Agent 和自动化系统不用再重复实现 IM 接入。
+  tagline: 把飞书、企业微信、Slack、Telegram 等渠道的消息、回复和文件统一成一套协议，让应用、机器人、Agent 和自动化系统不用再重复实现 IM 接入。
   image:
     src: /connector-flow.svg
     alt: uv-im-connector 数据流

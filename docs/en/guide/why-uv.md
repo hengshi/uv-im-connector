@@ -1,6 +1,6 @@
 # Why It Exists
 
-`uv` in `uv-im-connector` means universal. The project exists because IM integration has become infrastructure for applications, bots, agents, and automation systems, but many projects still have to rebuild inbound events, outbound messages, file downloads, group chat semantics, threads, referrers, authentication, and connection lifecycle inside their own product.
+`uv-im-connector` exists because IM integration has become infrastructure for applications, bots, agents, and automation systems, but many projects still have to rebuild inbound events, outbound messages, file downloads, group chat semantics, threads, referrers, authentication, and connection lifecycle inside their own product.
 
 That repetition is not a sign that those projects are wrong. It follows naturally from their product boundary. Once a system receives user intent from IM and sends results back to IM, it must solve connection, auth, parsing, attachments, permissions, conversations, and delivery. Without a reusable connector contract, that work gets embedded into every product.
 
