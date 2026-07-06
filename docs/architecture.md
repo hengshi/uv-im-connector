@@ -64,7 +64,7 @@ ResourceRef
 | Endpoint | 用途 |
 | --- | --- |
 | `GET /health` | 进程健康检查。 |
-| `GET /v1/meta` | Provider 列表、capabilities 和 health。 |
+| `GET /v1/meta` | 服务版本、协议版本、Provider 列表、capabilities 和 health。 |
 | `GET /v1/events?after=<seq>` | 读取标准事件日志。 |
 | `GET /v1/events/ws?after=<seq>` | 订阅标准事件。 |
 | `POST /v1/message.create` | 发送出站消息。 |
@@ -74,6 +74,8 @@ ResourceRef
 | `GET /v1/internal/<id>` | 解析内部资源。 |
 
 配置 `UV_IM_AUTH_TOKEN` 后，除 `/health` 和 provider webhook ingress 外，所有 endpoint 都要求 `Authorization: Bearer <UV_IM_AUTH_TOKEN>`。Provider webhook ingress 必须在输出标准事件前使用 provider-level webhook verification；支持 webhook 的 provider 在没有配置 provider webhook secret 时会拒绝 ingress。
+
+`/v1/meta` 是调用方的兼容性检查入口。调用方应基于 `service`、`protocol_version` 和 capabilities 判断是否继续启动；不要只根据 provider 名称推断能力。
 
 ## Conformance
 

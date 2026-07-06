@@ -149,6 +149,32 @@ func TestHubAuthProtectsAPIs(t *testing.T) {
 	}
 }
 
+func TestHubMetaIncludesServiceAndProtocolVersion(t *testing.T) {
+	provider := memory.NewConnector("memory", "main")
+	hub := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, ""), &uvim.ResourceStore{Dir: t.TempDir()})
+	server := httptest.NewServer(hub.Handler())
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/v1/meta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var meta uvim.ServiceMeta
+	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta.Service != uvim.ServiceName || meta.ProtocolVersion != uvim.ProtocolVersion || meta.ConnectorVersion == "" {
+		t.Fatalf("meta = %+v", meta)
+	}
+	if len(meta.Providers) != 1 || meta.Providers[0].Provider != "memory" || meta.Providers[0].Connector != "main" {
+		t.Fatalf("providers = %+v", meta.Providers)
+	}
+}
+
 func TestHubWebhookRoutesToProviderAndStoresEvent(t *testing.T) {
 	dir := t.TempDir()
 	provider, err := slack.New(slack.Config{WebhookSecret: "secret"})

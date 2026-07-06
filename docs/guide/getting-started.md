@@ -7,7 +7,7 @@
 安装独立二进制：
 
 ```bash
-go install github.com/hengshi/uv-im-connector/cmd/uv-im-connector@latest
+go install github.com/hengshi/uv-im-connector/cmd/uv-im-connector@<tag>
 ```
 
 也可以在仓库 checkout 内直接运行：
@@ -19,7 +19,18 @@ go run ./cmd/uv-im-connector
 如果要嵌入到另一个 Go 进程中，直接使用 Go 包：
 
 ```bash
-go get github.com/hengshi/uv-im-connector
+go get github.com/hengshi/uv-im-connector@<tag>
+```
+
+也可以使用发布的容器镜像：
+
+```bash
+docker run --rm \
+  -p 127.0.0.1:8787:8787 \
+  -v uv-im-connector-state:/var/lib/uv-im-connector \
+  -e UV_IM_AUTH_TOKEN=dev-token \
+  -e UV_IM_PROVIDERS=memory \
+  ghcr.io/hengshi/uv-im-connector:<tag>
 ```
 
 ## 启动本地 Connector
@@ -118,5 +129,6 @@ UV_<PROVIDER>_WEBHOOK_SECRET
 - 阅读 [为什么存在](/guide/why-uv)，理解为什么 `uv-im-connector` 要把 IM connector 从上层产品里抽出来。
 - 阅读 [核心概念](/guide/concepts)，理解 provider、connector、channel、addressed、referrer 和 resource。
 - 接入应用、机器人或 agent service 前，阅读 [应用接入](/guide/application-integration)。
+- 部署独立服务前，阅读 [部署与发布](/guide/deployment)。
 - 接收用户文件前，阅读 [资源与文件](/guide/resources)。
 - 新增 provider 前，阅读 [参与贡献](/guide/contributing)。

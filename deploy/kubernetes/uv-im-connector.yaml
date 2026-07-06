@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: uv-im-connector
+type: Opaque
+stringData:
+  UV_IM_AUTH_TOKEN: change-me
+  UV_WECOM_BOT_ID: ""
+  UV_WECOM_BOT_SECRET: ""
+  UV_LARK_APP_ID: ""
+  UV_LARK_APP_SECRET: ""
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: uv-im-connector
+data:
+  UV_IM_ADDR: 0.0.0.0:8787
+  UV_IM_STATE_DIR: /var/lib/uv-im-connector
+  UV_IM_PROVIDERS: memory
+  UV_WECOM_CONNECTOR_ID: wecom
+  UV_LARK_CONNECTOR_ID: lark
+  UV_LARK_REGION: feishu
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uv-im-connector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: uv-im-connector
+  template:
+    metadata:
+      labels:
+        app: uv-im-connector
+    spec:
+      securityContext:
+        fsGroup: 10001
+      containers:
+        - name: uv-im-connector
+          image: ghcr.io/hengshi/uv-im-connector:v0.0.4
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          envFrom:
+            - configMapRef:
+                name: uv-im-connector
+            - secretRef:
+                name: uv-im-connector
+          ports:
+            - containerPort: 8787
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/uv-im-connector
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: uv-im-connector-state
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: uv-im-connector
+spec:
+  selector:
+    app: uv-im-connector
+  ports:
+    - port: 8787
+      targetPort: http
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: uv-im-connector-state
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi

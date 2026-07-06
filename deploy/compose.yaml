@@ -1,0 +1,33 @@
+services:
+  uv-im-connector:
+    image: ghcr.io/hengshi/uv-im-connector:${UV_IM_CONNECTOR_VERSION:?set UV_IM_CONNECTOR_VERSION}
+    restart: unless-stopped
+    environment:
+      UV_IM_ADDR: 0.0.0.0:8787
+      UV_IM_STATE_DIR: /var/lib/uv-im-connector
+      UV_IM_AUTH_TOKEN: ${UV_IM_AUTH_TOKEN:?set UV_IM_AUTH_TOKEN}
+      UV_IM_PROVIDERS: ${UV_IM_PROVIDERS:?set UV_IM_PROVIDERS}
+      UV_WECOM_CONNECTOR_ID: ${UV_WECOM_CONNECTOR_ID:-}
+      UV_WECOM_BOT_ID: ${UV_WECOM_BOT_ID:-}
+      UV_WECOM_BOT_SECRET: ${UV_WECOM_BOT_SECRET:-}
+      UV_WECOM_WS_URL: ${UV_WECOM_WS_URL:-}
+      UV_LARK_CONNECTOR_ID: ${UV_LARK_CONNECTOR_ID:-}
+      UV_LARK_APP_ID: ${UV_LARK_APP_ID:-}
+      UV_LARK_APP_SECRET: ${UV_LARK_APP_SECRET:-}
+      UV_LARK_REGION: ${UV_LARK_REGION:-feishu}
+      UV_LARK_BOT_OPEN_ID: ${UV_LARK_BOT_OPEN_ID:-}
+      UV_LARK_BOT_UNION_ID: ${UV_LARK_BOT_UNION_ID:-}
+      UV_LARK_BASE_URL: ${UV_LARK_BASE_URL:-}
+      UV_LARK_CALLBACK_BASE_URL: ${UV_LARK_CALLBACK_BASE_URL:-}
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - uv-im-connector-state:/var/lib/uv-im-connector
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  uv-im-connector-state:

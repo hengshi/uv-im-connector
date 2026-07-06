@@ -64,7 +64,7 @@ ResourceRef
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /health` | Process health. |
-| `GET /v1/meta` | Provider list, capabilities, and health. |
+| `GET /v1/meta` | Service version, protocol version, provider list, capabilities, and health. |
 | `GET /v1/events?after=<seq>` | Read normalized event log. |
 | `GET /v1/events/ws?after=<seq>` | Watch normalized events. |
 | `POST /v1/message.create` | Send outbound message. |
@@ -74,6 +74,8 @@ ResourceRef
 | `GET /v1/internal/<id>` | Resolve internal resource. |
 
 All endpoints except `/health` and provider webhook ingress require `Authorization: Bearer <UV_IM_AUTH_TOKEN>` when `UV_IM_AUTH_TOKEN` is configured. Provider webhook ingress must use provider-level webhook verification before emitting normalized events, and webhook-capable providers reject ingress when no provider webhook secret is configured.
+
+`/v1/meta` is the caller compatibility check entrypoint. Callers should decide whether to continue startup from `service`, `protocol_version`, and capabilities, not from provider names alone.
 
 ## Conformance
 

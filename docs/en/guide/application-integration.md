@@ -6,12 +6,21 @@ This page describes the integration contract for an application, bot, agent serv
 
 1. Configure provider credentials in the connector service.
 2. Start `uv-im-connector` with a private listener and `UV_IM_AUTH_TOKEN`.
-3. Call `GET /v1/meta` to record provider IDs, connector IDs, capabilities, and health.
+3. Call `GET /v1/meta` to verify service/protocol compatibility and record provider IDs, connector IDs, capabilities, and health.
 4. Start the event consumer from the last processed sequence.
 
 ```text
 GET /v1/events/ws?after=<last-sequence>
 ```
+
+The startup check should at least verify:
+
+- `service` is `uv-im-connector`;
+- `protocol_version` is supported by the caller;
+- required provider/connector pairs exist;
+- required capabilities are true.
+
+Connector bugfixes within the same `protocol_version` can be deployed by upgrading only the connector service. Caller applications need their own release when the protocol is incompatible or when they consume a new client/API surface.
 
 ## Inbound Flow
 
