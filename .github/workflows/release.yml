@@ -1,0 +1,169 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.24.x"
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.24.x"
+          cache: true
+
+      - name: Build metadata
+        id: build_meta
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          version="${REF_NAME}"
+          if [[ "${GITHUB_REF}" != refs/tags/* ]]; then
+            version="dev-${SHA::12}"
+          fi
+          artifact_version="$(printf '%s' "${version}" | tr '/:' '--')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "artifact_version=${artifact_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ steps.build_meta.outputs.version }}
+          ARTIFACT_VERSION: ${{ steps.build_meta.outputs.artifact_version }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          out="dist/uv-im-connector-${ARTIFACT_VERSION}-${GOOS}-${GOARCH}"
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags="-s -w -X github.com/hengshi/uv-im-connector.Version=${VERSION} -X github.com/hengshi/uv-im-connector.GitCommit=${COMMIT} -X github.com/hengshi/uv-im-connector.BuildTime=${build_time}" \
+            -o "${out}/uv-im-connector" ./cmd/uv-im-connector
+          tar -C "${out}" -czf "${out}.tar.gz" uv-im-connector
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: uv-im-connector-${{ steps.build_meta.outputs.artifact_version }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.tar.gz > checksums.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          generate_release_notes: true
+
+  container:
+    needs: test
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=tag
+
+      - name: Build metadata
+        id: build
+        run: echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ steps.build.outputs.time }}

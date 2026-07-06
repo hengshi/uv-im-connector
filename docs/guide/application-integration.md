@@ -6,12 +6,21 @@
 
 1. 在 connector 服务中配置 provider 凭证。
 2. 使用私有监听地址和 `UV_IM_AUTH_TOKEN` 启动 `uv-im-connector`。
-3. 调用 `GET /v1/meta` 记录 provider ID、connector ID、capabilities 和 health。
+3. 调用 `GET /v1/meta` 检查 service/protocol 兼容性，并记录 provider ID、connector ID、capabilities 和 health。
 4. 从最后处理过的 sequence 开始订阅事件。
 
 ```text
 GET /v1/events/ws?after=<last-sequence>
 ```
+
+启动检查至少应该确认：
+
+- `service` 是 `uv-im-connector`；
+- `protocol_version` 在调用方支持范围内；
+- 所需 provider/connector 存在；
+- 所需能力在 `capabilities` 中为 true。
+
+同一 `protocol_version` 的 connector bugfix 可以只升级 connector 服务；协议不兼容或调用方要使用新的 client/API 时，调用方应用才需要发版。
 
 ## Inbound Flow
 

@@ -136,22 +136,16 @@ func (h *Hub) handleMeta(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
-	type providerMeta struct {
-		Provider     string            `json:"provider"`
-		Connector    string            `json:"connector,omitempty"`
-		Capabilities uvim.Capabilities `json:"capabilities"`
-		Health       uvim.Health       `json:"health"`
-	}
-	var providers []providerMeta
+	var providers []uvim.ProviderMeta
 	for _, provider := range h.registry.List() {
-		providers = append(providers, providerMeta{
+		providers = append(providers, uvim.ProviderMeta{
 			Provider:     provider.ID(),
 			Connector:    provider.ConnectorID(),
 			Capabilities: provider.Capabilities(),
 			Health:       provider.Health(req.Context()),
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"providers": providers})
+	writeJSON(w, http.StatusOK, uvim.NewServiceMeta(providers))
 }
 
 func (h *Hub) handleEvents(w http.ResponseWriter, req *http.Request) {

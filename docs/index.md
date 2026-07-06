@@ -73,7 +73,7 @@ features:
       </div>
       <div class="flow-row">
         <b>Connector API</b>
-        <span><code>/v1/events/ws</code>、<code>/v1/message.create</code>、<code>/v1/internal/&lt;id&gt;</code>。</span>
+        <span><code>/v1/meta</code>、<code>/v1/events/ws</code>、<code>/v1/message.create</code>、<code>/v1/internal/&lt;id&gt;</code>。</span>
       </div>
       <div class="flow-row">
         <b>Caller</b>
@@ -105,6 +105,7 @@ features:
     <a href="/uv-im-connector/guide/getting-started.html">跑通本地示例</a>
     <a href="/uv-im-connector/guide/why-uv.html">为什么存在</a>
     <a href="/uv-im-connector/guide/application-integration.html">接入应用</a>
+    <a href="/uv-im-connector/guide/deployment.html">部署服务</a>
     <a href="/uv-im-connector/guide/contributing.html">贡献新渠道</a>
   </div>
 </div>

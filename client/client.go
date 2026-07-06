@@ -28,6 +28,11 @@ func (c *Client) Meta(ctx context.Context) (map[string]any, error) {
 	return out, c.getJSON(ctx, "/v1/meta", &out)
 }
 
+func (c *Client) ServiceMeta(ctx context.Context) (uvim.ServiceMeta, error) {
+	var out uvim.ServiceMeta
+	return out, c.getJSON(ctx, "/v1/meta", &out)
+}
+
 func (c *Client) Events(ctx context.Context, after int64) ([]uvim.Event, error) {
 	var out struct {
 		Events []uvim.Event `json:"events"`

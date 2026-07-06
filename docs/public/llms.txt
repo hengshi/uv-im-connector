@@ -14,6 +14,7 @@ uv-im-connector 负责：
 - outbound message delivery
 - provider health 和 capabilities
 - resource download / upload / redaction / internal resource URL
+- connector service version 和 protocol version
 
 调用方应用负责：
 - product workflows、bot behavior、agent sessions、tasks、runs、workspaces、resume handles
@@ -26,6 +27,7 @@ uv-im-connector 负责：
 - /guide/why-uv.html：项目为什么存在，以及为什么其他 agent / bridge 产品会各自实现 IM connector
 - /guide/concepts.html：provider、connector、channel、addressed、referrer、capabilities
 - /guide/application-integration.html：调用方应用事件订阅和 outbound reply flow
+- /guide/deployment.html：独立服务部署、发布产物、版本契约和升级方式
 - /guide/resources.html：ResourceRef 和内部资源处理
 - /configuration.html：环境变量和 provider 配置
 - /architecture.html：协议和 server API 参考
@@ -42,6 +44,7 @@ Owned by uv-im-connector:
 - outbound message delivery
 - provider health and capabilities
 - resource download, upload, redaction, and internal resource URLs
+- connector service version and protocol version
 
 Owned by caller applications:
 - product workflows, bot behavior, agent sessions, tasks, runs, workspaces, and resume handles
@@ -54,6 +57,7 @@ Key docs:
 - /en/guide/why-uv.html: why this project exists and why other agent / bridge products implement their own IM connector
 - /en/guide/concepts.html: provider, connector, channel, addressed, referrer, capabilities
 - /en/guide/application-integration.html: event consumer and outbound reply flow for caller applications
+- /en/guide/deployment.html: standalone service deployment, release artifacts, version contract, and upgrades
 - /en/guide/resources.html: ResourceRef and internal resource handling
 - /en/configuration.html: environment variables and provider configuration
 - /en/architecture.html: protocol and server API reference
@@ -75,3 +79,5 @@ Key docs:
 ## Security
 
 Production deployments should set UV_IM_AUTH_TOKEN and keep the listener private or behind an authenticated reverse proxy. When UV_IM_AUTH_TOKEN is empty, public HTTP and WebSocket endpoints are unauthenticated.
+
+GET /v1/meta returns service="uv-im-connector", connector_version, protocol_version, build metadata, providers, capabilities, and health. Caller applications should verify service/protocol compatibility at startup. Compatible connector bugfixes can be deployed by upgrading the connector service without releasing the caller application.

@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	uvim "github.com/hengshi/uv-im-connector"
 )
 
 func TestWatchEventsReturnsOnContextCancelWhileIdle(t *testing.T) {
@@ -90,5 +92,56 @@ func TestWatchEventsWithConnectRunsAfterDial(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("WatchEventsWithConnect did not return after context cancel")
+	}
+}
+
+func TestMetaPreservesRawMapCompatibility(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/meta" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(uvim.ServiceMeta{
+			Service:          uvim.ServiceName,
+			ConnectorVersion: "v0.0.4",
+			ProtocolVersion:  uvim.ProtocolVersion,
+		})
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	client.Token = "token"
+	meta, err := client.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta["service"] != uvim.ServiceName || meta["connector_version"] != "v0.0.4" || meta["protocol_version"] != uvim.ProtocolVersion {
+		t.Fatalf("meta = %+v", meta)
+	}
+}
+
+func TestServiceMetaReturnsTypedServiceMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/meta" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(uvim.ServiceMeta{
+			Service:          uvim.ServiceName,
+			ConnectorVersion: "v0.0.4",
+			ProtocolVersion:  uvim.ProtocolVersion,
+		})
+	}))
+	defer server.Close()
+
+	meta, err := New(server.URL).ServiceMeta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Service != uvim.ServiceName || meta.ConnectorVersion != "v0.0.4" || meta.ProtocolVersion != uvim.ProtocolVersion {
+		t.Fatalf("meta = %+v", meta)
 	}
 }

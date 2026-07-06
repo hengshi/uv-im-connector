@@ -62,7 +62,7 @@ In other words, `uv-im-connector` is IM infrastructure. It is not a bot framewor
 Use the standalone binary when you want one connector service for another application:
 
 ```bash
-go install github.com/hengshi/uv-im-connector/cmd/uv-im-connector@latest
+go install github.com/hengshi/uv-im-connector/cmd/uv-im-connector@<tag>
 ```
 
 Or run it from a checkout:
@@ -71,10 +71,21 @@ Or run it from a checkout:
 go run ./cmd/uv-im-connector
 ```
 
+Or run the published container image:
+
+```bash
+docker run --rm \
+  -p 127.0.0.1:8787:8787 \
+  -v uv-im-connector-state:/var/lib/uv-im-connector \
+  -e UV_IM_AUTH_TOKEN=dev-token \
+  -e UV_IM_PROVIDERS=memory \
+  ghcr.io/hengshi/uv-im-connector:<tag>
+```
+
 Use the Go packages directly when embedding the connector in another Go process:
 
 ```bash
-go get github.com/hengshi/uv-im-connector
+go get github.com/hengshi/uv-im-connector@<tag>
 ```
 
 ## Quick Start
@@ -177,7 +188,7 @@ Connector IDs identify one concrete bot/app/workspace identity for a provider. I
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /health` | Process health. |
-| `GET /v1/meta` | Providers, connector IDs, capabilities, and health. |
+| `GET /v1/meta` | Service version, protocol version, providers, connector IDs, capabilities, and health. |
 | `GET /v1/events?after=<seq>` | Read persisted normalized events. |
 | `GET /v1/events/ws?after=<seq>` | Watch normalized events over WebSocket. |
 | `POST /v1/message.create` | Send an outbound message. |
@@ -193,6 +204,19 @@ Authorization: Bearer <token>
 ```
 
 Provider webhook ingress is intentionally separate from public API auth. Webhook-capable providers verify their own provider-level secret and reject webhook requests when the secret is not configured.
+
+`GET /v1/meta` is the runtime compatibility contract:
+
+```json
+{
+  "service": "uv-im-connector",
+  "connector_version": "v0.0.4",
+  "protocol_version": "v1",
+  "providers": []
+}
+```
+
+Caller applications should check `service`, supported `protocol_version`, and required provider capabilities at startup. A connector bugfix with the same protocol version can be deployed by upgrading only the `uv-im-connector` service. Caller applications need their own release only when they consume a new incompatible protocol/API or change their integration behavior.
 
 ## Normalized Events
 
@@ -314,8 +338,15 @@ func main() {
 	ctx := context.Background()
 	c := client.New("http://127.0.0.1:8787")
 	c.Token = os.Getenv("UV_IM_AUTH_TOKEN")
+	meta, err := c.ServiceMeta(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if meta.Service != uvim.ServiceName || meta.ProtocolVersion != uvim.ProtocolVersion {
+		log.Fatalf("unsupported connector metadata: %+v", meta)
+	}
 
-	err := c.WatchEvents(ctx, 0, func(event uvim.Event) error {
+	err = c.WatchEvents(ctx, 0, func(event uvim.Event) error {
 		if event.Type != uvim.EventMessageCreate || !event.Addressed {
 			return nil
 		}
@@ -395,9 +426,11 @@ go test ./...
 
 Provider quality expectations are documented in [docs/conformance.md](docs/conformance.md). Local and live E2E guidance is documented in [docs/e2e-tests.md](docs/e2e-tests.md).
 
+Release and deployment guidance is documented in [docs/guide/deployment.md](docs/guide/deployment.md). Tag releases publish GitHub Release binaries and `ghcr.io/hengshi/uv-im-connector:<tag>` container images.
+
 ## Integration Notes
 
-- Use `GET /v1/meta` at startup to record provider capabilities and connector IDs.
+- Use `GET /v1/meta` at startup to verify service/protocol compatibility and record provider capabilities and connector IDs.
 - Persist the last processed event `sequence` and resume `/v1/events/ws?after=<seq>` after reconnect.
 - Route conversations by `provider + connector + channel.id`, not by `channel.id` alone.
 - Treat `addressed=false` group events as ambient and non-actionable by default; route them into workflows only when the caller explicitly opts into ambient group traffic.

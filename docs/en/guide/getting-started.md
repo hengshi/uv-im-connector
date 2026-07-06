@@ -7,7 +7,7 @@ This guide starts a local connector, verifies the HTTP API, and sends one outbou
 Install the standalone binary:
 
 ```bash
-go install github.com/hengshi/uv-im-connector/cmd/uv-im-connector@latest
+go install github.com/hengshi/uv-im-connector/cmd/uv-im-connector@<tag>
 ```
 
 Or run it from a checkout:
@@ -19,7 +19,18 @@ go run ./cmd/uv-im-connector
 Use the Go packages directly when embedding the connector in another process:
 
 ```bash
-go get github.com/hengshi/uv-im-connector
+go get github.com/hengshi/uv-im-connector@<tag>
+```
+
+You can also use the published container image:
+
+```bash
+docker run --rm \
+  -p 127.0.0.1:8787:8787 \
+  -v uv-im-connector-state:/var/lib/uv-im-connector \
+  -e UV_IM_AUTH_TOKEN=dev-token \
+  -e UV_IM_PROVIDERS=memory \
+  ghcr.io/hengshi/uv-im-connector:<tag>
 ```
 
 ## Start a Local Connector
@@ -118,5 +129,6 @@ UV_<PROVIDER>_WEBHOOK_SECRET
 - Read [Why It Exists](/en/guide/why-uv) to understand why `uv-im-connector` extracts IM connector logic from product-specific systems.
 - Read [Concepts](/en/guide/concepts) for provider, connector, channel, addressed, referrer, and resource semantics.
 - Read [Application Integration](/en/guide/application-integration) before wiring an application, bot, or agent service.
+- Read [Deployment](/en/guide/deployment) before deploying the standalone service.
 - Read [Resources](/en/guide/resources) before accepting user files.
 - Read [Contributing](/en/guide/contributing) before adding a provider.

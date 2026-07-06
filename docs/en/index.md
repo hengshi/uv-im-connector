@@ -68,3 +68,5 @@ curl -H "Authorization: Bearer dev-token" \
 ```
 
 Continue with [Getting Started](/en/guide/getting-started) for installation, local testing, provider configuration, and the first outbound message.
+
+For production installation, version checks, and upgrade policy, read [Deployment and Releases](/en/guide/deployment).
