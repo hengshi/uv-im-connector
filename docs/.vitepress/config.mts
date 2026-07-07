@@ -4,7 +4,7 @@ const providerList =
   'WeCom · Lark · Slack · Telegram · Discord · DingTalk · Matrix · OneBot · QQ · WhatsApp'
 
 const commonHead = [
-  ['meta', { name: 'theme-color', content: '#0f766e' }],
+  ['meta', { name: 'theme-color', content: '#ffffff' }],
   ['meta', { property: 'og:type', content: 'website' }],
   ['meta', { property: 'og:title', content: 'uv-im-connector' }],
   [
@@ -73,8 +73,6 @@ const zhTheme = {
       items: [
         { text: '架构', link: '/architecture' },
         { text: '配置', link: '/configuration' },
-        { text: 'Conformance', link: '/conformance' },
-        { text: 'E2E 测试', link: '/e2e-tests' },
       ],
     },
   ],
@@ -133,8 +131,6 @@ const enTheme = {
       items: [
         { text: 'Architecture', link: '/en/architecture' },
         { text: 'Configuration', link: '/en/configuration' },
-        { text: 'Conformance', link: '/en/conformance' },
-        { text: 'E2E Tests', link: '/en/e2e-tests' },
       ],
     },
   ],
@@ -172,8 +168,9 @@ export default defineConfig({
   description: '面向应用、机器人、Agent 和自动化系统的通用 IM 连接器。',
   lang: 'zh-CN',
   base: '/uv-im-connector/',
+  appearance: false,
   lastUpdated: true,
-  srcExclude: ['jarvis-box-integration.md'],
+  srcExclude: ['jarvis-box-integration.md', 'DESIGN.md'],
   head: commonHead,
   markdown: {
     attrs: {

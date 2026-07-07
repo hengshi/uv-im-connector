@@ -5,9 +5,6 @@ hero:
   name: uv-im-connector
   text: Universal IM Connector
   tagline: 把飞书、企业微信、Slack、Telegram 等渠道的消息、回复和文件统一成一套协议，让应用、机器人、Agent 和自动化系统不用再重复实现 IM 接入。
-  image:
-    src: /connector-flow.svg
-    alt: uv-im-connector 数据流
   actions:
     - theme: brand
       text: 快速开始
@@ -62,6 +59,9 @@ features:
   <span class="home-kicker">数据流</span>
   <h2>Inbound / outbound 是同一条协议边界的两个方向。</h2>
   <div class="flow-grid">
+    <figure class="flow-figure">
+      <img src="/connector-flow.svg" alt="uv-im-connector 数据流" />
+    </figure>
     <div class="flow-panel">
       <div class="flow-row">
         <b>IM Provider</b>
@@ -80,12 +80,12 @@ features:
         <span>只处理产品 workflow、机器人行为、agent session、权限、产物和回复策略。</span>
       </div>
     </div>
-    <ul class="scenario-list">
-      <li>群聊 mention 触发一次 bot action、agent run 或业务 workflow。</li>
-      <li>用户上传文件，调用方只拿到 sanitized <code>ResourceRef</code>。</li>
-      <li>多个 Lark / WeCom bot 使用不同 <code>connector</code> 并行接入。</li>
-      <li>新增 provider 时只实现 adapter 和 conformance tests。</li>
-    </ul>
+  </div>
+  <div class="scenario-list">
+    <div>群聊 mention 触发一次 bot action、agent run 或业务 workflow。</div>
+    <div>用户上传文件，调用方只拿到 sanitized <code>ResourceRef</code>。</div>
+    <div>多个 Lark / WeCom bot 使用不同 <code>connector</code> 并行接入。</div>
+    <div>新增 provider 时只实现 adapter 和 conformance tests。</div>
   </div>
 </div>
 

@@ -2,55 +2,47 @@
   <title id="title">uv-im-connector 数据流</title>
   <desc id="desc">IM provider 通过 adapter 进入 uv-im-connector，转换为标准事件、资源和出站消息，再交给调用方应用。</desc>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="920" y2="560" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#0f172a"/>
-      <stop offset="0.55" stop-color="#111827"/>
-      <stop offset="1" stop-color="#042f2e"/>
+    <linearGradient id="accent" x1="88" y1="78" x2="828" y2="78" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
     </linearGradient>
-    <linearGradient id="accent" x1="76" y1="74" x2="786" y2="422" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#2dd4bf"/>
-      <stop offset="0.52" stop-color="#60a5fa"/>
-      <stop offset="1" stop-color="#fb923c"/>
-    </linearGradient>
-    <filter id="shadow" x="0" y="0" width="920" height="560" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-      <feDropShadow dx="0" dy="20" stdDeviation="26" flood-color="#020617" flood-opacity="0.3"/>
-    </filter>
   </defs>
-  <rect width="920" height="560" rx="42" fill="url(#bg)"/>
-  <rect x="50" y="48" width="820" height="464" rx="30" fill="#0f172a" fill-opacity="0.78" stroke="#334155" stroke-width="2"/>
-  <path d="M94 128C166 82 271 86 366 116C490 156 585 110 674 88C747 70 806 78 842 104" stroke="url(#accent)" stroke-width="2.4" stroke-linecap="round" opacity="0.72"/>
-  <text x="86" y="104" fill="#f8fafc" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="30" font-weight="800">一套 IM 协议面</text>
-  <text x="86" y="138" fill="#94a3b8" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="15">Inbound events · Outbound messages · Resources · Capabilities</text>
+  <rect width="920" height="560" rx="8" fill="#ffffff"/>
+  <rect x="32" y="32" width="856" height="496" rx="8" fill="#f9f9f9" stroke="#ededed"/>
+  <rect x="80" y="76" width="184" height="48" rx="8" fill="url(#accent)"/>
+  <text x="104" y="106" fill="#ffffff" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="18" font-weight="600">Protocol v1</text>
+  <text x="80" y="170" fill="#181818" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="30" font-weight="600">一套 IM 协议面</text>
+  <text x="80" y="206" fill="#5d5d5d" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="15">Inbound events · Outbound messages · Resources · Capabilities</text>
 
-  <g filter="url(#shadow)">
-    <rect x="82" y="206" width="166" height="84" rx="18" fill="#134e4a" stroke="#2dd4bf"/>
-    <text x="126" y="240" fill="#ccfbf1" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="16" font-weight="800">IM 渠道</text>
-    <text x="112" y="264" fill="#99f6e4" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="12">Lark · WeCom · Slack</text>
+  <g font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif">
+    <rect x="80" y="266" width="166" height="84" rx="8" fill="#ffffff" stroke="#ededed"/>
+    <text x="126" y="303" fill="#181818" font-size="16" font-weight="600">IM 渠道</text>
+    <text x="110" y="328" fill="#5d5d5d" font-size="12">Lark · WeCom · Slack</text>
 
-    <rect x="326" y="206" width="174" height="84" rx="18" fill="#1e3a8a" stroke="#60a5fa"/>
-    <text x="376" y="240" fill="#dbeafe" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="16" font-weight="800">Adapter</text>
-    <text x="359" y="264" fill="#bfdbfe" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="12">鉴权 · 解码 · 下载 · 发送</text>
+    <rect x="326" y="266" width="174" height="84" rx="8" fill="#ffffff" stroke="#ededed"/>
+    <text x="378" y="303" fill="#181818" font-size="16" font-weight="600">Adapter</text>
+    <text x="358" y="328" fill="#5d5d5d" font-size="12">鉴权 · 解码 · 下载 · 发送</text>
 
-    <rect x="578" y="178" width="234" height="140" rx="22" fill="#312e81" stroke="#a5b4fc"/>
-    <text x="628" y="226" fill="#e0e7ff" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="16" font-weight="800">uv-im-connector</text>
-    <text x="622" y="254" fill="#c7d2fe" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="12">Event · ResourceRef</text>
-    <text x="622" y="276" fill="#c7d2fe" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="12">OutboundMessage · Health</text>
+    <rect x="580" y="246" width="238" height="124" rx="8" fill="#ffffff" stroke="#ededed"/>
+    <text x="628" y="292" fill="#181818" font-size="16" font-weight="600">uv-im-connector</text>
+    <text x="624" y="320" fill="#5d5d5d" font-size="12">Event · ResourceRef</text>
+    <text x="624" y="342" fill="#5d5d5d" font-size="12">OutboundMessage · Health</text>
   </g>
 
-  <path d="M254 248H314" stroke="#38bdf8" stroke-width="4" stroke-linecap="round"/>
-  <path d="M304 237L318 248L304 259" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M506 248H566" stroke="#38bdf8" stroke-width="4" stroke-linecap="round"/>
-  <path d="M556 237L570 248L556 259" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M256 308H314" stroke="#282828" stroke-width="2" stroke-linecap="round"/>
+  <path d="M304 299L316 308L304 317" stroke="#282828" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M510 308H568" stroke="#282828" stroke-width="2" stroke-linecap="round"/>
+  <path d="M558 299L570 308L558 317" stroke="#282828" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 
-  <rect x="112" y="386" width="306" height="82" rx="18" fill="#431407" stroke="#fb923c" filter="url(#shadow)"/>
-  <text x="150" y="420" fill="#ffedd5" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="17" font-weight="800">调用方应用</text>
-  <text x="150" y="446" fill="#fed7aa" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="12">workflow · 会话 · workspace · 产物 · writeback</text>
+  <rect x="144" y="420" width="292" height="82" rx="8" fill="#ffffff" stroke="#ededed"/>
+  <text x="182" y="454" fill="#181818" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="17" font-weight="600">调用方应用</text>
+  <text x="182" y="480" fill="#5d5d5d" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="12">workflow · 会话 · workspace · 产物 · writeback</text>
 
-  <path d="M692 326C672 384 602 428 430 430" stroke="#fb923c" stroke-width="4" stroke-linecap="round"/>
-  <path d="M444 418L428 430L445 442" stroke="#fb923c" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M420 390C528 362 602 334 666 318" stroke="#34d399" stroke-width="4" stroke-linecap="round" stroke-dasharray="8 10"/>
-  <path d="M653 312L670 317L658 331" stroke="#34d399" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M700 378C674 426 604 462 448 462" stroke="#282828" stroke-width="2" stroke-linecap="round"/>
+  <path d="M460 453L446 462L461 471" stroke="#282828" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M436 424C536 396 610 372 672 360" stroke="url(#accent)" stroke-width="2" stroke-linecap="round" stroke-dasharray="6 8"/>
+  <path d="M660 354L674 359L664 370" stroke="url(#accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 
-  <text x="534" y="402" fill="#f8fafc" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="13" font-weight="800">订阅事件</text>
-  <text x="500" y="360" fill="#bbf7d0" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="13" font-weight="800">发送回复</text>
+  <text x="528" y="430" fill="#282828" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="13" font-weight="600">订阅事件</text>
+  <text x="494" y="392" fill="#4f46e5" font-family="Inter, PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="13" font-weight="600">发送回复</text>
 </svg>
