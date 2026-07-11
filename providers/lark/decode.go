@@ -86,7 +86,12 @@ func DecodePayload(payload []byte, config DecoderConfig) (uvim.Event, bool, erro
 			Resources: resources,
 			CreatedAt: createdAt,
 		},
-		Referrer:  uvim.Referrer{MessageID: messageID, ChannelID: channelID},
+		Referrer: uvim.Referrer{
+			MessageID:       messageID,
+			ParentMessageID: evt.Message.ParentID,
+			RootMessageID:   evt.Message.RootID,
+			ChannelID:       channelID,
+		},
 		Addressed: channelType != uvim.ChannelGroup || containsBotMention(evt.Message.Mentions, config.BotOpenID, config.BotUnionID),
 	}, true, nil
 }
@@ -118,6 +123,8 @@ type messageReceiveEvent struct {
 	} `json:"sender"`
 	Message struct {
 		MessageID   string    `json:"message_id"`
+		ParentID    string    `json:"parent_id"`
+		RootID      string    `json:"root_id"`
 		ChatID      string    `json:"chat_id"`
 		ChatType    string    `json:"chat_type"`
 		MessageType string    `json:"message_type"`
