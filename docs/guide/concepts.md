@@ -63,13 +63,15 @@ Channel 是 provider 原生会话目标，归一化为：
 ```json
 {
   "message_id": "1710000000.000100",
+  "parent_message_id": "1710000000.000099",
+  "root_message_id": "1710000000.000001",
   "channel_id": "C123",
   "thread_id": "1710000000.000100",
   "reply_token": "..."
 }
 ```
 
-回复某个 event 时，把 event 的 `referrer` 原样带回 outbound message。Provider adapter 会把它映射成平台原生 reply/thread 字段。
+`message_id` 和 `reply_token` 用于回复当前消息；provider 能提供引用祖先时，`parent_message_id` 和 `root_message_id` 分别保留直接父消息和根消息。回复某个 event 时，把 event 的 `referrer` 原样带回 outbound message。Provider adapter 会把回复字段映射成平台原生 reply/thread 字段。
 
 ## Capabilities
 

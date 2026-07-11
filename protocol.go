@@ -157,10 +157,12 @@ func IsResourceElement(elementType string) bool {
 }
 
 type Referrer struct {
-	MessageID  string `json:"message_id,omitempty"`
-	ChannelID  string `json:"channel_id,omitempty"`
-	ThreadID   string `json:"thread_id,omitempty"`
-	ReplyToken string `json:"reply_token,omitempty"`
+	MessageID       string `json:"message_id,omitempty"`
+	ParentMessageID string `json:"parent_message_id,omitempty"`
+	RootMessageID   string `json:"root_message_id,omitempty"`
+	ChannelID       string `json:"channel_id,omitempty"`
+	ThreadID        string `json:"thread_id,omitempty"`
+	ReplyToken      string `json:"reply_token,omitempty"`
 }
 
 type ResourceRef struct {

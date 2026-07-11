@@ -63,13 +63,15 @@ Caller applications should treat `addressed=false` group events as ambient and n
 ```json
 {
   "message_id": "1710000000.000100",
+  "parent_message_id": "1710000000.000099",
+  "root_message_id": "1710000000.000001",
   "channel_id": "C123",
   "thread_id": "1710000000.000100",
   "reply_token": "..."
 }
 ```
 
-When replying to an event, copy its `referrer` into the outbound message. Provider adapters map it into the platform-specific reply or thread field.
+`message_id` and `reply_token` address the current message. When a provider exposes reply ancestry, `parent_message_id` and `root_message_id` preserve the direct parent and root messages. When replying to an event, copy its `referrer` into the outbound message. Provider adapters map the reply fields into the platform-specific reply or thread field.
 
 ## Capabilities
 

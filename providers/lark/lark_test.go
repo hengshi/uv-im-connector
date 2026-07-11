@@ -22,6 +22,8 @@ func TestDecodePayloadTextMention(t *testing.T) {
 			},
 			"message": map[string]any{
 				"message_id":   "om_msg",
+				"parent_id":    "om_parent",
+				"root_id":      "om_root",
 				"chat_id":      "oc_chat",
 				"chat_type":    "group",
 				"message_type": "text",
@@ -56,6 +58,9 @@ func TestDecodePayloadTextMention(t *testing.T) {
 	}
 	if got.Message.Text != "帮我看一下" {
 		t.Fatalf("text = %q", got.Message.Text)
+	}
+	if got.Referrer.MessageID != "om_msg" || got.Referrer.ParentMessageID != "om_parent" || got.Referrer.RootMessageID != "om_root" {
+		t.Fatalf("referrer = %+v", got.Referrer)
 	}
 }
 

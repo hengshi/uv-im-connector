@@ -246,6 +246,8 @@ Every inbound event uses the root `Event` shape:
   },
   "referrer": {
     "message_id": "om_xxx",
+    "parent_message_id": "om_parent",
+    "root_message_id": "om_root",
     "channel_id": "oc_xxx"
   },
   "addressed": true
@@ -259,7 +261,7 @@ Important fields:
 - `channel.id`: the provider-native conversation ID.
 - `channel.type`: normalized conversation type, such as `direct`, `group`, `thread`, or `room`.
 - `addressed`: whether the message is addressed to the bot when the provider can tell.
-- `referrer`: provider information needed for replies or thread-aware outbound messages.
+- `referrer`: provider information needed for replies or thread-aware outbound messages. When available, `parent_message_id` and `root_message_id` preserve the inbound reply ancestry separately from the current reply target in `message_id`.
 
 ## Send Messages
 
