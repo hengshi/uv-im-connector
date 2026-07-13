@@ -57,15 +57,18 @@ caller application
 {
   "provider": "lark",
   "connector": "main",
-  "channel_id": "oc_xxx",
-  "channel_type": "group",
   "text": "done",
   "referrer": {
     "message_id": "om_xxx",
-    "channel_id": "oc_xxx"
+    "channel_id": "oc_xxx",
+    "target": {"kind": "conversation", "id": "oc_xxx"}
   }
 }
 ```
+
+Server 主动发送没有入站 `referrer`，必须显式传 `target`，并先检查 provider 的 `proactive_direct` / `proactive_group` 和 `target_kinds`。
+
+发送失败时，`POST /v1/message.create` 返回 HTTP `502` 和 `error: "provider_send_failed"`。如果 adapter 拿到了可安全公开的平台业务失败原因，响应还会通过限长的 `detail` 返回；可能包含凭证的任意网络错误不会原样回传。调用方可以在 `detail` 存在时展示该原因，或据此决定重试和 fallback。
 
 调用方不应该直接调用 provider-native send API。Provider 特有发送逻辑属于 provider adapter。
 

@@ -114,8 +114,7 @@ curl -X POST http://127.0.0.1:8787/v1/message.create \
   -d '{
     "provider": "memory",
     "connector": "memory",
-    "channel_id": "local",
-    "channel_type": "direct",
+    "target": {"kind": "user", "id": "local"},
     "text": "hello"
   }'
 ```
@@ -154,6 +153,27 @@ memory,wecom,lark,dingtalk,discord,kook,line,mail,matrix,onebot,qq,qqguild,slack
 ```
 
 When `UV_IM_PROVIDERS` is empty, the binary auto-loads providers that have detected credentials or webhook configuration. The `memory` provider is never auto-loaded.
+
+The 16 external providers have the following conversation and outbound capabilities. `Reply` means sending with an inbound `referrer`; proactive send does not require a current inbound message. `Conditional` means the adapter supports the operation when the platform-specific condition in the last column is met.
+
+| Provider | Direct inbound | Group inbound | Reply | Proactive direct | Proactive group | Outbound target kinds | Constraint |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| WeCom | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `conversation` | Uses the AI Bot WebSocket API. |
+| Lark / Feishu | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `conversation` | User targets are Open IDs; group/conversation targets are chat IDs. |
+| DingTalk | Yes | Yes | Yes | No | Conditional | `user`, `group` | Replies use the inbound session webhook; proactive sends use the configured group webhook. |
+| Discord | Yes | Yes | Yes | Yes | Yes | `user`, `channel`, `conversation` | A user target opens or reuses a Discord DM channel before sending. |
+| KOOK | Yes | Yes | Yes | Yes | Yes | `user`, `channel` | Direct messages use the KOOK direct-message API. |
+| LINE | Yes | Yes | Yes | Conditional | Conditional | `user`, `group`, `conversation` | Push targets must satisfy LINE friendship, recent-contact, or group-membership rules. |
+| Mail | Yes | No | Yes | Yes | No | `user` | The user target is an email address. |
+| Matrix | Yes (room) | Yes (room) | Yes | Conditional | Yes | `conversation` | Matrix message events do not identify direct versus group rooms; the target must be a known room ID. |
+| OneBot | Yes | Yes | Yes | Yes | Yes | `user`, `group` | Requires a compatible OneBot endpoint. |
+| QQ | Yes | Yes | Yes | Yes | Yes | `user`, `group` | This provider is the OneBot-style QQ adapter, not the official QQ Bot API. |
+| QQ Guild | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `channel` | Uses official QQ Bot user, group, and channel message endpoints. |
+| Slack | Yes | Yes | Yes | Yes | Yes | `user`, `channel`, `conversation` | Slack accepts a user ID in `chat.postMessage` to open a direct conversation. |
+| Telegram | Yes | Yes | Yes | Conditional | Yes | `user`, `group`, `conversation` | A user must contact the bot before the bot can send to that user. |
+| WeChat Official Account | Yes | No | Yes | Conditional | No | `user` | Customer-service messages are subject to the platform's interaction window and account rules. |
+| WhatsApp | Yes | Conditional | Yes | Conditional | Conditional | `user`, `group` | Groups API requires an eligible business account; free-form direct messages require the customer-service window. |
+| Zulip | Yes | Yes | Yes | Yes | Yes | `user`, `group` | Group targets are Zulip streams; the outbound topic is preserved when available. |
 
 Provider-specific settings are documented in [docs/configuration.md](docs/configuration.md). The important naming rule is:
 
@@ -248,7 +268,11 @@ Every inbound event uses the root `Event` shape:
     "message_id": "om_xxx",
     "parent_message_id": "om_parent",
     "root_message_id": "om_root",
-    "channel_id": "oc_xxx"
+    "channel_id": "oc_xxx",
+    "target": {
+      "kind": "conversation",
+      "id": "oc_xxx"
+    }
   },
   "addressed": true
 }
@@ -261,7 +285,7 @@ Important fields:
 - `channel.id`: the provider-native conversation ID.
 - `channel.type`: normalized conversation type, such as `direct`, `group`, `thread`, or `room`.
 - `addressed`: whether the message is addressed to the bot when the provider can tell.
-- `referrer`: provider information needed for replies or thread-aware outbound messages. When available, `parent_message_id` and `root_message_id` preserve the inbound reply ancestry separately from the current reply target in `message_id`.
+- `referrer`: provider information needed for replies or thread-aware outbound messages. Its `target` is the exact provider-native reply destination. When available, `parent_message_id` and `root_message_id` preserve the inbound reply ancestry separately from the current reply target in `message_id`.
 
 ## Send Messages
 
@@ -269,10 +293,12 @@ Send outbound text with `POST /v1/message.create`:
 
 ```json
 {
-  "provider": "wecom",
+  "provider": "lark",
   "connector": "main",
-  "channel_id": "wr_xxx",
-  "channel_type": "group",
+  "target": {
+    "kind": "user",
+    "id": "ou_xxx"
+  },
   "text": "done"
 }
 ```
@@ -283,18 +309,26 @@ Reply to a known message or thread by carrying the event referrer back:
 {
   "provider": "slack",
   "connector": "main",
-  "channel_id": "C123",
-  "channel_type": "group",
   "text": "done",
   "referrer": {
     "message_id": "1710000000.000100",
     "channel_id": "C123",
-    "thread_id": "1710000000.000100"
+    "thread_id": "1710000000.000100",
+    "target": {
+      "kind": "channel",
+      "id": "C123"
+    }
   }
 }
 ```
 
+`target.kind` is one of `user`, `group`, `channel`, or `conversation`. Use a kind declared in the provider's `capabilities.target_kinds`. For a reply, copy the inbound event's complete `referrer`; its target takes precedence over legacy channel fields. The legacy `channel_id` and `channel_type` fields remain accepted for protocol-v1 callers: `direct` resolves to `user`, `group` to `group`, `thread` to `channel`, and `room` or an empty type resolves to `conversation`. The legacy `channel_id` remains the provider-native existing conversation/channel ID; only the semantic kind is mapped, so it is not reinterpreted as a proactive user ID. A legacy request must include a channel ID or a message/reply handle. Unknown non-empty legacy channel types are rejected instead of being guessed.
+
+`GET /v1/meta` exposes `reply_message`, `proactive_direct`, `proactive_group`, and `target_kinds` for each configured provider. Callers should check these fields before displaying or invoking an outbound operation.
+
 Provider adapters map the normalized outbound request into the provider-native API. Unsupported rich elements or resource types should return explicit errors instead of being silently dropped.
+
+When a send fails, `POST /v1/message.create` returns HTTP `502` with `error: "provider_send_failed"`. If the adapter has a provider business failure reason that is safe to expose, the response also includes it as a bounded `detail`; arbitrary network errors are not echoed because they can contain credentials. Callers can surface `detail` or use it for retry and fallback decisions when it is present.
 
 ## Resources
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,20 +34,25 @@ func New(config Config) (*Provider, error) {
 		baseURL = "https://api.telegram.org"
 	}
 	base, err := httpchannel.New(httpchannel.Config{
-		ProviderID:    "telegram",
-		ConnectorID:   firstNonEmpty(config.ConnectorID, "telegram"),
-		BaseURL:       baseURL,
-		Token:         config.Token,
-		WebhookSecret: config.WebhookSecret,
-		HTTPClient:    config.HTTPClient,
-		ResourceStore: config.ResourceStore,
-		Decode:        Decode,
-		Send:          Send,
+		ProviderID:        "telegram",
+		ConnectorID:       firstNonEmpty(config.ConnectorID, "telegram"),
+		BaseURL:           baseURL,
+		Token:             config.Token,
+		WebhookSecret:     config.WebhookSecret,
+		HTTPClient:        config.HTTPClient,
+		ResourceStore:     config.ResourceStore,
+		Decode:            Decode,
+		Send:              Send,
+		ParseSendResponse: ParseSendResponse,
 		Capabilities: uvim.Capabilities{
 			Inbound:          true,
 			Outbound:         true,
 			DirectMessage:    true,
 			GroupMessage:     true,
+			ReplyMessage:     true,
+			ProactiveDirect:  true,
+			ProactiveGroup:   true,
+			TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
 			DownloadResource: true,
 			ResourceKinds:    []string{uvim.ElementImage, uvim.ElementAudio, uvim.ElementVideo, uvim.ElementFile},
 			ChannelTypes:     []string{uvim.ChannelDirect, uvim.ChannelGroup},
@@ -159,8 +165,10 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	messageID := fmt.Sprint(msg.MessageID)
 	chatID := fmt.Sprint(msg.Chat.ID)
 	channelType := uvim.ChannelDirect
+	targetKind := uvim.TargetUser
 	if msg.Chat.Type == "group" || msg.Chat.Type == "supergroup" || msg.Chat.Type == "channel" {
 		channelType = uvim.ChannelGroup
+		targetKind = uvim.TargetGroup
 	}
 	refs := telegramResources(msg.Document, msg.Audio, msg.Video, msg.Photo, config)
 	text := firstNonEmpty(msg.Text, msg.Caption)
@@ -172,7 +180,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Channel:   uvim.Channel{ID: chatID, Type: channelType, Name: msg.Chat.Title},
 		User:      uvim.User{ID: fmt.Sprint(msg.From.ID), Name: strings.TrimSpace(msg.From.FirstName + " " + msg.From.LastName), DisplayName: msg.From.Username},
 		Message:   uvim.Message{ID: messageID, Text: text, Type: "message", Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: messageID, ChannelID: chatID},
+		Referrer:  uvim.Referrer{MessageID: messageID, ChannelID: chatID, Target: &uvim.OutboundTarget{ID: chatID, Kind: targetKind}},
 		Addressed: true,
 	}, true, nil
 }
@@ -208,7 +216,37 @@ func telegramResources(document, audio, video *telegramFile, photos []struct {
 }
 
 func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Request, error) {
-	return httpchannel.Request{Path: "/bot" + config.Token + "/sendMessage", Body: map[string]any{"chat_id": msg.ChannelID, "text": msg.Text}, NoAuth: true}, nil
+	target := msg.ResolvedTarget()
+	if target.ID == "" {
+		return httpchannel.Request{}, fmt.Errorf("telegram send: target chat id is required")
+	}
+	body := map[string]any{"chat_id": target.ID, "text": msg.Text}
+	if replyTo, err := strconv.ParseInt(msg.Referrer.MessageID, 10, 64); err == nil && replyTo != 0 {
+		body["reply_parameters"] = map[string]any{"message_id": replyTo}
+	}
+	return httpchannel.Request{Path: "/bot" + config.Token + "/sendMessage", Body: body, NoAuth: true}, nil
+}
+
+func ParseSendResponse(raw []byte) (string, error) {
+	var response struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+		ErrorCode   int    `json:"error_code"`
+		Result      struct {
+			MessageID int64 `json:"message_id"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	if !response.OK {
+		businessErr := fmt.Errorf("error_code=%d description=%q", response.ErrorCode, response.Description)
+		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+	}
+	if response.Result.MessageID == 0 {
+		return "", nil
+	}
+	return strconv.FormatInt(response.Result.MessageID, 10), nil
 }
 
 func firstNonEmpty(values ...string) string {

@@ -52,6 +52,9 @@ func New(config Config) (*Provider, error) {
 			Inbound:          true,
 			Outbound:         true,
 			DirectMessage:    true,
+			ReplyMessage:     true,
+			ProactiveDirect:  true,
+			TargetKinds:      []string{uvim.TargetUser},
 			DownloadResource: true,
 			ResourceKinds:    []string{uvim.ElementImage, uvim.ElementAudio, uvim.ElementVideo, uvim.ElementFile},
 			ChannelTypes:     []string{uvim.ChannelDirect},
@@ -85,6 +88,9 @@ func (p *Provider) ServeWebhook(w http.ResponseWriter, req *http.Request, sink u
 }
 
 func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, fmt.Errorf("mail send: %w", err)
+	}
 	if len(msg.Resources) > 0 || hasNonTextElements(msg.Elements) {
 		return uvim.SendResult{}, fmt.Errorf("mail send: resources and rich elements are not supported")
 	}
@@ -94,7 +100,7 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 	if strings.TrimSpace(msg.Text) == "" {
 		return uvim.SendResult{}, fmt.Errorf("mail send: text is required")
 	}
-	to := strings.TrimSpace(firstNonEmpty(msg.ChannelID, msg.Referrer.ChannelID))
+	to := msg.ResolvedTarget().ID
 	if _, err := mail.ParseAddress(to); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("mail send: recipient is required")
 	}
@@ -108,7 +114,7 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 	if strings.TrimSpace(p.config.SMTPAddr) == "" {
 		return uvim.SendResult{}, fmt.Errorf("mail send: smtp addr is required")
 	}
-	if err := smtp.SendMail(p.config.SMTPAddr, p.auth(), from, []string{to}, mailBytes(from, to, subject(msg), msg.Text, p.now().UTC())); err != nil {
+	if err := smtp.SendMail(p.config.SMTPAddr, p.auth(), from, []string{to}, mailBytes(from, to, subject(msg), msg.Text, msg.Referrer.MessageID, p.now().UTC())); err != nil {
 		return uvim.SendResult{}, err
 	}
 	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: uvim.FirstNonEmpty(msg.ID, uvim.NewID("mail-msg")), Time: p.now().UTC()}, nil
@@ -164,7 +170,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Channel:   uvim.Channel{ID: msg.From, Type: uvim.ChannelDirect, Name: msg.Subject},
 		User:      uvim.User{ID: msg.From, Name: msg.FromName},
 		Message:   uvim.Message{ID: id, Text: text, Type: "email", Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: id, ChannelID: msg.From},
+		Referrer:  uvim.Referrer{MessageID: id, ChannelID: msg.From, Target: &uvim.OutboundTarget{ID: msg.From, Kind: uvim.TargetUser}},
 		Addressed: true,
 	}, true, nil
 }
@@ -180,7 +186,7 @@ func (p *Provider) auth() smtp.Auth {
 	return smtp.PlainAuth("", p.config.SMTPUsername, p.config.SMTPPassword, host)
 }
 
-func mailBytes(from, to, subject, body string, now time.Time) []byte {
+func mailBytes(from, to, subject, body, replyTo string, now time.Time) []byte {
 	var buf bytes.Buffer
 	headers := map[string]string{
 		"From":         from,
@@ -189,6 +195,10 @@ func mailBytes(from, to, subject, body string, now time.Time) []byte {
 		"Date":         now.Format(time.RFC1123Z),
 		"MIME-Version": "1.0",
 		"Content-Type": `text/plain; charset="utf-8"`,
+	}
+	if strings.TrimSpace(replyTo) != "" {
+		headers["In-Reply-To"] = strings.TrimSpace(replyTo)
+		headers["References"] = strings.TrimSpace(replyTo)
 	}
 	for key, value := range headers {
 		buf.WriteString(key)

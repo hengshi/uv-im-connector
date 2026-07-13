@@ -44,7 +44,7 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 		{
 			name:        "discord",
 			decode:      discord.Decode,
-			raw:         `{"id":"m1","channel_id":"c1","content":"hello","author":{"id":"u1","username":"Ada"},"attachments":[{"id":"a1","filename":"pic.png","url":"https://cdn.test/pic.png","content_type":"image/png","size":3}]}`,
+			raw:         `{"id":"m1","channel_id":"c1","guild_id":"g1","content":"hello","author":{"id":"u1","username":"Ada"},"attachments":[{"id":"a1","filename":"pic.png","url":"https://cdn.test/pic.png","content_type":"image/png","size":3}]}`,
 			want:        "discord",
 			channelType: uvim.ChannelGroup,
 			wantText:    "hello",
@@ -83,7 +83,7 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 			config:      httpchannel.Config{BaseURL: "https://matrix.test"},
 			raw:         `{"event_id":"m1","room_id":"c1","sender":"u1","type":"m.room.message","content":{"body":"pic.png","msgtype":"m.image","url":"mxc://matrix.test/media","info":{"mimetype":"image/png","size":3}}}`,
 			want:        "matrix",
-			channelType: uvim.ChannelGroup,
+			channelType: uvim.ChannelRoom,
 			wantText:    "pic.png",
 			wantRefs:    1,
 		},
@@ -149,6 +149,14 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 			wantRefs:    1,
 		},
 		{
+			name:        "whatsapp group",
+			decode:      whatsapp.Decode,
+			raw:         `{"entry":[{"changes":[{"value":{"messages":[{"id":"m1","from":"u1","type":"text","text":{"body":"hello"},"context":{"group_id":"g1","group_subject":"Team"}}]}}]}]}`,
+			want:        "whatsapp",
+			channelType: uvim.ChannelGroup,
+			wantText:    "hello",
+		},
+		{
 			name:        "zulip",
 			decode:      zulip.Decode,
 			config:      httpchannel.Config{BaseURL: "https://zulip.test"},
@@ -183,8 +191,46 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 			if event.Referrer.MessageID == "" || event.Referrer.ChannelID == "" {
 				t.Fatalf("referrer missing: %+v", event.Referrer)
 			}
+			if event.Referrer.Target == nil || event.Referrer.Target.ID == "" || event.Referrer.Target.Kind == "" {
+				t.Fatalf("reply target missing: event=%+v referrer=%+v", event.Channel, event.Referrer)
+			}
 			if len(event.Message.Resources) != tt.wantRefs {
 				t.Fatalf("resources = %+v, want %d", event.Message.Resources, tt.wantRefs)
+			}
+		})
+	}
+}
+
+func TestProviderDecodersNormalizeDirectMessages(t *testing.T) {
+	tests := []struct {
+		name   string
+		decode httpchannel.DecodeFunc
+		raw    string
+	}{
+		{name: "dingtalk", decode: dingtalk.Decode, raw: `{"msgId":"m1","msgtype":"text","senderStaffId":"u1","conversationId":"c1","conversationType":"1","text":{"content":"hello"}}`},
+		{name: "discord", decode: discord.Decode, raw: `{"id":"m1","channel_id":"D1","content":"hello","author":{"id":"u1"}}`},
+		{name: "kook", decode: kook.Decode, raw: `{"d":{"msg_id":"m1","channel_type":"PERSON","target_id":"bot1","author_id":"u1","content":"hello","type":1}}`},
+		{name: "line", decode: line.Decode, raw: `{"events":[{"replyToken":"r1","source":{"type":"user","userId":"u1"},"message":{"id":"m1","type":"text","text":"hello"}}]}`},
+		{name: "onebot", decode: onebot.Decode, raw: `{"post_type":"message","message_type":"private","message_id":1,"user_id":2,"raw_message":"hello"}`},
+		{name: "qq", decode: qq.Decode, raw: `{"post_type":"message","message_type":"private","message_id":1,"user_id":2,"raw_message":"hello"}`},
+		{name: "qqguild", decode: qqguild.Decode, raw: `{"id":"m1","content":"hello","author":{"id":"u1"}}`},
+		{name: "slack", decode: slack.Decode, raw: `{"type":"event_callback","event":{"type":"message","user":"u1","channel":"D1","channel_type":"im","text":"hello","ts":"m1"}}`},
+		{name: "zulip", decode: zulip.Decode, raw: `{"id":1,"sender_id":2,"sender_email":"ada@example.test","content":"hello","type":"private"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event, ok, err := tt.decode([]byte(tt.raw), httpchannel.Config{ConnectorID: "main"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !ok {
+				t.Fatal("decode ok = false")
+			}
+			if event.Channel.Type != uvim.ChannelDirect || event.Channel.ID == "" || event.User.ID == "" {
+				t.Fatalf("event = %+v", event)
+			}
+			if event.Referrer.Target == nil || event.Referrer.Target.ID == "" || event.Referrer.Target.Kind == "" {
+				t.Fatalf("reply target missing: %+v", event.Referrer)
 			}
 		})
 	}

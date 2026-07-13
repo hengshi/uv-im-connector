@@ -1,6 +1,11 @@
 package wecom
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,6 +50,9 @@ func TestDecodeMessageFile(t *testing.T) {
 	}
 	if event.Type != uvim.EventMessageCreate || event.Channel.Type != uvim.ChannelGroup {
 		t.Fatalf("event = %+v", event)
+	}
+	if event.Referrer.Target == nil || event.Referrer.Target.ID != "chat-1" || event.Referrer.Target.Kind != uvim.TargetGroup {
+		t.Fatalf("reply target = %+v", event.Referrer.Target)
 	}
 	if len(event.Message.Resources) != 1 || event.Message.Resources[0].Name != "log.txt" {
 		t.Fatalf("resources = %+v", event.Message.Resources)
@@ -120,3 +128,82 @@ func TestSendRejectsUnsupportedResources(t *testing.T) {
 		t.Fatal("Send() error = nil, want unsupported resource error")
 	}
 }
+
+func TestProactiveSendUsesMarkdownForDirectUser(t *testing.T) {
+	provider, err := New(Config{BotID: "bot", Secret: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := &sendTestConn{}
+	conn.onWrite = func(raw []byte) {
+		var sent frame
+		if err := json.Unmarshal(raw, &sent); err != nil {
+			t.Error(err)
+			return
+		}
+		conn.sent = sent
+		code := 0
+		provider.resolvePending(sent.Headers.ReqID, frame{Headers: sent.Headers, ErrCode: &code})
+	}
+	provider.activeMu.Lock()
+	provider.activeConn = conn
+	provider.activeWrite = &sync.Mutex{}
+	provider.activeMu.Unlock()
+
+	_, err = provider.Send(context.Background(), uvim.OutboundMessage{
+		Provider: "wecom",
+		Target:   &uvim.OutboundTarget{ID: "ChenJunHao", Kind: uvim.TargetUser},
+		Text:     "upgrade complete",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conn.sent.Cmd != cmdSend || conn.sent.Body["chatid"] != "ChenJunHao" || conn.sent.Body["msgtype"] != "markdown" {
+		t.Fatalf("sent frame = %+v", conn.sent)
+	}
+	markdown, _ := conn.sent.Body["markdown"].(map[string]any)
+	if markdown["content"] != "upgrade complete" {
+		t.Fatalf("markdown = %+v", markdown)
+	}
+}
+
+func TestSendReturnsProviderAckError(t *testing.T) {
+	provider, err := New(Config{BotID: "bot", Secret: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := &sendTestConn{}
+	conn.onWrite = func(raw []byte) {
+		var sent frame
+		_ = json.Unmarshal(raw, &sent)
+		code := 40058
+		provider.resolvePending(sent.Headers.ReqID, frame{Headers: sent.Headers, ErrCode: &code, ErrMsg: "invalid msgtype"})
+	}
+	provider.activeMu.Lock()
+	provider.activeConn = conn
+	provider.activeWrite = &sync.Mutex{}
+	provider.activeMu.Unlock()
+
+	_, err = provider.Send(context.Background(), uvim.OutboundMessage{ChannelID: "u1", ChannelType: uvim.ChannelDirect, Text: "hello"})
+	if err == nil || !strings.Contains(err.Error(), "errcode=40058") || !strings.Contains(err.Error(), "invalid msgtype") {
+		t.Fatalf("Send() error = %v", err)
+	}
+}
+
+type sendTestConn struct {
+	onWrite func([]byte)
+	sent    frame
+}
+
+func (c *sendTestConn) ReadMessage() (int, []byte, error) {
+	return 0, nil, errors.New("not implemented")
+}
+func (c *sendTestConn) WriteMessage(_ int, raw []byte) error {
+	if c.onWrite != nil {
+		c.onWrite(raw)
+	}
+	return nil
+}
+func (c *sendTestConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *sendTestConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *sendTestConn) Close() error                     { return nil }

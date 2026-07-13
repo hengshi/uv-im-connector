@@ -29,10 +29,14 @@ Connector 是某个 provider 下的一组具体账号身份。典型例子：
 {
   "provider": "lark",
   "connector": "sandbox",
-  "channel_id": "oc_xxx",
+  "target": {"kind": "conversation", "id": "oc_xxx"},
   "text": "hello"
 }
 ```
+
+## Target
+
+Target 是出站消息的精确目的地，由 `id` 和 `kind` 组成。`kind` 是 `user`、`group`、`channel` 或 `conversation`。Server 主动发送必须显式提供 target，并使用 provider 在 `capabilities.target_kinds` 中声明的 kind。入站事件已经在 `referrer.target` 中提供精确回复目标，调用方回复时不应重新推断。
 
 ## Channel
 
@@ -67,7 +71,8 @@ Channel 是 provider 原生会话目标，归一化为：
   "root_message_id": "1710000000.000001",
   "channel_id": "C123",
   "thread_id": "1710000000.000100",
-  "reply_token": "..."
+  "reply_token": "...",
+  "target": {"kind": "channel", "id": "C123"}
 }
 ```
 
@@ -81,6 +86,8 @@ Capabilities 描述 provider 支持什么：
 - outbound messages；
 - 私聊和群聊；
 - thread reply；
+- reply message、Server 主动私聊和主动群聊；
+- outbound target kind；
 - resource upload / download；
 - resource kind；
 - channel type。

@@ -91,6 +91,7 @@ func DecodePayload(payload []byte, config DecoderConfig) (uvim.Event, bool, erro
 			ParentMessageID: evt.Message.ParentID,
 			RootMessageID:   evt.Message.RootID,
 			ChannelID:       channelID,
+			Target:          &uvim.OutboundTarget{ID: channelID, Kind: uvim.TargetConversation},
 		},
 		Addressed: channelType != uvim.ChannelGroup || containsBotMention(evt.Message.Mentions, config.BotOpenID, config.BotUnionID),
 	}, true, nil

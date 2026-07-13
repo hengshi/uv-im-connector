@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -233,9 +234,18 @@ func (h *Hub) handleMessageCreate(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusNotFound, "provider_not_found")
 		return
 	}
+	if err := uvim.ValidateOutboundTarget(msg, provider.Capabilities()); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_target")
+		return
+	}
 	result, err := provider.Send(req.Context(), msg)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "provider_send_failed")
+		reason := uvim.ProviderSendErrorDetail(err)
+		if reason == "" {
+			reason = "internal_error"
+		}
+		slog.Error("provider send failed", "provider", provider.ID(), "connector", provider.ConnectorID(), "reason", reason)
+		writeProviderError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -345,6 +355,14 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]any{"ok": false, "error": message})
+}
+
+func writeProviderError(w http.ResponseWriter, err error) {
+	body := map[string]any{"ok": false, "error": "provider_send_failed"}
+	if detail := uvim.ProviderSendErrorDetail(err); detail != "" {
+		body["detail"] = detail
+	}
+	writeJSON(w, http.StatusBadGateway, body)
 }
 
 func (h *Hub) resolveEventResources(ctx context.Context, event uvim.Event) uvim.Event {

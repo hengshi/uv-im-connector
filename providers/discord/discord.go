@@ -1,7 +1,12 @@
 package discord
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"strings"
 
 	uvim "github.com/hengshi/uv-im-connector"
@@ -21,21 +26,28 @@ func New(config Config) (*httpchannel.Provider, error) {
 		baseURL = "https://discord.com"
 	}
 	return httpchannel.New(httpchannel.Config{
-		ProviderID:    "discord",
-		ConnectorID:   firstNonEmpty(config.ConnectorID, "discord"),
-		BaseURL:       baseURL,
-		Token:         config.Token,
-		WebhookSecret: config.WebhookSecret,
-		Decode:        Decode,
-		Send:          Send,
+		ProviderID:        "discord",
+		ConnectorID:       firstNonEmpty(config.ConnectorID, "discord"),
+		BaseURL:           baseURL,
+		Token:             config.Token,
+		WebhookSecret:     config.WebhookSecret,
+		Decode:            Decode,
+		PrepareSend:       PrepareSend,
+		Send:              Send,
+		ParseSendResponse: ParseSendResponse,
 		Capabilities: uvim.Capabilities{
 			Inbound:          true,
 			Outbound:         true,
+			DirectMessage:    true,
 			GroupMessage:     true,
 			ThreadReply:      true,
+			ReplyMessage:     true,
+			ProactiveDirect:  true,
+			ProactiveGroup:   true,
+			TargetKinds:      []string{uvim.TargetUser, uvim.TargetChannel, uvim.TargetConversation},
 			DownloadResource: true,
 			ResourceKinds:    []string{uvim.ElementImage, uvim.ElementVideo, uvim.ElementAudio, uvim.ElementFile},
-			ChannelTypes:     []string{uvim.ChannelGroup, uvim.ChannelThread},
+			ChannelTypes:     []string{uvim.ChannelDirect, uvim.ChannelGroup, uvim.ChannelThread},
 		},
 	})
 }
@@ -79,29 +91,92 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 			refs = append(refs, uvim.ResourceRef{Provider: "discord", Connector: config.ConnectorID, Kind: kind, Name: attachment.Filename, URL: attachment.URL, MIME: attachment.ContentType, SizeBytes: attachment.Size})
 		}
 	}
+	channelType := uvim.ChannelGroup
+	if msg.GuildID == "" {
+		channelType = uvim.ChannelDirect
+	}
 	return uvim.Event{
 		ID:        msg.ID,
 		Type:      uvim.EventMessageCreate,
 		Provider:  "discord",
 		Connector: config.ConnectorID,
-		Channel:   uvim.Channel{ID: msg.ChannelID, Type: uvim.ChannelGroup},
+		Channel:   uvim.Channel{ID: msg.ChannelID, Type: channelType},
 		User:      uvim.User{ID: msg.Author.ID, Name: msg.Author.Username},
 		Message:   uvim.Message{ID: msg.ID, Text: msg.Content, Type: "message", Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: msg.ID, ChannelID: msg.ChannelID},
+		Referrer:  uvim.Referrer{MessageID: msg.ID, ChannelID: msg.ChannelID, Target: &uvim.OutboundTarget{ID: msg.ChannelID, Kind: uvim.TargetChannel}},
 		Addressed: true,
 	}, true, nil
 }
 
 func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Request, error) {
-	channelID := msg.ChannelID
-	if channelID == "" {
-		channelID = msg.Referrer.ChannelID
+	target := msg.ResolvedTarget()
+	if target.ID == "" {
+		return httpchannel.Request{}, fmt.Errorf("discord send: target id is required")
 	}
 	header := map[string][]string{}
 	if auth := httpchannel.BotAuthorization(config.Token); auth != "" {
 		header["Authorization"] = []string{auth}
 	}
-	return httpchannel.Request{Path: "/api/v10/channels/" + channelID + "/messages", Body: map[string]any{"content": msg.Text}, Header: header}, nil
+	body := map[string]any{"content": msg.Text}
+	if msg.Referrer.MessageID != "" {
+		body["message_reference"] = map[string]string{"message_id": msg.Referrer.MessageID}
+	}
+	return httpchannel.Request{Path: "/api/v10/channels/" + target.ID + "/messages", Body: body, Header: header}, nil
+}
+
+func PrepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchannel.Config) (uvim.OutboundMessage, error) {
+	target := msg.ResolvedTarget()
+	if msg.Target == nil || target.Kind != uvim.TargetUser {
+		return msg, nil
+	}
+	raw, _ := json.Marshal(map[string]string{"recipient_id": target.ID})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(config.BaseURL, "/")+"/api/v10/users/@me/channels", bytes.NewReader(raw))
+	if err != nil {
+		return msg, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	if auth := httpchannel.BotAuthorization(config.Token); auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	resp, err := config.HTTPClient.Do(req)
+	if err != nil {
+		return msg, err
+	}
+	defer resp.Body.Close()
+	responseRaw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return msg, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return msg, fmt.Errorf("discord create dm: http %d: %s", resp.StatusCode, strings.TrimSpace(string(responseRaw)))
+	}
+	var channel struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(responseRaw, &channel); err != nil {
+		return msg, fmt.Errorf("discord create dm: decode response: %w", err)
+	}
+	if channel.ID == "" {
+		return msg, fmt.Errorf("discord create dm: channel id missing")
+	}
+	msg.Target = &uvim.OutboundTarget{ID: channel.ID, Kind: uvim.TargetChannel}
+	return msg, nil
+}
+
+func ParseSendResponse(raw []byte) (string, error) {
+	var response struct {
+		ID      string `json:"id"`
+		Message string `json:"message"`
+		Code    any    `json:"code"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	if response.ID == "" {
+		businessErr := fmt.Errorf("message id missing: code=%v message=%q", response.Code, response.Message)
+		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+	}
+	return response.ID, nil
 }
 
 func firstNonEmpty(values ...string) string {

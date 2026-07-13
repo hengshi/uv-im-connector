@@ -144,6 +144,10 @@ func (p *Provider) Capabilities() uvim.Capabilities {
 		DirectMessage:    true,
 		GroupMessage:     true,
 		ThreadReply:      true,
+		ReplyMessage:     true,
+		ProactiveDirect:  true,
+		ProactiveGroup:   true,
+		TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
 		UploadResource:   false,
 		DownloadResource: true,
 		ResourceKinds:    []string{uvim.ElementImage, uvim.ElementVideo, uvim.ElementFile},
@@ -250,6 +254,9 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 }
 
 func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, fmt.Errorf("wecom send: %w", err)
+	}
 	if len(msg.Resources) > 0 || hasNonTextElements(msg.Elements) {
 		return uvim.SendResult{}, fmt.Errorf("wecom send: resources and rich elements are not supported")
 	}
@@ -284,15 +291,16 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 		}
 		return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: streamID, Time: time.Now().UTC()}, nil
 	}
-	recipient := strings.TrimSpace(msg.ChannelID)
+	target := msg.ResolvedTarget()
+	recipient := target.ID
 	if recipient == "" {
-		return uvim.SendResult{}, fmt.Errorf("wecom send: channel_id is required")
+		return uvim.SendResult{}, fmt.Errorf("wecom send: target id is required")
 	}
 	out.Cmd = cmdSend
 	out.Body = map[string]any{
 		"chatid":  recipient,
-		"msgtype": "text",
-		"text": map[string]any{
+		"msgtype": "markdown",
+		"markdown": map[string]any{
 			"content": text,
 		},
 	}
@@ -362,6 +370,10 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 	userID := uvim.StringValue(from["userid"])
 	channelID := uvim.FirstNonEmpty(uvim.StringValue(body["chatid"]), userID)
 	messageID := uvim.FirstNonEmpty(uvim.StringValue(body["msgid"]), in.Headers.ReqID)
+	targetKind := uvim.TargetUser
+	if channelType == uvim.ChannelGroup {
+		targetKind = uvim.TargetGroup
+	}
 	return uvim.Event{
 		ID:        uvim.FirstNonEmpty(uvim.StringValue(body["msgid"]), in.Headers.ReqID),
 		Type:      uvim.EventMessageCreate,
@@ -378,7 +390,7 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 			Elements:  elementsFromTextAndResources(text, resources),
 			Resources: resources,
 		},
-		Referrer:  uvim.Referrer{MessageID: messageID, ChannelID: channelID, ReplyToken: in.Headers.ReqID},
+		Referrer:  uvim.Referrer{MessageID: messageID, ChannelID: channelID, ReplyToken: in.Headers.ReqID, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
 		Addressed: channelType != uvim.ChannelGroup,
 	}, true
 }
@@ -532,7 +544,8 @@ func (p *Provider) sendWithAck(ctx context.Context, conn WSConn, writeMu *sync.M
 		return ctx.Err()
 	case ack := <-ch:
 		if ack.ErrCode != nil && *ack.ErrCode != 0 {
-			return fmt.Errorf("wecom ack error: errcode=%d errmsg=%q", *ack.ErrCode, ack.ErrMsg)
+			sendErr := fmt.Errorf("wecom ack error: errcode=%d errmsg=%q", *ack.ErrCode, ack.ErrMsg)
+			return uvim.NewProviderSendError(sendErr.Error(), sendErr)
 		}
 		return nil
 	}

@@ -129,6 +129,10 @@ func (p *Provider) Capabilities() uvim.Capabilities {
 		DirectMessage:    true,
 		GroupMessage:     true,
 		ThreadReply:      true,
+		ReplyMessage:     true,
+		ProactiveDirect:  true,
+		ProactiveGroup:   true,
+		TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
 		UploadResource:   false,
 		DownloadResource: true,
 		ResourceKinds:    []string{uvim.ElementImage, uvim.ElementAudio, uvim.ElementVideo, uvim.ElementFile},
@@ -242,6 +246,9 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 }
 
 func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, fmt.Errorf("lark send: %w", err)
+	}
 	if len(msg.Resources) > 0 || hasNonTextElements(msg.Elements) {
 		return uvim.SendResult{}, fmt.Errorf("lark send: resources and rich elements are not supported")
 	}
@@ -252,21 +259,32 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 	if text == "" {
 		return uvim.SendResult{}, fmt.Errorf("lark send: text is required")
 	}
-	token, err := p.tenantAccessToken(ctx)
-	if err != nil {
-		return uvim.SendResult{}, err
-	}
 	contentRaw, _ := json.Marshal(map[string]string{"text": text})
 	body := map[string]any{"msg_type": "text", "content": string(contentRaw)}
 	endpoint := ""
 	base := p.baseURL()
 	if strings.TrimSpace(msg.Referrer.MessageID) != "" {
 		endpoint = base + "/open-apis/im/v1/messages/" + url.PathEscape(msg.Referrer.MessageID) + "/reply"
-	} else if strings.TrimSpace(msg.ChannelID) != "" {
-		endpoint = base + "/open-apis/im/v1/messages?receive_id_type=chat_id"
-		body["receive_id"] = msg.ChannelID
 	} else {
-		return uvim.SendResult{}, fmt.Errorf("lark send: message_id or channel_id is required")
+		target := msg.ResolvedTarget()
+		if target.ID == "" {
+			return uvim.SendResult{}, fmt.Errorf("lark send: message_id or target id is required")
+		}
+		receiveIDType := "chat_id"
+		typedTarget := msg.Target != nil || msg.Referrer.Target != nil
+		if typedTarget && target.Kind == uvim.TargetUser && !strings.HasPrefix(target.ID, "ou_") {
+			sendErr := fmt.Errorf("lark send: user target id must be an Open ID")
+			return uvim.SendResult{}, uvim.NewProviderSendError(sendErr.Error(), sendErr)
+		}
+		if (typedTarget && target.Kind == uvim.TargetUser) || strings.HasPrefix(target.ID, "ou_") {
+			receiveIDType = "open_id"
+		}
+		endpoint = base + "/open-apis/im/v1/messages?receive_id_type=" + receiveIDType
+		body["receive_id"] = target.ID
+	}
+	token, err := p.tenantAccessToken(ctx)
+	if err != nil {
+		return uvim.SendResult{}, err
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -293,7 +311,8 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 		return uvim.SendResult{}, fmt.Errorf("decode lark send response: %w", err)
 	}
 	if decoded.Code != 0 {
-		return uvim.SendResult{}, fmt.Errorf("lark send: code=%d msg=%q", decoded.Code, decoded.Msg)
+		sendErr := fmt.Errorf("lark send: code=%d msg=%q", decoded.Code, decoded.Msg)
+		return uvim.SendResult{}, uvim.NewProviderSendError(sendErr.Error(), sendErr)
 	}
 	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: decoded.Data.MessageID, Time: time.Now().UTC()}, nil
 }

@@ -12,6 +12,9 @@ Provider conformance 是新增渠道的质量门。
 - 声明支持 download 时，在 event persistence 前把可下载 inbound provider resources 解析为 `internal_url`；
 - 当渠道提供文件 / 图片 / 音频 / 视频时，暴露为 `ResourceRef`；
 - 当渠道提供 reply/thread 能力时，支持 `Referrer`；
+- reply-capable 入站事件在 `referrer.target` 中提供精确回复目标；
+- 声明 outbound 时，至少声明 `reply_message`、`proactive_direct` 或 `proactive_group` 中的一种发送模式；
+- 声明 outbound 时，如实声明可接受的 `target_kinds`，并拒绝不支持的 target kind；
 - 对不支持的 outbound resources 或 rich elements 返回显式错误，而不是静默丢弃。
 
 ## 测试形态
@@ -22,7 +25,9 @@ Provider tests 应覆盖：
 - inbound group/channel message normalization；
 - 支持的 resource kind inbound resource normalization；
 - outbound direct message；
+- outbound group message；
 - 使用 `Referrer` 的 outbound reply；
+- provider API 返回 HTTP 2xx 但业务状态失败时，返回明确错误；
 - resource download；
 - provider health；
 - duplicate event key stability。
@@ -39,6 +44,7 @@ Provider tests 应覆盖：
 - 所有内置 provider 的 provider metadata 和 health shape；
 - DingTalk、Discord、KOOK、LINE、Mail、Matrix、OneBot、QQ、QQ Guild、Slack、Telegram、WeChat Official Account、WhatsApp 和 Zulip 的 inbound decoder normalization；
 - WeCom 和 Lark provider-specific inbound/resource 行为；
-- bearer token、bot token、URL token 和 form-encoded providers 的代表性 outbound HTTP shape；
+- 16 个外部 provider 的 direct/group/reply/proactive capability matrix；
+- bearer token、bot token、URL token 和 form-encoded providers 的代表性 outbound target、HTTP shape 和业务 ACK 解析；
 - 从 `/v1/webhook/{provider}/{connector}` 到 normalized event log 的 webhook routing；
 - event persistence 前的 resource download，以及 public resource sanitization。
