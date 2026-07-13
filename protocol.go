@@ -1,6 +1,8 @@
 package uvim
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -19,6 +21,13 @@ const (
 	ChannelGroup  = "group"
 	ChannelThread = "thread"
 	ChannelRoom   = "room"
+)
+
+const (
+	TargetUser         = "user"
+	TargetGroup        = "group"
+	TargetChannel      = "channel"
+	TargetConversation = "conversation"
 )
 
 const (
@@ -157,12 +166,13 @@ func IsResourceElement(elementType string) bool {
 }
 
 type Referrer struct {
-	MessageID       string `json:"message_id,omitempty"`
-	ParentMessageID string `json:"parent_message_id,omitempty"`
-	RootMessageID   string `json:"root_message_id,omitempty"`
-	ChannelID       string `json:"channel_id,omitempty"`
-	ThreadID        string `json:"thread_id,omitempty"`
-	ReplyToken      string `json:"reply_token,omitempty"`
+	MessageID       string          `json:"message_id,omitempty"`
+	ParentMessageID string          `json:"parent_message_id,omitempty"`
+	RootMessageID   string          `json:"root_message_id,omitempty"`
+	ChannelID       string          `json:"channel_id,omitempty"`
+	ThreadID        string          `json:"thread_id,omitempty"`
+	ReplyToken      string          `json:"reply_token,omitempty"`
+	Target          *OutboundTarget `json:"target,omitempty"`
 }
 
 type ResourceRef struct {
@@ -209,6 +219,10 @@ type Capabilities struct {
 	DirectMessage    bool     `json:"direct_message,omitempty"`
 	GroupMessage     bool     `json:"group_message,omitempty"`
 	ThreadReply      bool     `json:"thread_reply,omitempty"`
+	ReplyMessage     bool     `json:"reply_message,omitempty"`
+	ProactiveDirect  bool     `json:"proactive_direct,omitempty"`
+	ProactiveGroup   bool     `json:"proactive_group,omitempty"`
+	TargetKinds      []string `json:"target_kinds,omitempty"`
 	EditMessage      bool     `json:"edit_message,omitempty"`
 	DeleteMessage    bool     `json:"delete_message,omitempty"`
 	UploadResource   bool     `json:"upload_resource,omitempty"`
@@ -217,10 +231,16 @@ type Capabilities struct {
 	ChannelTypes     []string `json:"channel_types,omitempty"`
 }
 
+type OutboundTarget struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+}
+
 type OutboundMessage struct {
 	ID          string            `json:"id,omitempty"`
 	Provider    string            `json:"provider"`
 	Connector   string            `json:"connector,omitempty"`
+	Target      *OutboundTarget   `json:"target,omitempty"`
 	ChannelID   string            `json:"channel_id,omitempty"`
 	ChannelType string            `json:"channel_type,omitempty"`
 	Text        string            `json:"text,omitempty"`
@@ -231,11 +251,123 @@ type OutboundMessage struct {
 	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
+// ResolvedTarget prefers an explicit send target, then the adapter-provided
+// reply target. Legacy channel_id remains a provider-native conversation ID;
+// channel_type supplies only its semantic target kind.
+func (m OutboundMessage) ResolvedTarget() OutboundTarget {
+	if m.Target != nil {
+		return OutboundTarget{
+			ID:   strings.TrimSpace(m.Target.ID),
+			Kind: strings.ToLower(strings.TrimSpace(m.Target.Kind)),
+		}
+	}
+	if m.Referrer.Target != nil {
+		return OutboundTarget{
+			ID:   strings.TrimSpace(m.Referrer.Target.ID),
+			Kind: strings.ToLower(strings.TrimSpace(m.Referrer.Target.Kind)),
+		}
+	}
+	target := OutboundTarget{ID: strings.TrimSpace(FirstNonEmpty(m.ChannelID, m.Referrer.ChannelID))}
+	switch strings.ToLower(strings.TrimSpace(m.ChannelType)) {
+	case ChannelDirect:
+		target.Kind = TargetUser
+	case ChannelGroup:
+		target.Kind = TargetGroup
+	case ChannelThread:
+		target.Kind = TargetChannel
+	default:
+		target.Kind = TargetConversation
+	}
+	return target
+}
+
+func ValidateOutboundTarget(m OutboundMessage, capabilities Capabilities) error {
+	hasReplyHandle := strings.TrimSpace(m.Referrer.MessageID) != "" || strings.TrimSpace(m.Referrer.ReplyToken) != ""
+	if m.Target == nil && m.Referrer.Target == nil {
+		channelType := strings.ToLower(strings.TrimSpace(m.ChannelType))
+		switch channelType {
+		case "", ChannelDirect, ChannelGroup, ChannelThread, ChannelRoom:
+		default:
+			return fmt.Errorf("invalid legacy channel_type %q", channelType)
+		}
+		hasChannel := strings.TrimSpace(FirstNonEmpty(m.ChannelID, m.Referrer.ChannelID)) != ""
+		if !hasChannel && !hasReplyHandle {
+			return fmt.Errorf("legacy channel_id or reply referrer is required")
+		}
+		if hasReplyHandle {
+			if !capabilities.ReplyMessage {
+				return fmt.Errorf("reply messages are not supported")
+			}
+			return nil
+		}
+	}
+	target := m.ResolvedTarget()
+	if target.ID == "" {
+		return fmt.Errorf("target id is required")
+	}
+	if target.Kind == "" {
+		return fmt.Errorf("target kind is required")
+	}
+	valid := target.Kind == TargetUser || target.Kind == TargetGroup || target.Kind == TargetChannel || target.Kind == TargetConversation
+	if !valid {
+		return fmt.Errorf("invalid target kind %q", target.Kind)
+	}
+	for _, kind := range capabilities.TargetKinds {
+		if kind == target.Kind {
+			if hasReplyHandle {
+				if !capabilities.ReplyMessage {
+					return fmt.Errorf("reply messages are not supported")
+				}
+				return nil
+			}
+			if target.Kind == TargetUser {
+				if !capabilities.ProactiveDirect {
+					return fmt.Errorf("proactive direct messages are not supported")
+				}
+				return nil
+			}
+			if !capabilities.ProactiveGroup {
+				return fmt.Errorf("proactive group messages are not supported")
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("target kind %q is not supported", target.Kind)
+}
+
 type SendResult struct {
 	Provider  string    `json:"provider"`
 	Connector string    `json:"connector,omitempty"`
 	MessageID string    `json:"message_id,omitempty"`
 	Time      time.Time `json:"time"`
+}
+
+type providerSendError struct {
+	detail string
+	err    error
+}
+
+func (e *providerSendError) Error() string {
+	if e.err != nil {
+		return e.err.Error()
+	}
+	return e.detail
+}
+
+func (e *providerSendError) Unwrap() error { return e.err }
+
+// NewProviderSendError marks a bounded provider failure reason as safe to
+// return to an authenticated API caller while preserving the internal error.
+func NewProviderSendError(detail string, err error) error {
+	return &providerSendError{detail: TrimOutboundText(detail, 1024), err: err}
+}
+
+func ProviderSendErrorDetail(err error) string {
+	var sendErr *providerSendError
+	if errors.As(err, &sendErr) {
+		return sendErr.detail
+	}
+	return ""
 }
 
 type Health struct {

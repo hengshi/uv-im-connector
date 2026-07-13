@@ -36,8 +36,35 @@ The normalized protocol has these stable objects:
 - `Event`: inbound event envelope with provider, connector, channel, user, message, and referrer.
 - `Message`: text, structured elements, and resource references.
 - `ResourceRef`: file/image/audio/video reference with sanitized internal URL and private provider fields.
-- `OutboundMessage`: channel, text/elements/resources, and optional referrer for replies or threads.
-- `Capabilities`: explicit feature declaration for each provider.
+- `OutboundMessage`: explicit target, text/elements/resources, and optional referrer for replies or threads.
+- `Capabilities`: explicit feature declaration for each provider, including reply, proactive send, and accepted target kinds.
+
+`OutboundMessage.target` contains an `id` and a `kind`. The kind is `user`, `group`, `channel`, or `conversation`, and callers must use a kind declared by that provider in `capabilities.target_kinds`. An inbound event's `referrer.target` is the exact reply destination selected by the provider adapter; callers should copy the complete `referrer` when replying. Target resolution prefers outbound `target`, then `referrer.target`, then legacy channel fields. Protocol v1 continues to accept the legacy `channel_id` / `channel_type` fields: `direct` maps to `user`, `group` to `group`, `thread` to `channel`, and `room` or an empty type maps to `conversation`. The legacy `channel_id` remains the provider-native existing conversation/channel ID; only its semantic kind is mapped, so it is not reinterpreted as a proactive user ID. A legacy request must include a channel ID or a message/reply handle. Unknown non-empty legacy channel types are rejected instead of being guessed.
+
+`reply_message` means that an outbound message can carry an inbound event's `referrer` to reply to an existing message. `proactive_direct` and `proactive_group` mean the server can send to a direct or group target without a current inbound message. Callers should read these capabilities from `/v1/meta` instead of inferring them from a provider name.
+
+## Provider Capability Matrix
+
+This table covers the 16 external providers and excludes `memory`, which is used for tests and local development. `Conditional` means the adapter supports the operation when the platform condition in the last column is met.
+
+| Provider | Direct inbound | Group inbound | Reply | Proactive direct | Proactive group | Outbound target kinds | Constraint |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| WeCom | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `conversation` | Uses the AI Bot WebSocket API. |
+| Lark / Feishu | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `conversation` | User targets are Open IDs; group/conversation targets are chat IDs. |
+| DingTalk | Yes | Yes | Yes | No | Conditional | `user`, `group` | Replies use the inbound session webhook; proactive sends use the configured group webhook. |
+| Discord | Yes | Yes | Yes | Yes | Yes | `user`, `channel`, `conversation` | A user target opens or reuses a Discord DM channel before sending. |
+| KOOK | Yes | Yes | Yes | Yes | Yes | `user`, `channel` | Direct messages use the KOOK direct-message API. |
+| LINE | Yes | Yes | Yes | Conditional | Conditional | `user`, `group`, `conversation` | Push targets must satisfy LINE friendship, recent-contact, or group-membership rules. |
+| Mail | Yes | No | Yes | Yes | No | `user` | The user target is an email address. |
+| Matrix | Yes (room) | Yes (room) | Yes | Conditional | Yes | `conversation` | Matrix message events do not identify direct versus group rooms; the target must be a known room ID. |
+| OneBot | Yes | Yes | Yes | Yes | Yes | `user`, `group` | Requires a compatible OneBot endpoint. |
+| QQ | Yes | Yes | Yes | Yes | Yes | `user`, `group` | This provider is the OneBot-style QQ adapter, not the official QQ Bot API. |
+| QQ Guild | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `channel` | Uses official QQ Bot user, group, and channel message endpoints. |
+| Slack | Yes | Yes | Yes | Yes | Yes | `user`, `channel`, `conversation` | Slack accepts a user ID in `chat.postMessage` to open a direct conversation. |
+| Telegram | Yes | Yes | Yes | Conditional | Yes | `user`, `group`, `conversation` | A user must contact the bot before the bot can send to that user. |
+| WeChat Official Account | Yes | No | Yes | Conditional | No | `user` | Customer-service messages are subject to the platform's interaction window and account rules. |
+| WhatsApp | Yes | Conditional | Yes | Conditional | Conditional | `user`, `group` | Groups API requires an eligible business account; free-form direct messages require the customer-service window. |
+| Zulip | Yes | Yes | Yes | Yes | Yes | `user`, `group` | Group targets are Zulip streams; the outbound topic is preserved when available. |
 
 ## Resources
 

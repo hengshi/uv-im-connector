@@ -36,8 +36,35 @@ caller application
 - `Event`：入站事件 envelope，包含 provider、connector、channel、user、message 和 referrer。
 - `Message`：文本、结构化 elements 和 resource references。
 - `ResourceRef`：文件 / 图片 / 音频 / 视频引用，包含 sanitized internal URL 和 provider-private 字段。
-- `OutboundMessage`：channel、text/elements/resources，以及用于 reply/thread 的可选 referrer。
-- `Capabilities`：每个 provider 的显式能力声明。
+- `OutboundMessage`：显式 `target`、text/elements/resources，以及用于 reply/thread 的可选 referrer。
+- `Capabilities`：每个 provider 的显式能力声明，包括 reply、Server 主动发送和可接受的 target kind。
+
+`OutboundMessage.target` 由 `id` 和 `kind` 组成。`kind` 只能是 `user`、`group`、`channel` 或 `conversation`，调用方必须使用该 provider 在 `capabilities.target_kinds` 中声明的类型。入站事件的 `referrer.target` 是 provider adapter 给出的精确回复目标；回复时应原样带回完整 `referrer`。目标解析优先级是 outbound `target`、`referrer.target`、旧 channel 字段。协议 v1 继续接受旧的 `channel_id` / `channel_type`：`direct` 映射为 `user`，`group` 映射为 `group`，`thread` 映射为 `channel`，`room` 或空类型映射为 `conversation`。旧 `channel_id` 仍是 provider-native 的现有会话 / channel ID，只映射语义类型，不会被重新解释成主动发送的 user ID。旧请求必须提供 channel ID 或 message / reply handle；未知的非空旧类型会被拒绝，不做猜测。
+
+`reply_message` 表示可以携带入站事件的 `referrer` 回复已有消息；`proactive_direct` 和 `proactive_group` 表示没有当前入站消息时，Server 能否主动发送私聊或群聊消息。调用方应从 `/v1/meta` 读取这些能力，不应根据 provider 名称推断。
+
+## Provider 能力矩阵
+
+下表只列 16 个外部 provider，不包含用于测试和本地开发的 `memory`。`有条件` 表示 adapter 已支持该操作，但必须满足“限制”列的平台条件。
+
+| Provider | 私聊入站 | 群聊入站 | 回复已有消息 | Server 主动私聊 | Server 主动群聊 | 出站 target kind | 限制 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| WeCom | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`group`、`conversation` | 使用 AI Bot WebSocket API。 |
+| Lark / Feishu | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`group`、`conversation` | 用户目标是 Open ID；群聊 / 会话目标是 chat ID。 |
+| DingTalk | 支持 | 支持 | 支持 | 不支持 | 有条件 | `user`、`group` | 回复使用入站 session webhook；主动发送使用配置的群机器人 webhook。 |
+| Discord | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`channel`、`conversation` | 用户目标会先创建或复用 Discord DM channel。 |
+| KOOK | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`channel` | 私聊使用 KOOK direct-message API。 |
+| LINE | 支持 | 支持 | 支持 | 有条件 | 有条件 | `user`、`group`、`conversation` | Push target 必须满足 LINE 的好友、近期联系或群成员规则。 |
+| Mail | 支持 | 不支持 | 支持 | 支持 | 不支持 | `user` | 用户目标是 email address。 |
+| Matrix | 支持（room） | 支持（room） | 支持 | 有条件 | 支持 | `conversation` | Matrix 消息事件不区分私聊 / 群聊 room；调用方必须提供已知 room ID。 |
+| OneBot | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`group` | 需要兼容的 OneBot endpoint。 |
+| QQ | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`group` | 这是 OneBot-style QQ adapter，不是 QQ 官方 Bot API。 |
+| QQ Guild | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`group`、`channel` | 使用 QQ 官方 Bot 的用户、群和频道消息 endpoint。 |
+| Slack | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`channel`、`conversation` | `chat.postMessage` 接受 user ID 并建立私聊会话。 |
+| Telegram | 支持 | 支持 | 支持 | 有条件 | 支持 | `user`、`group`、`conversation` | 用户必须先联系 bot，bot 才能主动发送给该用户。 |
+| WeChat Official Account | 支持 | 不支持 | 支持 | 有条件 | 不支持 | `user` | 客服消息受平台交互时间窗口和账号规则限制。 |
+| WhatsApp | 支持 | 有条件 | 支持 | 有条件 | 有条件 | `user`、`group` | Groups API 要求符合资格的 business account；主动私聊自由文本受客服窗口限制。 |
+| Zulip | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`group` | 群聊目标是 Zulip stream；有 topic 时会保留。 |
 
 ## Resources
 

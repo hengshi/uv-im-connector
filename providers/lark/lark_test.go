@@ -1,7 +1,10 @@
 package lark
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	uvim "github.com/hengshi/uv-im-connector"
@@ -145,5 +148,89 @@ func TestSendRejectsUnsupportedResources(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Send() error = nil, want unsupported resource error")
+	}
+}
+
+func TestProactiveSendSelectsRecipientIDType(t *testing.T) {
+	tests := []struct {
+		name       string
+		target     uvim.OutboundTarget
+		wantIDType string
+	}{
+		{name: "user open id", target: uvim.OutboundTarget{ID: "ou_user", Kind: uvim.TargetUser}, wantIDType: "open_id"},
+		{name: "conversation", target: uvim.OutboundTarget{ID: "oc_chat", Kind: uvim.TargetConversation}, wantIDType: "chat_id"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotBody map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				switch req.URL.Path {
+				case "/open-apis/auth/v3/tenant_access_token/internal":
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+				case "/open-apis/im/v1/messages":
+					if got := req.URL.Query().Get("receive_id_type"); got != tt.wantIDType {
+						t.Errorf("receive_id_type = %q, want %q", got, tt.wantIDType)
+					}
+					if err := json.NewDecoder(req.Body).Decode(&gotBody); err != nil {
+						t.Error(err)
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "msg": "ok", "data": map[string]any{"message_id": "om_sent"}})
+				default:
+					t.Errorf("unexpected path %s", req.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := provider.Send(context.Background(), uvim.OutboundMessage{Target: &tt.target, Text: "hello"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotBody["receive_id"] != tt.target.ID || result.MessageID != "om_sent" {
+				t.Fatalf("body=%+v result=%+v", gotBody, result)
+			}
+		})
+	}
+}
+
+func TestLegacyDirectChannelRemainsChatID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+		case "/open-apis/im/v1/messages":
+			if got := req.URL.Query().Get("receive_id_type"); got != "chat_id" {
+				t.Errorf("receive_id_type = %q, want chat_id", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"message_id": "om_sent"}})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Send(context.Background(), uvim.OutboundMessage{ChannelID: "oc_chat", ChannelType: uvim.ChannelDirect, Text: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProactiveSendRejectsNonOpenIDUserTarget(t *testing.T) {
+	provider, err := New(Config{AppID: "app", AppSecret: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Send(context.Background(), uvim.OutboundMessage{
+		Target: &uvim.OutboundTarget{ID: "user_123", Kind: uvim.TargetUser},
+		Text:   "hello",
+	})
+	if err == nil || err.Error() != "lark send: user target id must be an Open ID" {
+		t.Fatalf("Send() error = %v", err)
 	}
 }

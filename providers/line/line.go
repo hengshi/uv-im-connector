@@ -30,20 +30,25 @@ func New(config Config) (*Provider, error) {
 		baseURL = "https://api.line.me"
 	}
 	base, err := httpchannel.New(httpchannel.Config{
-		ProviderID:    "line",
-		ConnectorID:   firstNonEmpty(config.ConnectorID, "line"),
-		BaseURL:       baseURL,
-		Token:         config.Token,
-		WebhookSecret: config.WebhookSecret,
-		Decode:        Decode,
-		DecodeEvents:  DecodeEvents,
-		Send:          Send,
+		ProviderID:        "line",
+		ConnectorID:       firstNonEmpty(config.ConnectorID, "line"),
+		BaseURL:           baseURL,
+		Token:             config.Token,
+		WebhookSecret:     config.WebhookSecret,
+		Decode:            Decode,
+		DecodeEvents:      DecodeEvents,
+		Send:              Send,
+		ParseSendResponse: ParseSendResponse,
 		Capabilities: uvim.Capabilities{
-			Inbound:       true,
-			Outbound:      true,
-			DirectMessage: true,
-			GroupMessage:  true,
-			ChannelTypes:  []string{uvim.ChannelDirect, uvim.ChannelGroup},
+			Inbound:         true,
+			Outbound:        true,
+			DirectMessage:   true,
+			GroupMessage:    true,
+			ReplyMessage:    true,
+			ProactiveDirect: true,
+			ProactiveGroup:  true,
+			TargetKinds:     []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
+			ChannelTypes:    []string{uvim.ChannelDirect, uvim.ChannelGroup},
 		},
 	})
 	if err != nil {
@@ -110,8 +115,13 @@ func DecodeEvents(raw []byte, config httpchannel.Config) ([]uvim.Event, error) {
 func eventFromWebhookItem(item lineWebhookEvent, config httpchannel.Config) uvim.Event {
 	channelID := firstNonEmpty(item.Source.GroupID, item.Source.RoomID, item.Source.UserID)
 	channelType := uvim.ChannelDirect
+	target := uvim.OutboundTarget{ID: item.Source.UserID, Kind: uvim.TargetUser}
 	if item.Source.GroupID != "" || item.Source.RoomID != "" {
 		channelType = uvim.ChannelGroup
+		target = uvim.OutboundTarget{ID: channelID, Kind: uvim.TargetGroup}
+		if item.Source.RoomID != "" {
+			target.Kind = uvim.TargetConversation
+		}
 	}
 	var refs []uvim.ResourceRef
 	if item.Message.Type != "" && item.Message.Type != "text" && item.Message.ID != "" {
@@ -132,7 +142,7 @@ func eventFromWebhookItem(item lineWebhookEvent, config httpchannel.Config) uvim
 		Channel:   uvim.Channel{ID: channelID, Type: channelType},
 		User:      uvim.User{ID: item.Source.UserID},
 		Message:   uvim.Message{ID: item.Message.ID, Text: item.Message.Text, Type: item.Message.Type, Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: item.Message.ID, ChannelID: channelID, ReplyToken: item.ReplyToken},
+		Referrer:  uvim.Referrer{MessageID: item.Message.ID, ChannelID: channelID, ReplyToken: item.ReplyToken, Target: &target},
 		Addressed: true,
 	}
 }
@@ -155,7 +165,38 @@ type lineWebhookEvent struct {
 }
 
 func Send(msg uvim.OutboundMessage, _ httpchannel.Config) (httpchannel.Request, error) {
-	return httpchannel.Request{Path: "/v2/bot/message/push", Body: map[string]any{"to": msg.ChannelID, "messages": []map[string]string{{"type": "text", "text": msg.Text}}}}, nil
+	messages := []map[string]string{{"type": "text", "text": msg.Text}}
+	if msg.Referrer.ReplyToken != "" {
+		return httpchannel.Request{Path: "/v2/bot/message/reply", Body: map[string]any{"replyToken": msg.Referrer.ReplyToken, "messages": messages}}, nil
+	}
+	target := msg.ResolvedTarget()
+	if target.ID == "" {
+		return httpchannel.Request{}, fmt.Errorf("line send: target id is required")
+	}
+	return httpchannel.Request{Path: "/v2/bot/message/push", Body: map[string]any{"to": target.ID, "messages": messages}}, nil
+}
+
+func ParseSendResponse(raw []byte) (string, error) {
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return "", nil
+	}
+	var response struct {
+		Message      string `json:"message"`
+		SentMessages []struct {
+			ID string `json:"id"`
+		} `json:"sentMessages"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	if response.Message != "" {
+		businessErr := fmt.Errorf("message=%q", response.Message)
+		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+	}
+	if len(response.SentMessages) > 0 {
+		return response.SentMessages[0].ID, nil
+	}
+	return "", nil
 }
 
 func firstNonEmpty(values ...string) string {

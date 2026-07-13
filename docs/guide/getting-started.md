@@ -59,8 +59,7 @@ curl -X POST http://127.0.0.1:8787/v1/message.create \
   -d '{
     "provider": "memory",
     "connector": "memory",
-    "channel_id": "local",
-    "channel_type": "direct",
+    "target": {"kind": "user", "id": "local"},
     "text": "hello"
   }'
 ```

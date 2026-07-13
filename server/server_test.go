@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -83,6 +84,113 @@ func TestHubRoutesOutboundByConnector(t *testing.T) {
 	}
 	if len(second.Sent()) != 1 {
 		t.Fatalf("sandbox connector sent = %+v", second.Sent())
+	}
+}
+
+func TestHubRejectsInvalidExplicitTarget(t *testing.T) {
+	provider := memory.New("test")
+	hub := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, ""), &uvim.ResourceStore{Dir: t.TempDir()})
+	server := httptest.NewServer(hub.Handler())
+	defer server.Close()
+
+	raw, _ := json.Marshal(uvim.OutboundMessage{
+		Provider: "test",
+		Target:   &uvim.OutboundTarget{ID: "x", Kind: "invalid"},
+		Text:     "hello",
+	})
+	resp, err := http.Post(server.URL+"/v1/message.create", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if len(provider.Sent()) != 0 {
+		t.Fatalf("provider sent = %+v", provider.Sent())
+	}
+}
+
+func TestHubRejectsInvalidLegacyChannelType(t *testing.T) {
+	provider := memory.New("test")
+	hub := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, ""), &uvim.ResourceStore{Dir: t.TempDir()})
+	server := httptest.NewServer(hub.Handler())
+	defer server.Close()
+
+	raw, _ := json.Marshal(uvim.OutboundMessage{
+		Provider:    "test",
+		ChannelID:   "legacy",
+		ChannelType: "bogus",
+		Text:        "hello",
+	})
+	resp, err := http.Post(server.URL+"/v1/message.create", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if len(provider.Sent()) != 0 {
+		t.Fatalf("provider sent = %+v", provider.Sent())
+	}
+}
+
+func TestHubRejectsLegacyTargetWithoutRecipient(t *testing.T) {
+	provider := memory.New("test")
+	hub := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, ""), &uvim.ResourceStore{Dir: t.TempDir()})
+	server := httptest.NewServer(hub.Handler())
+	defer server.Close()
+
+	raw, _ := json.Marshal(uvim.OutboundMessage{
+		Provider:    "test",
+		ChannelType: uvim.ChannelDirect,
+		Text:        "hello",
+	})
+	resp, err := http.Post(server.URL+"/v1/message.create", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if len(provider.Sent()) != 0 {
+		t.Fatalf("provider sent = %+v", provider.Sent())
+	}
+}
+
+func TestHubReturnsProviderSendFailureDetail(t *testing.T) {
+	provider := &downloadProvider{
+		id:        "test",
+		connector: "main",
+		sendErr: uvim.NewProviderSendError(
+			"provider rejected message: invalid recipient",
+			errors.New("internal request failed at a URL containing a secret"),
+		),
+	}
+	hub := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, ""), &uvim.ResourceStore{Dir: t.TempDir()})
+	server := httptest.NewServer(hub.Handler())
+	defer server.Close()
+
+	raw, _ := json.Marshal(uvim.OutboundMessage{Provider: "test", ChannelID: "c1", Text: "hello"})
+	resp, err := http.Post(server.URL+"/v1/message.create", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var body struct {
+		Error  string `json:"error"`
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error != "provider_send_failed" || body.Detail != "provider rejected message: invalid recipient" {
+		t.Fatalf("body = %+v", body)
 	}
 }
 
@@ -329,18 +437,30 @@ func mustEventLog(t *testing.T, path string) *uvim.EventLog {
 type downloadProvider struct {
 	id        string
 	connector string
+	sendErr   error
 }
 
 func (p *downloadProvider) ID() string          { return p.id }
 func (p *downloadProvider) ConnectorID() string { return p.connector }
 func (p *downloadProvider) Capabilities() uvim.Capabilities {
-	return uvim.Capabilities{Inbound: true, Outbound: true, DownloadResource: true, ResourceKinds: []string{uvim.ElementFile}}
+	return uvim.Capabilities{
+		Inbound:          true,
+		Outbound:         true,
+		ReplyMessage:     true,
+		ProactiveGroup:   true,
+		TargetKinds:      []string{uvim.TargetConversation},
+		DownloadResource: true,
+		ResourceKinds:    []string{uvim.ElementFile},
+	}
 }
 func (p *downloadProvider) Run(ctx context.Context, sink uvim.EventSink) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
 func (p *downloadProvider) Send(context.Context, uvim.OutboundMessage) (uvim.SendResult, error) {
+	if p.sendErr != nil {
+		return uvim.SendResult{}, p.sendErr
+	}
 	return uvim.SendResult{Provider: p.id, Connector: p.connector, Time: time.Now().UTC()}, nil
 }
 func (p *downloadProvider) Download(ctx context.Context, req uvim.ResourceDownloadRequest) (uvim.ResourceRef, error) {

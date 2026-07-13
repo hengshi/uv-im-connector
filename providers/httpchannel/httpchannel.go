@@ -18,6 +18,8 @@ import (
 type DecodeFunc func([]byte, Config) (uvim.Event, bool, error)
 type DecodeEventsFunc func([]byte, Config) ([]uvim.Event, error)
 type SendFunc func(uvim.OutboundMessage, Config) (Request, error)
+type PrepareSendFunc func(context.Context, uvim.OutboundMessage, Config) (uvim.OutboundMessage, error)
+type ParseSendResponseFunc func([]byte) (string, error)
 
 type Request struct {
 	Method string
@@ -29,19 +31,21 @@ type Request struct {
 }
 
 type Config struct {
-	ProviderID    string
-	ConnectorID   string
-	BaseURL       string
-	Token         string
-	WebhookSecret string
-	ResourceStore *uvim.ResourceStore
-	HTTPClient    *http.Client
-	Now           func() time.Time
-	Logger        *slog.Logger
-	Capabilities  uvim.Capabilities
-	Decode        DecodeFunc
-	DecodeEvents  DecodeEventsFunc
-	Send          SendFunc
+	ProviderID        string
+	ConnectorID       string
+	BaseURL           string
+	Token             string
+	WebhookSecret     string
+	ResourceStore     *uvim.ResourceStore
+	HTTPClient        *http.Client
+	Now               func() time.Time
+	Logger            *slog.Logger
+	Capabilities      uvim.Capabilities
+	Decode            DecodeFunc
+	DecodeEvents      DecodeEventsFunc
+	PrepareSend       PrepareSendFunc
+	Send              SendFunc
+	ParseSendResponse ParseSendResponseFunc
 }
 
 type Provider struct {
@@ -99,6 +103,9 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 	if p.config.Send == nil {
 		return uvim.SendResult{}, fmt.Errorf("%s send: outbound is not supported", p.ID())
 	}
+	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, fmt.Errorf("%s send: %w", p.ID(), err)
+	}
 	if len(msg.Resources) > 0 || hasNonTextElements(msg.Elements) {
 		return uvim.SendResult{}, fmt.Errorf("%s send: resources and rich elements are not supported", p.ID())
 	}
@@ -107,6 +114,13 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 	}
 	if strings.TrimSpace(msg.Text) == "" {
 		return uvim.SendResult{}, fmt.Errorf("%s send: text is required", p.ID())
+	}
+	if p.config.PrepareSend != nil {
+		prepared, err := p.config.PrepareSend(ctx, msg, p.config)
+		if err != nil {
+			return uvim.SendResult{}, err
+		}
+		msg = prepared
 	}
 	outReq, err := p.config.Send(msg, p.config)
 	if err != nil {
@@ -141,10 +155,27 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 		return uvim.SendResult{}, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return uvim.SendResult{}, fmt.Errorf("%s send: http %d", p.ID(), resp.StatusCode)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return uvim.SendResult{}, fmt.Errorf("%s send: read response: %w", p.ID(), err)
 	}
-	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: msg.ID, Time: p.now().UTC()}, nil
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		sendErr := sendHTTPError(p.ID(), resp.StatusCode, raw)
+		detail := fmt.Sprintf("%s send: http %d", p.ID(), resp.StatusCode)
+		return uvim.SendResult{}, uvim.NewProviderSendError(detail, sendErr)
+	}
+	messageID := msg.ID
+	if p.config.ParseSendResponse != nil {
+		messageID, err = p.config.ParseSendResponse(raw)
+		if err != nil {
+			sendErr := fmt.Errorf("%s send: %w", p.ID(), err)
+			if detail := uvim.ProviderSendErrorDetail(err); detail != "" {
+				return uvim.SendResult{}, uvim.NewProviderSendError(detail, sendErr)
+			}
+			return uvim.SendResult{}, sendErr
+		}
+	}
+	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: messageID, Time: p.now().UTC()}, nil
 }
 
 func (p *Provider) Download(ctx context.Context, req uvim.ResourceDownloadRequest) (uvim.ResourceRef, error) {
@@ -291,6 +322,17 @@ func BotAuthorization(token string) string {
 
 func Authorization(token string) string {
 	return authorizationValue(token)
+}
+
+func sendHTTPError(provider string, status int, raw []byte) error {
+	detail := strings.TrimSpace(string(raw))
+	if len(detail) > 512 {
+		detail = detail[:512]
+	}
+	if detail == "" {
+		return fmt.Errorf("%s send: http %d", provider, status)
+	}
+	return fmt.Errorf("%s send: http %d: %s", provider, status, detail)
 }
 
 func hasNonTextElements(elements []uvim.Element) bool {

@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	uvim "github.com/hengshi/uv-im-connector"
@@ -48,6 +49,17 @@ func AssertProviderMetadata(t *testing.T, provider uvim.Provider) {
 	caps := provider.Capabilities()
 	if !caps.Inbound && !caps.Outbound {
 		t.Fatalf("provider %s must declare inbound or outbound capability", provider.ID())
+	}
+	if caps.Outbound && !caps.ReplyMessage && !caps.ProactiveDirect && !caps.ProactiveGroup {
+		t.Fatalf("provider %s must declare at least one outbound mode", provider.ID())
+	}
+	if caps.Outbound && len(caps.TargetKinds) == 0 {
+		t.Fatalf("provider %s must declare outbound target kinds", provider.ID())
+	}
+	for _, kind := range caps.TargetKinds {
+		if !slices.Contains([]string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetChannel, uvim.TargetConversation}, kind) {
+			t.Fatalf("provider %s has unsupported target kind %q", provider.ID(), kind)
+		}
 	}
 	health := provider.Health(context.Background())
 	if health.Provider != provider.ID() {

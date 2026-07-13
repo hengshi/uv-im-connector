@@ -2,6 +2,7 @@ package zulip
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -19,20 +20,25 @@ type Config struct {
 
 func New(config Config) (*httpchannel.Provider, error) {
 	return httpchannel.New(httpchannel.Config{
-		ProviderID:    "zulip",
-		ConnectorID:   firstNonEmpty(config.ConnectorID, "zulip"),
-		BaseURL:       config.BaseURL,
-		Token:         config.Token,
-		WebhookSecret: config.WebhookSecret,
-		Decode:        Decode,
-		Send:          Send,
+		ProviderID:        "zulip",
+		ConnectorID:       firstNonEmpty(config.ConnectorID, "zulip"),
+		BaseURL:           config.BaseURL,
+		Token:             config.Token,
+		WebhookSecret:     config.WebhookSecret,
+		Decode:            Decode,
+		Send:              Send,
+		ParseSendResponse: ParseSendResponse,
 		Capabilities: uvim.Capabilities{
-			Inbound:       true,
-			Outbound:      true,
-			DirectMessage: true,
-			GroupMessage:  true,
-			ThreadReply:   true,
-			ChannelTypes:  []string{uvim.ChannelDirect, uvim.ChannelGroup, uvim.ChannelThread},
+			Inbound:         true,
+			Outbound:        true,
+			DirectMessage:   true,
+			GroupMessage:    true,
+			ThreadReply:     true,
+			ReplyMessage:    true,
+			ProactiveDirect: true,
+			ProactiveGroup:  true,
+			TargetKinds:     []string{uvim.TargetUser, uvim.TargetGroup},
+			ChannelTypes:    []string{uvim.ChannelDirect, uvim.ChannelGroup, uvim.ChannelThread},
 		},
 	})
 }
@@ -64,8 +70,10 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	}
 	channelID := firstNonEmpty(num(msg.StreamID), msg.SenderEmail)
 	channelType := uvim.ChannelGroup
+	targetKind := uvim.TargetGroup
 	if msg.Type == "private" {
 		channelType = uvim.ChannelDirect
+		targetKind = uvim.TargetUser
 	}
 	refs := make([]uvim.ResourceRef, 0, len(msg.Attachments))
 	for _, attachment := range msg.Attachments {
@@ -96,22 +104,45 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Channel:   uvim.Channel{ID: channelID, Type: channelType, Name: msg.Subject},
 		User:      uvim.User{ID: num(msg.SenderID), Name: msg.DisplayName},
 		Message:   uvim.Message{ID: num(msg.ID), Text: msg.Content, Type: msg.Type, Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: num(msg.ID), ChannelID: channelID, ThreadID: msg.Subject},
+		Referrer:  uvim.Referrer{MessageID: num(msg.ID), ChannelID: channelID, ThreadID: msg.Subject, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
 		Addressed: true,
 	}, true, nil
 }
 
 func Send(msg uvim.OutboundMessage, _ httpchannel.Config) (httpchannel.Request, error) {
+	target := msg.ResolvedTarget()
+	if target.ID == "" {
+		return httpchannel.Request{}, fmt.Errorf("zulip send: target id is required")
+	}
 	form := url.Values{"content": []string{msg.Text}}
-	if msg.ChannelType == uvim.ChannelDirect {
+	if target.Kind == uvim.TargetUser {
 		form.Set("type", "private")
-		form.Set("to", msg.ChannelID)
+		form.Set("to", target.ID)
 	} else {
 		form.Set("type", "stream")
-		form.Set("to", msg.ChannelID)
+		form.Set("to", target.ID)
 		form.Set("topic", firstNonEmpty(msg.Referrer.ThreadID, msg.Metadata["topic"]))
 	}
 	return httpchannel.Request{Path: "/api/v1/messages", Form: form}, nil
+}
+
+func ParseSendResponse(raw []byte) (string, error) {
+	var response struct {
+		Result  string `json:"result"`
+		Message string `json:"msg"`
+		ID      any    `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	if response.Result != "success" {
+		businessErr := fmt.Errorf("result=%q msg=%q", response.Result, response.Message)
+		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+	}
+	if response.ID == nil {
+		return "", nil
+	}
+	return fmt.Sprint(response.ID), nil
 }
 
 func num(n int64) string {

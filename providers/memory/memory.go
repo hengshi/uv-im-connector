@@ -38,6 +38,10 @@ func NewConnector(id, connector string) *Provider {
 			DirectMessage:    true,
 			GroupMessage:     true,
 			ThreadReply:      true,
+			ReplyMessage:     true,
+			ProactiveDirect:  true,
+			ProactiveGroup:   true,
+			TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetChannel, uvim.TargetConversation},
 			UploadResource:   true,
 			DownloadResource: true,
 			ResourceKinds:    []string{uvim.ElementImage, uvim.ElementAudio, uvim.ElementVideo, uvim.ElementFile},
@@ -67,6 +71,9 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 }
 
 func (p *Provider) Send(_ context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+	if err := uvim.ValidateOutboundTarget(msg, p.caps); err != nil {
+		return uvim.SendResult{}, err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.sent = append(p.sent, msg)

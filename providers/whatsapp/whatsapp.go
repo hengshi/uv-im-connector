@@ -40,11 +40,17 @@ func New(config Config) (*Provider, error) {
 		Send: func(msg uvim.OutboundMessage, cfg httpchannel.Config) (httpchannel.Request, error) {
 			return Send(msg, cfg, config.PhoneNumberID)
 		},
+		ParseSendResponse: ParseSendResponse,
 		Capabilities: uvim.Capabilities{
-			Inbound:       true,
-			Outbound:      true,
-			DirectMessage: true,
-			ChannelTypes:  []string{uvim.ChannelDirect},
+			Inbound:         true,
+			Outbound:        true,
+			DirectMessage:   true,
+			GroupMessage:    true,
+			ReplyMessage:    true,
+			ProactiveDirect: true,
+			ProactiveGroup:  true,
+			TargetKinds:     []string{uvim.TargetUser, uvim.TargetGroup},
+			ChannelTypes:    []string{uvim.ChannelDirect, uvim.ChannelGroup},
 		},
 	})
 	if err != nil {
@@ -159,15 +165,25 @@ func DecodeEvents(raw []byte, config httpchannel.Config) ([]uvim.Event, error) {
 
 func eventFromWebhookMessage(msg whatsappWebhookMessage, config httpchannel.Config) uvim.Event {
 	refs := whatsappResources(msg.Image, msg.Audio, msg.Video, msg.Document, config)
+	channelID := msg.From
+	channelType := uvim.ChannelDirect
+	if msg.Context.GroupID != "" {
+		channelID = msg.Context.GroupID
+		channelType = uvim.ChannelGroup
+	}
+	targetKind := uvim.TargetUser
+	if channelType == uvim.ChannelGroup {
+		targetKind = uvim.TargetGroup
+	}
 	return uvim.Event{
 		ID:        msg.ID,
 		Type:      uvim.EventMessageCreate,
 		Provider:  "whatsapp",
 		Connector: config.ConnectorID,
-		Channel:   uvim.Channel{ID: msg.From, Type: uvim.ChannelDirect},
+		Channel:   uvim.Channel{ID: channelID, Type: channelType, Name: msg.Context.GroupSubject},
 		User:      uvim.User{ID: msg.From},
 		Message:   uvim.Message{ID: msg.ID, Text: msg.Text.Body, Type: msg.Type, Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: msg.ID, ChannelID: msg.From},
+		Referrer:  uvim.Referrer{MessageID: msg.ID, ParentMessageID: msg.Context.ID, ChannelID: channelID, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
 		Addressed: true,
 	}
 }
@@ -179,6 +195,11 @@ type whatsappWebhookMessage struct {
 	Text struct {
 		Body string `json:"body"`
 	} `json:"text"`
+	Context struct {
+		ID           string `json:"id"`
+		GroupID      string `json:"group_id"`
+		GroupSubject string `json:"group_subject"`
+	} `json:"context"`
 	Image    *whatsappMedia `json:"image"`
 	Audio    *whatsappMedia `json:"audio"`
 	Video    *whatsappMedia `json:"video"`
@@ -197,13 +218,49 @@ func Send(msg uvim.OutboundMessage, _ httpchannel.Config, phoneNumberID string) 
 	if phoneNumberID == "" {
 		return httpchannel.Request{}, fmt.Errorf("whatsapp send: phone_number_id is required")
 	}
+	target := msg.ResolvedTarget()
+	if target.ID == "" {
+		return httpchannel.Request{}, fmt.Errorf("whatsapp send: target user id is required")
+	}
+	recipientType := "individual"
+	if target.Kind == uvim.TargetGroup {
+		recipientType = "group"
+	}
 	body := map[string]any{
 		"messaging_product": "whatsapp",
-		"to":                msg.ChannelID,
+		"recipient_type":    recipientType,
+		"to":                target.ID,
 		"type":              "text",
 		"text":              map[string]string{"body": msg.Text},
 	}
+	if msg.Referrer.MessageID != "" {
+		body["context"] = map[string]string{"message_id": msg.Referrer.MessageID}
+	}
 	return httpchannel.Request{Path: "/" + phoneNumberID + "/messages", Body: body}, nil
+}
+
+func ParseSendResponse(raw []byte) (string, error) {
+	var response struct {
+		Messages []struct {
+			ID string `json:"id"`
+		} `json:"messages"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	if response.Error != nil {
+		businessErr := fmt.Errorf("code=%d message=%q", response.Error.Code, response.Error.Message)
+		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+	}
+	if len(response.Messages) == 0 || response.Messages[0].ID == "" {
+		businessErr := fmt.Errorf("message id missing")
+		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+	}
+	return response.Messages[0].ID, nil
 }
 
 func firstNonEmpty(values ...string) string {

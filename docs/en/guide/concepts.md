@@ -29,10 +29,14 @@ When multiple identities exist for the same provider, callers must send both `pr
 {
   "provider": "lark",
   "connector": "sandbox",
-  "channel_id": "oc_xxx",
+  "target": {"kind": "conversation", "id": "oc_xxx"},
   "text": "hello"
 }
 ```
+
+## Target
+
+A target is the exact outbound destination and contains an `id` and a `kind`. The kind is `user`, `group`, `channel`, or `conversation`. Proactive server sends must provide a target explicitly and use a kind declared in `capabilities.target_kinds`. Inbound events already contain the exact reply destination in `referrer.target`, so callers should not infer it again.
 
 ## Channel
 
@@ -67,7 +71,8 @@ Caller applications should treat `addressed=false` group events as ambient and n
   "root_message_id": "1710000000.000001",
   "channel_id": "C123",
   "thread_id": "1710000000.000100",
-  "reply_token": "..."
+  "reply_token": "...",
+  "target": {"kind": "channel", "id": "C123"}
 }
 ```
 
@@ -81,6 +86,8 @@ Capabilities describe what a provider supports:
 - outbound messages;
 - direct and group messages;
 - thread replies;
+- reply messages, proactive direct sends, and proactive group sends;
+- outbound target kinds;
 - upload and download resources;
 - supported resource kinds;
 - supported channel types.

@@ -2,6 +2,7 @@ package matrix
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -18,18 +19,24 @@ type Config struct {
 
 func New(config Config) (*httpchannel.Provider, error) {
 	return httpchannel.New(httpchannel.Config{
-		ProviderID:    "matrix",
-		ConnectorID:   firstNonEmpty(config.ConnectorID, "matrix"),
-		BaseURL:       config.BaseURL,
-		Token:         config.Token,
-		WebhookSecret: config.WebhookSecret,
-		Decode:        Decode,
-		Send:          Send,
+		ProviderID:        "matrix",
+		ConnectorID:       firstNonEmpty(config.ConnectorID, "matrix"),
+		BaseURL:           config.BaseURL,
+		Token:             config.Token,
+		WebhookSecret:     config.WebhookSecret,
+		Decode:            Decode,
+		Send:              Send,
+		ParseSendResponse: ParseSendResponse,
 		Capabilities: uvim.Capabilities{
-			Inbound:      true,
-			Outbound:     true,
-			GroupMessage: true,
-			ChannelTypes: []string{uvim.ChannelGroup},
+			Inbound:         true,
+			Outbound:        true,
+			DirectMessage:   true,
+			GroupMessage:    true,
+			ReplyMessage:    true,
+			ProactiveDirect: true,
+			ProactiveGroup:  true,
+			TargetKinds:     []string{uvim.TargetConversation},
+			ChannelTypes:    []string{uvim.ChannelRoom},
 		},
 	})
 }
@@ -62,22 +69,48 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Type:      uvim.EventMessageCreate,
 		Provider:  "matrix",
 		Connector: config.ConnectorID,
-		Channel:   uvim.Channel{ID: event.RoomID, Type: uvim.ChannelGroup},
+		Channel:   uvim.Channel{ID: event.RoomID, Type: uvim.ChannelRoom},
 		User:      uvim.User{ID: event.Sender},
 		Message:   uvim.Message{ID: event.EventID, Text: event.Content.Body, Type: event.Content.MsgType, Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: event.EventID, ChannelID: event.RoomID},
+		Referrer:  uvim.Referrer{MessageID: event.EventID, ChannelID: event.RoomID, Target: &uvim.OutboundTarget{ID: event.RoomID, Kind: uvim.TargetConversation}},
 		Addressed: true,
 	}, true, nil
 }
 
 func Send(msg uvim.OutboundMessage, _ httpchannel.Config) (httpchannel.Request, error) {
+	target := msg.ResolvedTarget()
+	if target.ID == "" {
+		return httpchannel.Request{}, fmt.Errorf("matrix send: target room id is required")
+	}
 	txnID := url.PathEscape(uvim.FirstNonEmpty(msg.ID, uvim.NewID("txn")))
-	roomID := url.PathEscape(msg.ChannelID)
+	roomID := url.PathEscape(target.ID)
+	body := map[string]any{"msgtype": "m.text", "body": msg.Text}
+	if msg.Referrer.MessageID != "" {
+		body["m.relates_to"] = map[string]any{
+			"m.in_reply_to": map[string]string{"event_id": msg.Referrer.MessageID},
+		}
+	}
 	return httpchannel.Request{
 		Method: "PUT",
 		Path:   "/_matrix/client/v3/rooms/" + roomID + "/send/m.room.message/" + txnID,
-		Body:   map[string]string{"msgtype": "m.text", "body": msg.Text},
+		Body:   body,
 	}, nil
+}
+
+func ParseSendResponse(raw []byte) (string, error) {
+	var response struct {
+		EventID string `json:"event_id"`
+		ErrCode string `json:"errcode"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	if response.EventID == "" {
+		businessErr := fmt.Errorf("event id missing: errcode=%q error=%q", response.ErrCode, response.Error)
+		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+	}
+	return response.EventID, nil
 }
 
 func firstNonEmpty(values ...string) string {

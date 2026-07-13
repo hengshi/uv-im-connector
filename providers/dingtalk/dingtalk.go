@@ -2,6 +2,7 @@ package dingtalk
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -22,19 +23,23 @@ func New(config Config) (*httpchannel.Provider, error) {
 		baseURL = "https://oapi.dingtalk.com"
 	}
 	return httpchannel.New(httpchannel.Config{
-		ProviderID:    "dingtalk",
-		ConnectorID:   firstNonEmpty(config.ConnectorID, "dingtalk"),
-		BaseURL:       baseURL,
-		Token:         config.Token,
-		WebhookSecret: config.WebhookSecret,
-		Decode:        Decode,
-		Send:          Send,
+		ProviderID:        "dingtalk",
+		ConnectorID:       firstNonEmpty(config.ConnectorID, "dingtalk"),
+		BaseURL:           baseURL,
+		Token:             config.Token,
+		WebhookSecret:     config.WebhookSecret,
+		Decode:            Decode,
+		Send:              Send,
+		ParseSendResponse: ParseSendResponse,
 		Capabilities: uvim.Capabilities{
-			Inbound:       true,
-			Outbound:      true,
-			DirectMessage: true,
-			GroupMessage:  true,
-			ChannelTypes:  []string{uvim.ChannelDirect, uvim.ChannelGroup},
+			Inbound:        true,
+			Outbound:       true,
+			DirectMessage:  true,
+			GroupMessage:   true,
+			ReplyMessage:   true,
+			ProactiveGroup: true,
+			TargetKinds:    []string{uvim.TargetUser, uvim.TargetGroup},
+			ChannelTypes:   []string{uvim.ChannelDirect, uvim.ChannelGroup},
 		},
 	})
 }
@@ -47,6 +52,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		SenderNick       string `json:"senderNick"`
 		ConversationID   string `json:"conversationId"`
 		ConversationType string `json:"conversationType"`
+		SessionWebhook   string `json:"sessionWebhook"`
 		Text             struct {
 			Content string `json:"content"`
 		} `json:"text"`
@@ -62,8 +68,10 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		return uvim.Event{}, false, nil
 	}
 	channelType := uvim.ChannelGroup
+	target := uvim.OutboundTarget{ID: msg.ConversationID, Kind: uvim.TargetGroup}
 	if msg.ConversationType == "1" {
 		channelType = uvim.ChannelDirect
+		target = uvim.OutboundTarget{ID: msg.SenderStaffID, Kind: uvim.TargetUser}
 	}
 	refs := dingtalkResources(config, msg.MsgType, msg.Image, msg.File, msg.Video, msg.Voice)
 	return uvim.Event{
@@ -74,15 +82,63 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Channel:   uvim.Channel{ID: msg.ConversationID, Type: channelType},
 		User:      uvim.User{ID: msg.SenderStaffID, Name: msg.SenderNick},
 		Message:   uvim.Message{ID: msg.MsgID, Text: strings.TrimSpace(msg.Text.Content), Type: uvim.FirstNonEmpty(msg.MsgType, "text"), Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: msg.MsgID, ChannelID: msg.ConversationID},
+		Referrer:  uvim.Referrer{MessageID: msg.MsgID, ChannelID: msg.ConversationID, ReplyToken: msg.SessionWebhook, Target: &target},
 		Addressed: true,
 	}, true, nil
 }
 
 func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Request, error) {
-	token := url.QueryEscape(config.Token)
 	body := map[string]any{"msgtype": "text", "text": map[string]any{"content": msg.Text}}
+	if msg.Referrer.ReplyToken != "" {
+		path, err := sameOriginPath(msg.Referrer.ReplyToken, config.BaseURL)
+		if err != nil {
+			return httpchannel.Request{}, fmt.Errorf("dingtalk send: invalid session webhook: %w", err)
+		}
+		return httpchannel.Request{Path: path, Body: body, NoAuth: true}, nil
+	}
+	target := msg.ResolvedTarget()
+	if target.Kind == uvim.TargetUser {
+		return httpchannel.Request{}, fmt.Errorf("dingtalk send: direct proactive messages require app robot server API credentials")
+	}
+	token := url.QueryEscape(config.Token)
 	return httpchannel.Request{Path: "/robot/send?access_token=" + token, Body: body, NoAuth: true}, nil
+}
+
+func sameOriginPath(rawURL, baseURL string) (string, error) {
+	target, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return "", err
+	}
+	if target.Scheme == "" || target.Host == "" || !strings.EqualFold(target.Scheme, base.Scheme) || !strings.EqualFold(target.Host, base.Host) {
+		return "", fmt.Errorf("webhook origin does not match provider base URL")
+	}
+	path := target.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	if target.RawQuery != "" {
+		path += "?" + target.RawQuery
+	}
+	return path, nil
+}
+
+func ParseSendResponse(raw []byte) (string, error) {
+	var response struct {
+		ErrCode int    `json:"errcode"`
+		ErrMsg  string `json:"errmsg"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	if response.ErrCode != 0 {
+		businessErr := fmt.Errorf("errcode=%d errmsg=%q", response.ErrCode, response.ErrMsg)
+		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+	}
+	return "", nil
 }
 
 func firstNonEmpty(values ...string) string {

@@ -1,7 +1,9 @@
 package wechatofficial
 
 import (
+	"encoding/json"
 	"encoding/xml"
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -22,18 +24,22 @@ func New(config Config) (*httpchannel.Provider, error) {
 		baseURL = "https://api.weixin.qq.com"
 	}
 	return httpchannel.New(httpchannel.Config{
-		ProviderID:    "wechat-official",
-		ConnectorID:   firstNonEmpty(config.ConnectorID, "wechat-official"),
-		BaseURL:       baseURL,
-		Token:         config.Token,
-		WebhookSecret: config.WebhookSecret,
-		Decode:        Decode,
-		Send:          Send,
+		ProviderID:        "wechat-official",
+		ConnectorID:       firstNonEmpty(config.ConnectorID, "wechat-official"),
+		BaseURL:           baseURL,
+		Token:             config.Token,
+		WebhookSecret:     config.WebhookSecret,
+		Decode:            Decode,
+		Send:              Send,
+		ParseSendResponse: ParseSendResponse,
 		Capabilities: uvim.Capabilities{
-			Inbound:       true,
-			Outbound:      true,
-			DirectMessage: true,
-			ChannelTypes:  []string{uvim.ChannelDirect},
+			Inbound:         true,
+			Outbound:        true,
+			DirectMessage:   true,
+			ReplyMessage:    true,
+			ProactiveDirect: true,
+			TargetKinds:     []string{uvim.TargetUser},
+			ChannelTypes:    []string{uvim.ChannelDirect},
 		},
 	})
 }
@@ -59,12 +65,35 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		return uvim.Event{}, false, nil
 	}
 	refs := wechatResources(msg.MsgType, msg.MediaID, msg.PicURL, msg.Format, config)
-	return uvim.Event{ID: msg.MsgID, Type: uvim.EventMessageCreate, Provider: "wechat-official", Connector: config.ConnectorID, Channel: uvim.Channel{ID: msg.FromUserName, Type: uvim.ChannelDirect}, User: uvim.User{ID: msg.FromUserName}, Message: uvim.Message{ID: msg.MsgID, Text: msg.Content, Type: msg.MsgType, Resources: refs}, Referrer: uvim.Referrer{MessageID: msg.MsgID, ChannelID: msg.FromUserName}, Addressed: true}, true, nil
+	return uvim.Event{ID: msg.MsgID, Type: uvim.EventMessageCreate, Provider: "wechat-official", Connector: config.ConnectorID, Channel: uvim.Channel{ID: msg.FromUserName, Type: uvim.ChannelDirect}, User: uvim.User{ID: msg.FromUserName}, Message: uvim.Message{ID: msg.MsgID, Text: msg.Content, Type: msg.MsgType, Resources: refs}, Referrer: uvim.Referrer{MessageID: msg.MsgID, ChannelID: msg.FromUserName, Target: &uvim.OutboundTarget{ID: msg.FromUserName, Kind: uvim.TargetUser}}, Addressed: true}, true, nil
 }
 
 func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Request, error) {
-	body := map[string]any{"touser": msg.ChannelID, "msgtype": "text", "text": map[string]string{"content": msg.Text}}
+	target := msg.ResolvedTarget()
+	if target.ID == "" {
+		return httpchannel.Request{}, fmt.Errorf("wechat-official send: target user id is required")
+	}
+	body := map[string]any{"touser": target.ID, "msgtype": "text", "text": map[string]string{"content": msg.Text}}
 	return httpchannel.Request{Path: "/cgi-bin/message/custom/send?access_token=" + url.QueryEscape(config.Token), Body: body, NoAuth: true}, nil
+}
+
+func ParseSendResponse(raw []byte) (string, error) {
+	var response struct {
+		ErrCode   int    `json:"errcode"`
+		ErrMsg    string `json:"errmsg"`
+		MessageID any    `json:"msgid"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	if response.ErrCode != 0 {
+		businessErr := fmt.Errorf("errcode=%d errmsg=%q", response.ErrCode, response.ErrMsg)
+		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+	}
+	if response.MessageID == nil {
+		return "", nil
+	}
+	return fmt.Sprint(response.MessageID), nil
 }
 
 func firstNonEmpty(values ...string) string {
