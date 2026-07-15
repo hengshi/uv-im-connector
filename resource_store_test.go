@@ -31,3 +31,10 @@ func TestResourceStoreSaveOpenAndSanitize(t *testing.T) {
 		t.Fatalf("sanitized = %+v", safe)
 	}
 }
+
+func TestResourceUploadNameSanitizesPathsAndHeaderBytes(t *testing.T) {
+	got := ResourceUploadName(0, ResourceRef{Name: "../report\r\nInjected: yes.pdf"}, "application/pdf")
+	if got != "report-Injected-yes.pdf" {
+		t.Fatalf("ResourceUploadName() = %q", got)
+	}
+}

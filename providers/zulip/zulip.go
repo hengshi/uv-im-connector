@@ -1,8 +1,14 @@
 package zulip
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
@@ -16,6 +22,8 @@ type Config struct {
 	BaseURL       string
 	Token         string
 	WebhookSecret string
+	ResourceStore *uvim.ResourceStore
+	HTTPClient    *http.Client
 }
 
 func New(config Config) (*httpchannel.Provider, error) {
@@ -25,7 +33,10 @@ func New(config Config) (*httpchannel.Provider, error) {
 		BaseURL:           config.BaseURL,
 		Token:             config.Token,
 		WebhookSecret:     config.WebhookSecret,
+		ResourceStore:     config.ResourceStore,
+		HTTPClient:        config.HTTPClient,
 		Decode:            Decode,
+		PrepareSend:       prepareSend,
 		Send:              Send,
 		ParseSendResponse: ParseSendResponse,
 		Capabilities: uvim.Capabilities{
@@ -38,9 +49,114 @@ func New(config Config) (*httpchannel.Provider, error) {
 			ProactiveDirect: true,
 			ProactiveGroup:  true,
 			TargetKinds:     []string{uvim.TargetUser, uvim.TargetGroup},
+			UploadResource:  config.ResourceStore != nil,
+			ResourceKinds:   []string{uvim.ElementImage, uvim.ElementAudio, uvim.ElementVideo, uvim.ElementFile},
 			ChannelTypes:    []string{uvim.ChannelDirect, uvim.ChannelGroup, uvim.ChannelThread},
 		},
 	})
+}
+
+const maxSimpleUploadBytes = 25 * 1024 * 1024
+
+func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchannel.Config) (uvim.OutboundMessage, error) {
+	if len(msg.Resources) == 0 {
+		return msg, nil
+	}
+	if len(msg.Resources) != 1 {
+		return msg, fmt.Errorf("zulip send: one resource per message is supported")
+	}
+	ref := msg.Resources[0]
+	if config.ResourceStore == nil || !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
+		return msg, fmt.Errorf("zulip upload: internal resource is required")
+	}
+	file, _, err := config.ResourceStore.Open(ref.InternalURL)
+	if err != nil {
+		return msg, uvim.NewProviderSendError("zulip resource is unavailable", err)
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, maxSimpleUploadBytes+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return msg, uvim.NewProviderSendError("zulip resource read failed", readErr)
+	}
+	if closeErr != nil {
+		return msg, uvim.NewProviderSendError("zulip resource close failed", closeErr)
+	}
+	if len(data) == 0 {
+		return msg, fmt.Errorf("zulip upload: empty resources are not supported")
+	}
+	if len(data) > maxSimpleUploadBytes {
+		return msg, fmt.Errorf("zulip upload: resource exceeds %d bytes", maxSimpleUploadBytes)
+	}
+	name := uvim.ResourceUploadName(0, ref, ref.MIME)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="filename"; filename=%q`, name))
+	if strings.TrimSpace(ref.MIME) != "" {
+		header.Set("Content-Type", ref.MIME)
+	}
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return msg, err
+	}
+	if _, err := part.Write(data); err != nil {
+		return msg, err
+	}
+	if err := writer.Close(); err != nil {
+		return msg, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(config.BaseURL, "/")+"/api/v1/user_uploads", &body)
+	if err != nil {
+		return msg, err
+	}
+	if token := strings.TrimSpace(config.Token); token != "" {
+		req.Header.Set("Authorization", httpchannel.Authorization(token))
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	client := config.HTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return msg, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return msg, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return msg, uvim.NewProviderSendError(fmt.Sprintf("zulip upload: http %d", resp.StatusCode), fmt.Errorf("zulip upload: http %d", resp.StatusCode))
+	}
+	var decoded struct {
+		Result   string `json:"result"`
+		Message  string `json:"msg"`
+		URL      string `json:"url"`
+		URI      string `json:"uri"`
+		Filename string `json:"filename"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return msg, fmt.Errorf("zulip upload: decode response: %w", err)
+	}
+	if decoded.Result != "success" {
+		businessErr := fmt.Errorf("zulip upload: result=%q msg=%q", decoded.Result, decoded.Message)
+		return msg, uvim.NewProviderSendError(businessErr.Error(), businessErr)
+	}
+	uploadURL := firstNonEmpty(decoded.URL, decoded.URI)
+	if uploadURL == "" {
+		return msg, fmt.Errorf("zulip upload: response missing url")
+	}
+	displayName := firstNonEmpty(decoded.Filename, name)
+	displayName = strings.NewReplacer("[", "", "]", "").Replace(displayName)
+	link := "[" + displayName + "](" + uploadURL + ")"
+	if strings.TrimSpace(msg.Text) == "" {
+		msg.Text = link
+	} else {
+		msg.Text = strings.TrimSpace(msg.Text) + "\n\n" + link
+	}
+	msg.Resources = nil
+	return msg, nil
 }
 
 func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {

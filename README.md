@@ -175,6 +175,27 @@ The 16 external providers have the following conversation and outbound capabilit
 | WhatsApp | Yes | Conditional | Yes | Conditional | Conditional | `user`, `group` | Groups API requires an eligible business account; free-form direct messages require the customer-service window. |
 | Zulip | Yes | Yes | Yes | Yes | Yes | `user`, `group` | Group targets are Zulip streams; the outbound topic is preserved when available. |
 
+The resource matrix is separate from text/conversation support. "Inbound" means the adapter can normalize and copy provider media into an `internal://` resource. "Outbound" means bytes created by `POST /v1/upload.create` can be sent by that adapter; callers must still check the live `upload_resource` flag and `resource_kinds` for the exact connector.
+
+| Provider | Inbound resources | Outbound internal resources | Accepted outbound kinds | Adapter/platform limit |
+| --- | --- | --- | --- | --- |
+| WeCom | Yes | Yes | `file`, `image`, `audio`, `video` | AI Bot WebSocket upload; 512 KiB × 100 chunks, about 50 MiB per resource. |
+| Lark / Feishu | Yes | Yes | `file`, `image`, `audio`, `video` | Images use the image API up to 10 MiB; other resources are delivered as file attachments up to 30 MiB. |
+| DingTalk | Yes | No | — | Current robot/session-webhook adapter has no internal-byte upload path. |
+| Discord | Yes | Yes | `file`, `image`, `audio`, `video` | Direct multipart message upload; default platform limit is 10 MiB per attachment. |
+| KOOK | Yes | Yes | `file`, `image`, `audio`, `video` | Asset upload followed by an image or attachment-card message; adapter cap is 100 MiB and platform policy may be lower. |
+| LINE | Yes | No | — | LINE outbound media requires a provider-reachable HTTPS content URL; uv-im-connector has no public media origin. |
+| Mail | Yes | Yes | `file`, `image`, `audio`, `video` | Sent as MIME attachments; adapter total is 25 MiB and 10 attachments per message. |
+| Matrix | Yes | Yes | `file`, `image`, `audio`, `video` | Content-repository upload followed by an `mxc://` room message; adapter cap is 100 MiB and the homeserver may enforce a lower limit. |
+| OneBot | Yes | No | — | Compatible-endpoint file/CQ upload behavior is not yet normalized. |
+| QQ | Yes | No | — | Same OneBot-style limitation as the QQ adapter. |
+| QQ Guild | Yes | No | — | Official rich-media upload handshake is not implemented. |
+| Slack | Yes | Yes | `file`, `image`, `audio`, `video` | External upload URL + raw upload + completion flow; adapter cap is 100 MiB and workspace policy may be lower. |
+| Telegram | Yes | Yes | `file`, `image`, `audio`, `video` | Multipart Bot API upload; photos up to 10 MiB, other files up to 50 MiB; unsupported native formats fall back to documents. |
+| WeChat Official Account | Yes | Yes (media only) | `image`, `audio`, `video` | Temporary-media upload plus customer-service send; no arbitrary file message. Images/video 10 MiB, voice 2 MiB. |
+| WhatsApp | Yes | Yes | `file`, `image`, `audio`, `video` | Cloud API media upload then message send; images 5 MiB, audio/video 16 MiB, documents 100 MiB. |
+| Zulip | Yes | Yes | `file`, `image`, `audio`, `video` | Simple user upload followed by a Markdown attachment link; adapter cap is 25 MiB and server policy may be lower. |
+
 Provider-specific settings are documented in [docs/configuration.md](docs/configuration.md). The important naming rule is:
 
 ```text
@@ -355,6 +376,8 @@ GET /v1/internal/<id>
 ```
 
 The Go client also exposes `ResolveInternalURL`.
+
+For outbound attachments, callers must first inspect the selected provider and connector in `GET /v1/meta`, require `upload_resource` plus the desired `resource_kinds`, call `POST /v1/upload.create`, and send the exact returned `ResourceRef`. The standalone WeCom, Lark / Feishu, Discord, KOOK, Telegram, Matrix, Slack, WhatsApp, Zulip, and Mail providers share the HTTP upload store and support `file`, `image`, `audio`, and `video`; WeChat Official Account shares the same store but only supports image, audio, and video. The provider matrix above records their different limits and delivery shapes. Callers should send multiple attachments and final text as separate ordered messages unless the exact provider contract explicitly supports a combined payload.
 
 ## Go Client
 

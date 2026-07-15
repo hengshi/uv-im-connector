@@ -66,6 +66,27 @@ caller application
 | WhatsApp | 支持 | 有条件 | 支持 | 有条件 | 有条件 | `user`、`group` | Groups API 要求符合资格的 business account；主动私聊自由文本受客服窗口限制。 |
 | Zulip | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`group` | 群聊目标是 Zulip stream；有 topic 时会保留。 |
 
+资源能力与文本 / 会话能力分开统计。“入站资源”表示 adapter 能把 provider media 标准化并复制为 `internal://` 资源；“出站 internal resource”表示 `POST /v1/upload.create` 创建的字节可以由该 adapter 真正发送。调用方仍必须针对精确 connector 实时检查 `upload_resource` 和 `resource_kinds`。
+
+| Provider | 入站资源 | 出站 internal resource | 接受的出站 kind | Adapter / 平台限制 |
+| --- | --- | --- | --- | --- |
+| WeCom | 支持 | 支持 | `file`、`image`、`audio`、`video` | AI Bot WebSocket 上传；每片 512 KiB，最多 100 片，单资源约 50 MiB。 |
+| Lark / Feishu | 支持 | 支持 | `file`、`image`、`audio`、`video` | 图片 API 上限 10 MiB；其余资源作为文件附件交付，上限 30 MiB。 |
+| DingTalk | 支持 | 不支持 | — | 当前机器人 / session-webhook adapter 没有 internal bytes 上传路径。 |
+| Discord | 支持 | 支持 | `file`、`image`、`audio`、`video` | 直接随消息 multipart 上传；平台默认单附件上限 10 MiB。 |
+| KOOK | 支持 | 支持 | `file`、`image`、`audio`、`video` | asset upload 后发送图片或附件卡片；adapter 上限 100 MiB，平台策略可能更低。 |
+| LINE | 支持 | 不支持 | — | LINE 出站媒体要求 provider 可访问的 HTTPS 内容 URL；uv-im-connector 当前不提供公网 media origin。 |
+| Mail | 支持 | 支持 | `file`、`image`、`audio`、`video` | 作为 MIME 附件发送；adapter 每条消息最多 10 个附件、合计 25 MiB。 |
+| Matrix | 支持 | 支持 | `file`、`image`、`audio`、`video` | 先上传 content repository，再以 `mxc://` room message 发送；adapter 上限 100 MiB，homeserver 可能更低。 |
+| OneBot | 支持 | 不支持 | — | 不同兼容 endpoint 的文件 / CQ 上传行为尚未归一化。 |
+| QQ | 支持 | 不支持 | — | 与 OneBot-style QQ adapter 的限制相同。 |
+| QQ Guild | 支持 | 不支持 | — | 尚未实现官方富媒体上传握手。 |
+| Slack | 支持 | 支持 | `file`、`image`、`audio`、`video` | external upload URL + raw upload + complete 流程；adapter 上限 100 MiB，workspace 策略可能更低。 |
+| Telegram | 支持 | 支持 | `file`、`image`、`audio`、`video` | Bot API multipart 上传；图片 10 MiB、其他文件 50 MiB；不符合原生格式时降级为 document。 |
+| WeChat Official Account | 支持 | 支持（仅媒体） | `image`、`audio`、`video` | 临时素材上传后通过客服消息发送；平台没有任意文件消息。图片 / 视频 10 MiB，语音 2 MiB。 |
+| WhatsApp | 支持 | 支持 | `file`、`image`、`audio`、`video` | Cloud API media upload 后再发消息；图片 5 MiB，音频 / 视频 16 MiB，文档 100 MiB。 |
+| Zulip | 支持 | 支持 | `file`、`image`、`audio`、`video` | simple user upload 后发送 Markdown 附件链接；adapter 上限 25 MiB，server 策略可能更低。 |
+
 ## Resources
 
 Provider 下载 URL、resource key、encrypted payload key、provider resource lookup 所需 metadata 和 raw payload 都是 provider-private。标准化后不能暴露给调用方。

@@ -210,6 +210,24 @@ func TestValidateOutboundTarget(t *testing.T) {
 	}
 }
 
+func TestValidateOutboundResources(t *testing.T) {
+	caps := Capabilities{UploadResource: true, ResourceKinds: []string{ElementFile, ElementImage}}
+	if err := ValidateOutboundResources(OutboundMessage{Resources: []ResourceRef{{Kind: ElementFile}}}, caps); err != nil {
+		t.Fatalf("supported resource rejected: %v", err)
+	}
+	for _, test := range []OutboundMessage{
+		{Resources: []ResourceRef{{Kind: "archive"}}},
+		{Resources: []ResourceRef{{Kind: ""}}},
+	} {
+		if err := ValidateOutboundResources(test, caps); err == nil {
+			t.Fatalf("unsupported resources accepted: %+v", test.Resources)
+		}
+	}
+	if err := ValidateOutboundResources(OutboundMessage{Resources: []ResourceRef{{Kind: ElementFile}}}, Capabilities{}); err == nil {
+		t.Fatal("resource accepted when uploads are disabled")
+	}
+}
+
 func TestProviderSendErrorDetail(t *testing.T) {
 	internal := errors.New("request URL contains a secret")
 	err := NewProviderSendError("provider rejected recipient", internal)

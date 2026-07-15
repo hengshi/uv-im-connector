@@ -81,18 +81,29 @@ func NewID(prefix string) string {
 }
 
 func ResourceFileName(index int, ref ResourceRef, contentType string) string {
-	base := FirstNonEmpty(ref.Name, ref.Key, ref.ID, fmt.Sprintf("resource-%d", index))
-	ext := filepath.Ext(base)
+	return fmt.Sprintf("%02d-%s", index+1, ResourceUploadName(index, ref, contentType))
+}
+
+// ResourceUploadName returns a provider-safe basename for multipart, MIME, and
+// JSON upload metadata. It deliberately removes path and header control bytes.
+func ResourceUploadName(index int, ref ResourceRef, contentType string) string {
+	raw := filepath.Base(FirstNonEmpty(ref.Name, ref.Key, ref.ID, fmt.Sprintf("resource-%d", index)))
+	ext := filepath.Ext(raw)
 	if ext == "" && contentType != "" {
 		if exts, _ := mime.ExtensionsByType(contentType); len(exts) > 0 {
 			ext = exts[0]
 		}
 	}
-	base = strings.TrimSuffix(base, filepath.Ext(base))
-	if base == "" {
-		base = fmt.Sprintf("resource-%d", index)
+	base := SafeSegment(strings.TrimSuffix(raw, filepath.Ext(raw)))
+	ext = strings.TrimPrefix(ext, ".")
+	ext = unsafeSegmentPattern.ReplaceAllString(ext, "")
+	if len(ext) > 16 {
+		ext = ext[:16]
 	}
-	return fmt.Sprintf("%02d-%s%s", index+1, SafeSegment(base), ext)
+	if ext == "" {
+		return base
+	}
+	return base + "." + ext
 }
 
 func ResourceKindFromMIME(contentType, fallback string) string {

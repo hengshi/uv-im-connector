@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"time"
@@ -22,12 +24,25 @@ type PrepareSendFunc func(context.Context, uvim.OutboundMessage, Config) (uvim.O
 type ParseSendResponseFunc func([]byte) (string, error)
 
 type Request struct {
-	Method string
-	Path   string
-	Body   any
-	Form   url.Values
-	Header http.Header
-	NoAuth bool
+	Method    string
+	Path      string
+	Body      any
+	Form      url.Values
+	Multipart *MultipartBody
+	Header    http.Header
+	NoAuth    bool
+}
+
+type MultipartBody struct {
+	Fields map[string]string
+	Files  []MultipartFile
+}
+
+type MultipartFile struct {
+	Field string
+	Name  string
+	MIME  string
+	Data  []byte
 }
 
 type Config struct {
@@ -106,14 +121,17 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("%s send: %w", p.ID(), err)
 	}
-	if len(msg.Resources) > 0 || hasNonTextElements(msg.Elements) {
-		return uvim.SendResult{}, fmt.Errorf("%s send: resources and rich elements are not supported", p.ID())
+	if hasNonTextElements(msg.Elements) {
+		return uvim.SendResult{}, fmt.Errorf("%s send: rich elements are not supported", p.ID())
+	}
+	if err := uvim.ValidateOutboundResources(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, fmt.Errorf("%s send: %w", p.ID(), err)
 	}
 	if strings.TrimSpace(msg.Text) == "" && len(msg.Elements) > 0 {
 		msg.Text = textFromElements(msg.Elements)
 	}
-	if strings.TrimSpace(msg.Text) == "" {
-		return uvim.SendResult{}, fmt.Errorf("%s send: text is required", p.ID())
+	if strings.TrimSpace(msg.Text) == "" && len(msg.Resources) == 0 {
+		return uvim.SendResult{}, fmt.Errorf("%s send: text or resource is required", p.ID())
 	}
 	if p.config.PrepareSend != nil {
 		prepared, err := p.config.PrepareSend(ctx, msg, p.config)
@@ -268,6 +286,34 @@ func (p *Provider) store(dir string) *uvim.ResourceStore {
 }
 
 func encodeBody(req Request) (io.Reader, string, error) {
+	if req.Multipart != nil {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		for key, value := range req.Multipart.Fields {
+			if err := writer.WriteField(key, value); err != nil {
+				return nil, "", err
+			}
+		}
+		for _, file := range req.Multipart.Files {
+			name := uvim.ResourceUploadName(0, uvim.ResourceRef{Name: file.Name, MIME: file.MIME}, file.MIME)
+			header := make(textproto.MIMEHeader)
+			header.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, file.Field, name))
+			if strings.TrimSpace(file.MIME) != "" {
+				header.Set("Content-Type", file.MIME)
+			}
+			part, err := writer.CreatePart(header)
+			if err != nil {
+				return nil, "", err
+			}
+			if _, err := part.Write(file.Data); err != nil {
+				return nil, "", err
+			}
+		}
+		if err := writer.Close(); err != nil {
+			return nil, "", err
+		}
+		return bytes.NewReader(body.Bytes()), writer.FormDataContentType(), nil
+	}
 	if req.Form != nil {
 		return strings.NewReader(req.Form.Encode()), "application/x-www-form-urlencoded", nil
 	}
@@ -279,6 +325,19 @@ func encodeBody(req Request) (io.Reader, string, error) {
 		return nil, "", err
 	}
 	return bytes.NewReader(raw), "application/json; charset=utf-8", nil
+}
+
+func resourceKindSupported(kind string, supported []string) bool {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind == "" {
+		kind = uvim.ElementFile
+	}
+	for _, candidate := range supported {
+		if strings.EqualFold(strings.TrimSpace(candidate), kind) {
+			return true
+		}
+	}
+	return false
 }
 
 func authorizationValue(token string) string {

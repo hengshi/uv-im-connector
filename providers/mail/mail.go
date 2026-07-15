@@ -3,18 +3,29 @@ package mail
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"strings"
 	"time"
 
 	uvim "github.com/hengshi/uv-im-connector"
 	"github.com/hengshi/uv-im-connector/providers/httpchannel"
 )
+
+const (
+	maxOutboundAttachmentCount = 10
+	maxOutboundAttachmentBytes = 25 * 1024 * 1024
+)
+
+type SendMailFunc func(string, smtp.Auth, string, []string, []byte) error
 
 type Config struct {
 	ConnectorID   string
@@ -27,6 +38,7 @@ type Config struct {
 	HTTPClient    *http.Client
 	Now           func() time.Time
 	Logger        *slog.Logger
+	SendMail      SendMailFunc
 }
 
 type Provider struct {
@@ -38,6 +50,9 @@ type Provider struct {
 func New(config Config) (*Provider, error) {
 	if config.Now == nil {
 		config.Now = time.Now
+	}
+	if config.SendMail == nil {
+		config.SendMail = smtp.SendMail
 	}
 	base, err := httpchannel.New(httpchannel.Config{
 		ProviderID:    "mail",
@@ -69,7 +84,9 @@ func New(config Config) (*Provider, error) {
 func (p *Provider) ID() string          { return p.base.ID() }
 func (p *Provider) ConnectorID() string { return p.base.ConnectorID() }
 func (p *Provider) Capabilities() uvim.Capabilities {
-	return p.base.Capabilities()
+	caps := p.base.Capabilities()
+	caps.UploadResource = p.config.ResourceStore != nil
+	return caps
 }
 func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error { return p.base.Run(ctx, sink) }
 func (p *Provider) Download(ctx context.Context, req uvim.ResourceDownloadRequest) (uvim.ResourceRef, error) {
@@ -91,14 +108,17 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("mail send: %w", err)
 	}
-	if len(msg.Resources) > 0 || hasNonTextElements(msg.Elements) {
-		return uvim.SendResult{}, fmt.Errorf("mail send: resources and rich elements are not supported")
+	if err := uvim.ValidateOutboundResources(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, fmt.Errorf("mail send: %w", err)
+	}
+	if hasNonTextElements(msg.Elements) {
+		return uvim.SendResult{}, fmt.Errorf("mail send: rich elements are not supported")
 	}
 	if strings.TrimSpace(msg.Text) == "" && len(msg.Elements) > 0 {
 		msg.Text = textFromElements(msg.Elements)
 	}
-	if strings.TrimSpace(msg.Text) == "" {
-		return uvim.SendResult{}, fmt.Errorf("mail send: text is required")
+	if strings.TrimSpace(msg.Text) == "" && len(msg.Resources) == 0 {
+		return uvim.SendResult{}, fmt.Errorf("mail send: text or resource is required")
 	}
 	to := msg.ResolvedTarget().ID
 	if _, err := mail.ParseAddress(to); err != nil {
@@ -114,10 +134,65 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 	if strings.TrimSpace(p.config.SMTPAddr) == "" {
 		return uvim.SendResult{}, fmt.Errorf("mail send: smtp addr is required")
 	}
-	if err := smtp.SendMail(p.config.SMTPAddr, p.auth(), from, []string{to}, mailBytes(from, to, subject(msg), msg.Text, msg.Referrer.MessageID, p.now().UTC())); err != nil {
+	attachments, err := p.outboundAttachments(msg.Resources)
+	if err != nil {
+		return uvim.SendResult{}, err
+	}
+	if err := p.config.SendMail(p.config.SMTPAddr, p.auth(), from, []string{to}, mailBytes(from, to, subject(msg), msg.Text, msg.Referrer.MessageID, p.now().UTC(), attachments)); err != nil {
 		return uvim.SendResult{}, err
 	}
 	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: uvim.FirstNonEmpty(msg.ID, uvim.NewID("mail-msg")), Time: p.now().UTC()}, nil
+}
+
+type outboundMailAttachment struct {
+	name string
+	mime string
+	data []byte
+}
+
+func (p *Provider) outboundAttachments(refs []uvim.ResourceRef) ([]outboundMailAttachment, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	if p.config.ResourceStore == nil {
+		return nil, fmt.Errorf("mail upload: resource store is not configured")
+	}
+	if len(refs) > maxOutboundAttachmentCount {
+		return nil, fmt.Errorf("mail upload: %d resources exceed maximum %d", len(refs), maxOutboundAttachmentCount)
+	}
+	attachments := make([]outboundMailAttachment, 0, len(refs))
+	remaining := int64(maxOutboundAttachmentBytes)
+	for index, ref := range refs {
+		if !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
+			return nil, fmt.Errorf("mail upload: internal resource is required")
+		}
+		file, _, err := p.config.ResourceStore.Open(ref.InternalURL)
+		if err != nil {
+			return nil, uvim.NewProviderSendError("mail resource is unavailable", err)
+		}
+		data, readErr := io.ReadAll(io.LimitReader(file, remaining+1))
+		closeErr := file.Close()
+		if readErr != nil {
+			return nil, uvim.NewProviderSendError("mail resource read failed", readErr)
+		}
+		if closeErr != nil {
+			return nil, uvim.NewProviderSendError("mail resource close failed", closeErr)
+		}
+		if len(data) == 0 {
+			return nil, fmt.Errorf("mail upload: empty resources are not supported")
+		}
+		if int64(len(data)) > remaining {
+			return nil, fmt.Errorf("mail upload: resources exceed %d bytes", maxOutboundAttachmentBytes)
+		}
+		remaining -= int64(len(data))
+		name := uvim.ResourceUploadName(index, ref, ref.MIME)
+		mimeType := strings.TrimSpace(ref.MIME)
+		if mimeType == "" {
+			mimeType = http.DetectContentType(data)
+		}
+		attachments = append(attachments, outboundMailAttachment{name: name, mime: mimeType, data: data})
+	}
+	return attachments, nil
 }
 
 func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
@@ -186,15 +261,21 @@ func (p *Provider) auth() smtp.Auth {
 	return smtp.PlainAuth("", p.config.SMTPUsername, p.config.SMTPPassword, host)
 }
 
-func mailBytes(from, to, subject, body, replyTo string, now time.Time) []byte {
+func mailBytes(from, to, subject, body, replyTo string, now time.Time, attachments []outboundMailAttachment) []byte {
 	var buf bytes.Buffer
+	var mixed *multipart.Writer
+	contentType := `text/plain; charset="utf-8"`
+	if len(attachments) > 0 {
+		mixed = multipart.NewWriter(&buf)
+		contentType = `multipart/mixed; boundary="` + mixed.Boundary() + `"`
+	}
 	headers := map[string]string{
 		"From":         from,
 		"To":           to,
 		"Subject":      subject,
 		"Date":         now.Format(time.RFC1123Z),
 		"MIME-Version": "1.0",
-		"Content-Type": `text/plain; charset="utf-8"`,
+		"Content-Type": contentType,
 	}
 	if strings.TrimSpace(replyTo) != "" {
 		headers["In-Reply-To"] = strings.TrimSpace(replyTo)
@@ -207,8 +288,29 @@ func mailBytes(from, to, subject, body, replyTo string, now time.Time) []byte {
 		buf.WriteString("\r\n")
 	}
 	buf.WriteString("\r\n")
-	buf.WriteString(body)
-	buf.WriteString("\r\n")
+	if mixed == nil {
+		buf.WriteString(body)
+		buf.WriteString("\r\n")
+		return buf.Bytes()
+	}
+	textHeader := make(textproto.MIMEHeader)
+	textHeader.Set("Content-Type", `text/plain; charset="utf-8"`)
+	textPart, _ := mixed.CreatePart(textHeader)
+	_, _ = textPart.Write([]byte(body + "\r\n"))
+	for _, attachment := range attachments {
+		header := make(textproto.MIMEHeader)
+		header.Set("Content-Type", attachment.mime)
+		header.Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, attachment.name))
+		header.Set("Content-Transfer-Encoding", "base64")
+		part, _ := mixed.CreatePart(header)
+		encoded := base64.StdEncoding.EncodeToString(attachment.data)
+		for len(encoded) > 76 {
+			_, _ = io.WriteString(part, encoded[:76]+"\r\n")
+			encoded = encoded[76:]
+		}
+		_, _ = io.WriteString(part, encoded+"\r\n")
+	}
+	_ = mixed.Close()
 	return buf.Bytes()
 }
 

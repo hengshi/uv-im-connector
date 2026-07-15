@@ -3,6 +3,8 @@ package wecom
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,6 +26,12 @@ const (
 	cmdEventCallback = "aibot_event_callback"
 	cmdRespond       = "aibot_respond_msg"
 	cmdSend          = "aibot_send_msg"
+	cmdUploadInit    = "aibot_upload_media_init"
+	cmdUploadChunk   = "aibot_upload_media_chunk"
+	cmdUploadFinish  = "aibot_upload_media_finish"
+	mediaVoice       = "voice"
+	uploadChunkSize  = 512 * 1024
+	uploadMaxChunks  = 100
 )
 
 type Config struct {
@@ -148,9 +156,9 @@ func (p *Provider) Capabilities() uvim.Capabilities {
 		ProactiveDirect:  true,
 		ProactiveGroup:   true,
 		TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
-		UploadResource:   false,
+		UploadResource:   p.config.ResourceStore != nil,
 		DownloadResource: true,
-		ResourceKinds:    []string{uvim.ElementImage, uvim.ElementVideo, uvim.ElementFile},
+		ResourceKinds:    []string{uvim.ElementImage, uvim.ElementAudio, uvim.ElementVideo, uvim.ElementFile},
 		ChannelTypes:     []string{uvim.ChannelDirect, uvim.ChannelGroup},
 	}
 }
@@ -257,19 +265,35 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("wecom send: %w", err)
 	}
-	if len(msg.Resources) > 0 || hasNonTextElements(msg.Elements) {
-		return uvim.SendResult{}, fmt.Errorf("wecom send: resources and rich elements are not supported")
+	if err := uvim.ValidateOutboundResources(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, fmt.Errorf("wecom send: %w", err)
+	}
+	if len(msg.Resources) > 1 {
+		return uvim.SendResult{}, fmt.Errorf("wecom send: one resource per message is supported")
+	}
+	if hasNonTextElements(msg.Elements) {
+		return uvim.SendResult{}, fmt.Errorf("wecom send: rich elements are not supported")
 	}
 	text := uvim.TrimOutboundText(msg.Text, 20000)
 	if text == "" && len(msg.Elements) > 0 {
 		text = uvim.TrimOutboundText(textFromElements(msg.Elements), 20000)
 	}
-	if text == "" {
-		return uvim.SendResult{}, fmt.Errorf("wecom send: text is required")
+	if text != "" && len(msg.Resources) > 0 {
+		return uvim.SendResult{}, fmt.Errorf("wecom send: text and resources must be sent separately")
+	}
+	if text == "" && len(msg.Resources) == 0 {
+		return uvim.SendResult{}, fmt.Errorf("wecom send: text or resource is required")
 	}
 	conn, writeMu, err := p.waitActive(ctx)
 	if err != nil {
 		return uvim.SendResult{}, err
+	}
+	if len(msg.Resources) == 1 {
+		media, err := p.uploadResource(ctx, conn, writeMu, msg.Resources[0])
+		if err != nil {
+			return uvim.SendResult{}, err
+		}
+		return p.sendMedia(ctx, conn, writeMu, msg, media)
 	}
 	reqID := uvim.FirstNonEmpty(msg.Referrer.ReplyToken, p.reqID(cmdSend))
 	out := frame{Headers: headers{ReqID: reqID}}
@@ -308,6 +332,141 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 		return uvim.SendResult{}, err
 	}
 	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: reqID, Time: time.Now().UTC()}, nil
+}
+
+type uploadedMedia struct {
+	kind    string
+	mediaID string
+}
+
+func (p *Provider) uploadResource(ctx context.Context, conn WSConn, writeMu *sync.Mutex, ref uvim.ResourceRef) (uploadedMedia, error) {
+	if p.config.ResourceStore == nil {
+		return uploadedMedia{}, fmt.Errorf("wecom upload: resource store is not configured")
+	}
+	if !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
+		return uploadedMedia{}, fmt.Errorf("wecom upload: internal resource is required")
+	}
+	file, _, err := p.config.ResourceStore.Open(ref.InternalURL)
+	if err != nil {
+		return uploadedMedia{}, uvim.NewProviderSendError("wecom resource is unavailable", err)
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, int64(uploadChunkSize*uploadMaxChunks)+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return uploadedMedia{}, uvim.NewProviderSendError("wecom resource read failed", readErr)
+	}
+	if closeErr != nil {
+		return uploadedMedia{}, uvim.NewProviderSendError("wecom resource close failed", closeErr)
+	}
+	if len(data) == 0 {
+		return uploadedMedia{}, fmt.Errorf("wecom upload: empty resources are not supported")
+	}
+	totalChunks, err := wecomUploadChunkCount(len(data))
+	if err != nil {
+		return uploadedMedia{}, err
+	}
+	kind := wecomMediaKind(ref.Kind)
+	filename := uvim.ResourceUploadName(0, ref, ref.MIME)
+	// WeCom requires MD5 as a transport checksum; it is not used for security.
+	digest := md5.Sum(data) // #nosec G401 -- required by the WeCom upload protocol
+	initReqID := p.reqID(cmdUploadInit)
+	initAck, err := p.requestWithAck(ctx, conn, writeMu, initReqID, frame{
+		Cmd:     cmdUploadInit,
+		Headers: headers{ReqID: initReqID},
+		Body: map[string]any{
+			"type":         kind,
+			"filename":     filename,
+			"total_size":   len(data),
+			"total_chunks": totalChunks,
+			"md5":          fmt.Sprintf("%x", digest),
+		},
+	})
+	if err != nil {
+		return uploadedMedia{}, err
+	}
+	uploadID := uvim.StringValue(initAck.Body["upload_id"])
+	if uploadID == "" {
+		return uploadedMedia{}, fmt.Errorf("wecom upload: init response missing upload_id")
+	}
+	for index := 0; index < totalChunks; index++ {
+		start := index * uploadChunkSize
+		end := min(start+uploadChunkSize, len(data))
+		chunkReqID := p.reqID(cmdUploadChunk)
+		if _, err := p.requestWithAck(ctx, conn, writeMu, chunkReqID, frame{
+			Cmd:     cmdUploadChunk,
+			Headers: headers{ReqID: chunkReqID},
+			Body: map[string]any{
+				"upload_id":   uploadID,
+				"chunk_index": index + 1,
+				"base64_data": base64.StdEncoding.EncodeToString(data[start:end]),
+			},
+		}); err != nil {
+			return uploadedMedia{}, err
+		}
+	}
+	finishReqID := p.reqID(cmdUploadFinish)
+	finishAck, err := p.requestWithAck(ctx, conn, writeMu, finishReqID, frame{
+		Cmd:     cmdUploadFinish,
+		Headers: headers{ReqID: finishReqID},
+		Body:    map[string]any{"upload_id": uploadID},
+	})
+	if err != nil {
+		return uploadedMedia{}, err
+	}
+	mediaID := uvim.StringValue(finishAck.Body["media_id"])
+	if mediaID == "" {
+		return uploadedMedia{}, fmt.Errorf("wecom upload: finish response missing media_id")
+	}
+	return uploadedMedia{kind: kind, mediaID: mediaID}, nil
+}
+
+func wecomUploadChunkCount(size int) (int, error) {
+	if size <= 0 {
+		return 0, fmt.Errorf("wecom upload: empty resources are not supported")
+	}
+	chunks := (size + uploadChunkSize - 1) / uploadChunkSize
+	if chunks > uploadMaxChunks {
+		return 0, fmt.Errorf("wecom upload: resource exceeds %d bytes", uploadChunkSize*uploadMaxChunks)
+	}
+	return chunks, nil
+}
+
+func (p *Provider) sendMedia(ctx context.Context, conn WSConn, writeMu *sync.Mutex, msg uvim.OutboundMessage, media uploadedMedia) (uvim.SendResult, error) {
+	content := map[string]any{"media_id": media.mediaID}
+	body := map[string]any{"msgtype": media.kind, media.kind: content}
+	if msg.Referrer.ReplyToken != "" {
+		reqID := msg.Referrer.ReplyToken
+		err := p.withReplyLock(ctx, reqID, func() error {
+			return p.sendWithAck(ctx, conn, writeMu, reqID, frame{Cmd: cmdRespond, Headers: headers{ReqID: reqID}, Body: body})
+		})
+		if err != nil {
+			return uvim.SendResult{}, err
+		}
+		return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: reqID, Time: time.Now().UTC()}, nil
+	}
+	target := msg.ResolvedTarget()
+	if target.ID == "" {
+		return uvim.SendResult{}, fmt.Errorf("wecom send: target id is required")
+	}
+	reqID := p.reqID(cmdSend)
+	body["chatid"] = target.ID
+	if err := p.sendWithAck(ctx, conn, writeMu, reqID, frame{Cmd: cmdSend, Headers: headers{ReqID: reqID}, Body: body}); err != nil {
+		return uvim.SendResult{}, err
+	}
+	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: reqID, Time: time.Now().UTC()}, nil
+}
+
+func wecomMediaKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case uvim.ElementImage:
+		return uvim.ElementImage
+	case uvim.ElementVideo:
+		return uvim.ElementVideo
+	case uvim.ElementAudio:
+		return mediaVoice
+	default:
+		return uvim.ElementFile
+	}
 }
 
 func (p *Provider) Download(ctx context.Context, req uvim.ResourceDownloadRequest) (uvim.ResourceRef, error) {
@@ -532,22 +691,27 @@ func (p *Provider) heartbeat(ctx context.Context, conn WSConn, writeMu *sync.Mut
 }
 
 func (p *Provider) sendWithAck(ctx context.Context, conn WSConn, writeMu *sync.Mutex, reqID string, out frame) error {
+	_, err := p.requestWithAck(ctx, conn, writeMu, reqID, out)
+	return err
+}
+
+func (p *Provider) requestWithAck(ctx context.Context, conn WSConn, writeMu *sync.Mutex, reqID string, out frame) (frame, error) {
 	ctx, cancel := context.WithTimeout(ctx, p.config.AckTimeout)
 	defer cancel()
 	ch := p.registerPending(reqID)
 	defer p.unregisterPending(reqID)
 	if err := p.writeFrame(conn, writeMu, out); err != nil {
-		return err
+		return frame{}, err
 	}
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return frame{}, ctx.Err()
 	case ack := <-ch:
 		if ack.ErrCode != nil && *ack.ErrCode != 0 {
 			sendErr := fmt.Errorf("wecom ack error: errcode=%d errmsg=%q", *ack.ErrCode, ack.ErrMsg)
-			return uvim.NewProviderSendError(sendErr.Error(), sendErr)
+			return frame{}, uvim.NewProviderSendError(sendErr.Error(), sendErr)
 		}
-		return nil
+		return ack, nil
 	}
 }
 
@@ -721,7 +885,7 @@ func (p *Provider) releaseReplyLockRef(reqID string, lock *replyLock) {
 }
 
 func (p *Provider) reqID(prefix string) string {
-	return fmt.Sprintf("%s_%d", prefix, p.now().UnixNano())
+	return uvim.NewID(prefix)
 }
 
 func (p *Provider) store(dir string) *uvim.ResourceStore {

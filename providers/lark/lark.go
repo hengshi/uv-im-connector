@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
@@ -25,6 +27,8 @@ const (
 	defaultFeishuURL   = "https://open.feishu.cn"
 	defaultLarkURL     = "https://open.larksuite.com"
 	defaultHTTPTimeout = 15 * time.Second
+	maxImageBytes      = 10 * 1024 * 1024
+	maxFileBytes       = 30 * 1024 * 1024
 )
 
 type Config struct {
@@ -133,7 +137,7 @@ func (p *Provider) Capabilities() uvim.Capabilities {
 		ProactiveDirect:  true,
 		ProactiveGroup:   true,
 		TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
-		UploadResource:   false,
+		UploadResource:   p.config.ResourceStore != nil,
 		DownloadResource: true,
 		ResourceKinds:    []string{uvim.ElementImage, uvim.ElementAudio, uvim.ElementVideo, uvim.ElementFile},
 		ChannelTypes:     []string{uvim.ChannelDirect, uvim.ChannelGroup},
@@ -249,18 +253,36 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("lark send: %w", err)
 	}
-	if len(msg.Resources) > 0 || hasNonTextElements(msg.Elements) {
-		return uvim.SendResult{}, fmt.Errorf("lark send: resources and rich elements are not supported")
+	if err := uvim.ValidateOutboundResources(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, fmt.Errorf("lark send: %w", err)
+	}
+	if len(msg.Resources) > 1 {
+		return uvim.SendResult{}, fmt.Errorf("lark send: one resource per message is supported")
+	}
+	if hasNonTextElements(msg.Elements) {
+		return uvim.SendResult{}, fmt.Errorf("lark send: rich elements are not supported")
 	}
 	text := uvim.TrimOutboundText(msg.Text, 20000)
 	if text == "" && len(msg.Elements) > 0 {
 		text = uvim.TrimOutboundText(textFromElements(msg.Elements), 20000)
 	}
-	if text == "" {
-		return uvim.SendResult{}, fmt.Errorf("lark send: text is required")
+	if text != "" && len(msg.Resources) > 0 {
+		return uvim.SendResult{}, fmt.Errorf("lark send: text and resources must be sent separately")
 	}
-	contentRaw, _ := json.Marshal(map[string]string{"text": text})
-	body := map[string]any{"msg_type": "text", "content": string(contentRaw)}
+	if text == "" && len(msg.Resources) == 0 {
+		return uvim.SendResult{}, fmt.Errorf("lark send: text or resource is required")
+	}
+	msgType := "text"
+	content := map[string]string{"text": text}
+	if len(msg.Resources) == 1 {
+		var err error
+		msgType, content, err = p.uploadResource(ctx, msg.Resources[0])
+		if err != nil {
+			return uvim.SendResult{}, err
+		}
+	}
+	contentRaw, _ := json.Marshal(content)
+	body := map[string]any{"msg_type": msgType, "content": string(contentRaw)}
 	endpoint := ""
 	base := p.baseURL()
 	if strings.TrimSpace(msg.Referrer.MessageID) != "" {
@@ -315,6 +337,111 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 		return uvim.SendResult{}, uvim.NewProviderSendError(sendErr.Error(), sendErr)
 	}
 	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: decoded.Data.MessageID, Time: time.Now().UTC()}, nil
+}
+
+func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (string, map[string]string, error) {
+	if p.config.ResourceStore == nil {
+		return "", nil, fmt.Errorf("lark upload: resource store is not configured")
+	}
+	if !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
+		return "", nil, fmt.Errorf("lark upload: internal resource is required")
+	}
+	file, _, err := p.config.ResourceStore.Open(ref.InternalURL)
+	if err != nil {
+		return "", nil, uvim.NewProviderSendError("lark resource is unavailable", err)
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, maxFileBytes+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return "", nil, uvim.NewProviderSendError("lark resource read failed", readErr)
+	}
+	if closeErr != nil {
+		return "", nil, uvim.NewProviderSendError("lark resource close failed", closeErr)
+	}
+	if len(data) == 0 {
+		return "", nil, fmt.Errorf("lark upload: empty resources are not supported")
+	}
+	if len(data) > maxFileBytes {
+		return "", nil, fmt.Errorf("lark upload: resource exceeds %d bytes", maxFileBytes)
+	}
+	name := uvim.ResourceUploadName(0, ref, ref.MIME)
+	if strings.EqualFold(strings.TrimSpace(ref.Kind), uvim.ElementImage) && larkNativeImageMIME(ref.MIME) && len(data) <= maxImageBytes {
+		key, err := p.uploadMultipart(ctx, "/open-apis/im/v1/images", map[string]string{"image_type": "message"}, "image", name, ref.MIME, data, "image_key")
+		if err != nil {
+			return "", nil, err
+		}
+		return uvim.ElementImage, map[string]string{"image_key": key}, nil
+	}
+	key, err := p.uploadMultipart(ctx, "/open-apis/im/v1/files", map[string]string{"file_type": "stream", "file_name": name}, "file", name, ref.MIME, data, "file_key")
+	if err != nil {
+		return "", nil, err
+	}
+	return uvim.ElementFile, map[string]string{"file_key": key}, nil
+}
+
+func larkNativeImageMIME(mimeType string) bool {
+	switch strings.ToLower(strings.TrimSpace(strings.SplitN(mimeType, ";", 2)[0])) {
+	case "image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp", "image/x-icon", "image/tiff", "image/heic":
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[string]string, fileField, name, mimeType string, data []byte, responseKey string) (string, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			return "", err
+		}
+	}
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, fileField, name))
+	if strings.TrimSpace(mimeType) != "" {
+		header.Set("Content-Type", mimeType)
+	}
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return "", err
+	}
+	if _, err := part.Write(data); err != nil {
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+	token, err := p.tenantAccessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL()+path, &body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	respRaw, err := p.doJSON(req)
+	if err != nil {
+		return "", err
+	}
+	var decoded struct {
+		Code int               `json:"code"`
+		Msg  string            `json:"msg"`
+		Data map[string]string `json:"data"`
+	}
+	if err := json.Unmarshal(respRaw, &decoded); err != nil {
+		return "", fmt.Errorf("decode lark upload response: %w", err)
+	}
+	if decoded.Code != 0 {
+		sendErr := fmt.Errorf("lark upload: code=%d msg=%q", decoded.Code, decoded.Msg)
+		return "", uvim.NewProviderSendError(sendErr.Error(), sendErr)
+	}
+	key := strings.TrimSpace(decoded.Data[responseKey])
+	if key == "" {
+		return "", fmt.Errorf("lark upload: response missing %s", responseKey)
+	}
+	return key, nil
 }
 
 func (p *Provider) Download(ctx context.Context, req uvim.ResourceDownloadRequest) (uvim.ResourceRef, error) {

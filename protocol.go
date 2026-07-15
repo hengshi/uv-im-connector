@@ -335,6 +335,33 @@ func ValidateOutboundTarget(m OutboundMessage, capabilities Capabilities) error 
 	return fmt.Errorf("target kind %q is not supported", target.Kind)
 }
 
+// ValidateOutboundResources verifies that every outbound resource is covered by
+// the exact provider capability advertised to callers. Provider adapters with
+// custom send paths must call this too; otherwise they can accidentally bypass
+// the generic HTTP channel validation.
+func ValidateOutboundResources(m OutboundMessage, capabilities Capabilities) error {
+	if len(m.Resources) == 0 {
+		return nil
+	}
+	if !capabilities.UploadResource {
+		return fmt.Errorf("resources are not supported")
+	}
+	supported := make(map[string]struct{}, len(capabilities.ResourceKinds))
+	for _, kind := range capabilities.ResourceKinds {
+		kind = strings.ToLower(strings.TrimSpace(kind))
+		if kind != "" {
+			supported[kind] = struct{}{}
+		}
+	}
+	for _, ref := range m.Resources {
+		kind := strings.ToLower(strings.TrimSpace(ref.Kind))
+		if _, ok := supported[kind]; !ok {
+			return fmt.Errorf("resource kind %q is not supported", ref.Kind)
+		}
+	}
+	return nil
+}
+
 type SendResult struct {
 	Provider  string    `json:"provider"`
 	Connector string    `json:"connector,omitempty"`
