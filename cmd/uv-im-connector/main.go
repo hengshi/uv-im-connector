@@ -99,7 +99,7 @@ func buildProviders(providerList string, resourceDir string) ([]uvim.Provider, e
 				BotID:         os.Getenv("UV_WECOM_BOT_ID"),
 				Secret:        os.Getenv("UV_WECOM_BOT_SECRET"),
 				WSURL:         os.Getenv("UV_WECOM_WS_URL"),
-				ResourceStore: &uvim.ResourceStore{Dir: filepath.Join(resourceDir, "wecom")},
+				ResourceStore: &uvim.ResourceStore{Dir: resourceDir},
 			})
 			if err != nil {
 				return nil, err
@@ -115,7 +115,7 @@ func buildProviders(providerList string, resourceDir string) ([]uvim.Provider, e
 				BotUnionID:      os.Getenv("UV_LARK_BOT_UNION_ID"),
 				BaseURL:         os.Getenv("UV_LARK_BASE_URL"),
 				CallbackBaseURL: os.Getenv("UV_LARK_CALLBACK_BASE_URL"),
-				ResourceStore:   &uvim.ResourceStore{Dir: filepath.Join(resourceDir, "lark")},
+				ResourceStore:   &uvim.ResourceStore{Dir: resourceDir},
 			})
 			if err != nil {
 				return nil, err
@@ -130,14 +130,26 @@ func buildProviders(providerList string, resourceDir string) ([]uvim.Provider, e
 			providers = append(providers, provider)
 		case "discord":
 			c := httpEnv("DISCORD", "discord")
-			provider, err := discord.New(discord.Config(c))
+			provider, err := discord.New(discord.Config{
+				ConnectorID:   c.ConnectorID,
+				BaseURL:       c.BaseURL,
+				Token:         c.Token,
+				WebhookSecret: c.WebhookSecret,
+				ResourceStore: &uvim.ResourceStore{Dir: resourceDir},
+			})
 			if err != nil {
 				return nil, err
 			}
 			providers = append(providers, provider)
 		case "kook":
 			c := httpEnv("KOOK", "kook")
-			provider, err := kook.New(kook.Config(c))
+			provider, err := kook.New(kook.Config{
+				ConnectorID:   c.ConnectorID,
+				BaseURL:       c.BaseURL,
+				Token:         c.Token,
+				WebhookSecret: c.WebhookSecret,
+				ResourceStore: &uvim.ResourceStore{Dir: resourceDir},
+			})
 			if err != nil {
 				return nil, err
 			}
@@ -157,7 +169,7 @@ func buildProviders(providerList string, resourceDir string) ([]uvim.Provider, e
 				SMTPPassword:  os.Getenv("UV_MAIL_SMTP_PASSWORD"),
 				From:          os.Getenv("UV_MAIL_FROM"),
 				WebhookSecret: os.Getenv("UV_MAIL_WEBHOOK_SECRET"),
-				ResourceStore: &uvim.ResourceStore{Dir: filepath.Join(resourceDir, "mail")},
+				ResourceStore: &uvim.ResourceStore{Dir: resourceDir},
 			})
 			if err != nil {
 				return nil, err
@@ -165,7 +177,13 @@ func buildProviders(providerList string, resourceDir string) ([]uvim.Provider, e
 			providers = append(providers, provider)
 		case "matrix":
 			c := httpEnv("MATRIX", "matrix")
-			provider, err := matrix.New(matrix.Config(c))
+			provider, err := matrix.New(matrix.Config{
+				ConnectorID:   c.ConnectorID,
+				BaseURL:       c.BaseURL,
+				Token:         c.Token,
+				WebhookSecret: c.WebhookSecret,
+				ResourceStore: &uvim.ResourceStore{Dir: resourceDir},
+			})
 			if err != nil {
 				return nil, err
 			}
@@ -193,7 +211,13 @@ func buildProviders(providerList string, resourceDir string) ([]uvim.Provider, e
 			providers = append(providers, provider)
 		case "slack":
 			c := httpEnv("SLACK", "slack")
-			provider, err := slack.New(slack.Config(c))
+			provider, err := slack.New(slack.Config{
+				ConnectorID:   c.ConnectorID,
+				BaseURL:       c.BaseURL,
+				Token:         c.Token,
+				WebhookSecret: c.WebhookSecret,
+				ResourceStore: &uvim.ResourceStore{Dir: resourceDir},
+			})
 			if err != nil {
 				return nil, err
 			}
@@ -205,7 +229,7 @@ func buildProviders(providerList string, resourceDir string) ([]uvim.Provider, e
 				BaseURL:       c.BaseURL,
 				Token:         c.Token,
 				WebhookSecret: c.WebhookSecret,
-				ResourceStore: &uvim.ResourceStore{Dir: filepath.Join(resourceDir, "telegram")},
+				ResourceStore: &uvim.ResourceStore{Dir: resourceDir},
 			})
 			if err != nil {
 				return nil, err
@@ -213,7 +237,13 @@ func buildProviders(providerList string, resourceDir string) ([]uvim.Provider, e
 			providers = append(providers, provider)
 		case "wechat-official", "wechatofficial":
 			c := httpEnv("WECHAT_OFFICIAL", "wechat-official")
-			provider, err := wechatofficial.New(wechatofficial.Config(c))
+			provider, err := wechatofficial.New(wechatofficial.Config{
+				ConnectorID:   c.ConnectorID,
+				BaseURL:       c.BaseURL,
+				Token:         c.Token,
+				WebhookSecret: c.WebhookSecret,
+				ResourceStore: &uvim.ResourceStore{Dir: resourceDir},
+			})
 			if err != nil {
 				return nil, err
 			}
@@ -226,6 +256,7 @@ func buildProviders(providerList string, resourceDir string) ([]uvim.Provider, e
 				Token:         c.Token,
 				PhoneNumberID: os.Getenv("UV_WHATSAPP_PHONE_NUMBER_ID"),
 				WebhookSecret: c.WebhookSecret,
+				ResourceStore: &uvim.ResourceStore{Dir: resourceDir},
 			})
 			if err != nil {
 				return nil, err
@@ -233,7 +264,13 @@ func buildProviders(providerList string, resourceDir string) ([]uvim.Provider, e
 			providers = append(providers, provider)
 		case "zulip":
 			c := httpEnv("ZULIP", "zulip")
-			provider, err := zulip.New(zulip.Config(c))
+			provider, err := zulip.New(zulip.Config{
+				ConnectorID:   c.ConnectorID,
+				BaseURL:       c.BaseURL,
+				Token:         c.Token,
+				WebhookSecret: c.WebhookSecret,
+				ResourceStore: &uvim.ResourceStore{Dir: resourceDir},
+			})
 			if err != nil {
 				return nil, err
 			}

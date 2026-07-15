@@ -18,7 +18,11 @@ type Config struct {
 	BaseURL       string
 	Token         string
 	WebhookSecret string
+	ResourceStore *uvim.ResourceStore
+	HTTPClient    *http.Client
 }
+
+const maxAttachmentBytes = 10 * 1024 * 1024
 
 func New(config Config) (*httpchannel.Provider, error) {
 	baseURL := config.BaseURL
@@ -31,6 +35,8 @@ func New(config Config) (*httpchannel.Provider, error) {
 		BaseURL:           baseURL,
 		Token:             config.Token,
 		WebhookSecret:     config.WebhookSecret,
+		ResourceStore:     config.ResourceStore,
+		HTTPClient:        config.HTTPClient,
 		Decode:            Decode,
 		PrepareSend:       PrepareSend,
 		Send:              Send,
@@ -46,6 +52,7 @@ func New(config Config) (*httpchannel.Provider, error) {
 			ProactiveGroup:   true,
 			TargetKinds:      []string{uvim.TargetUser, uvim.TargetChannel, uvim.TargetConversation},
 			DownloadResource: true,
+			UploadResource:   config.ResourceStore != nil,
 			ResourceKinds:    []string{uvim.ElementImage, uvim.ElementVideo, uvim.ElementAudio, uvim.ElementFile},
 			ChannelTypes:     []string{uvim.ChannelDirect, uvim.ChannelGroup, uvim.ChannelThread},
 		},
@@ -117,9 +124,53 @@ func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Requ
 	if auth := httpchannel.BotAuthorization(config.Token); auth != "" {
 		header["Authorization"] = []string{auth}
 	}
-	body := map[string]any{"content": msg.Text}
+	body := map[string]any{}
+	if strings.TrimSpace(msg.Text) != "" {
+		body["content"] = msg.Text
+	}
 	if msg.Referrer.MessageID != "" {
 		body["message_reference"] = map[string]string{"message_id": msg.Referrer.MessageID}
+	}
+	if len(msg.Resources) > 0 {
+		if len(msg.Resources) != 1 {
+			return httpchannel.Request{}, fmt.Errorf("discord send: one resource per message is supported")
+		}
+		ref := msg.Resources[0]
+		if config.ResourceStore == nil || !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
+			return httpchannel.Request{}, fmt.Errorf("discord upload: internal resource is required")
+		}
+		file, _, err := config.ResourceStore.Open(ref.InternalURL)
+		if err != nil {
+			return httpchannel.Request{}, uvim.NewProviderSendError("discord resource is unavailable", err)
+		}
+		data, readErr := io.ReadAll(io.LimitReader(file, maxAttachmentBytes+1))
+		closeErr := file.Close()
+		if readErr != nil {
+			return httpchannel.Request{}, uvim.NewProviderSendError("discord resource read failed", readErr)
+		}
+		if closeErr != nil {
+			return httpchannel.Request{}, uvim.NewProviderSendError("discord resource close failed", closeErr)
+		}
+		if len(data) == 0 {
+			return httpchannel.Request{}, fmt.Errorf("discord upload: empty resources are not supported")
+		}
+		if len(data) > maxAttachmentBytes {
+			return httpchannel.Request{}, fmt.Errorf("discord upload: resource exceeds %d bytes", maxAttachmentBytes)
+		}
+		name := uvim.ResourceUploadName(0, ref, ref.MIME)
+		body["attachments"] = []map[string]any{{"id": 0, "filename": name}}
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return httpchannel.Request{}, err
+		}
+		return httpchannel.Request{
+			Path:   "/api/v10/channels/" + target.ID + "/messages",
+			Header: header,
+			Multipart: &httpchannel.MultipartBody{
+				Fields: map[string]string{"payload_json": string(payload)},
+				Files:  []httpchannel.MultipartFile{{Field: "files[0]", Name: name, MIME: ref.MIME, Data: data}},
+			},
+		}, nil
 	}
 	return httpchannel.Request{Path: "/api/v10/channels/" + target.ID + "/messages", Body: body, Header: header}, nil
 }

@@ -66,6 +66,27 @@ This table covers the 16 external providers and excludes `memory`, which is used
 | WhatsApp | Yes | Conditional | Yes | Conditional | Conditional | `user`, `group` | Groups API requires an eligible business account; free-form direct messages require the customer-service window. |
 | Zulip | Yes | Yes | Yes | Yes | Yes | `user`, `group` | Group targets are Zulip streams; the outbound topic is preserved when available. |
 
+The resource matrix is separate from text/conversation support. "Inbound" means the adapter can normalize and copy provider media into an `internal://` resource. "Outbound" means bytes created by `POST /v1/upload.create` can be sent by that adapter; callers must still check the live `upload_resource` flag and `resource_kinds` for the exact connector.
+
+| Provider | Inbound resources | Outbound internal resources | Accepted outbound kinds | Adapter/platform limit |
+| --- | --- | --- | --- | --- |
+| WeCom | Yes | Yes | `file`, `image`, `audio`, `video` | AI Bot WebSocket upload; 512 KiB × 100 chunks, about 50 MiB per resource. |
+| Lark / Feishu | Yes | Yes | `file`, `image`, `audio`, `video` | Images use the image API up to 10 MiB; other resources are delivered as file attachments up to 30 MiB. |
+| DingTalk | Yes | No | — | Current robot/session-webhook adapter has no internal-byte upload path. |
+| Discord | Yes | Yes | `file`, `image`, `audio`, `video` | Direct multipart message upload; default platform limit is 10 MiB per attachment. |
+| KOOK | Yes | Yes | `file`, `image`, `audio`, `video` | Asset upload followed by an image or attachment-card message; adapter cap is 100 MiB and platform policy may be lower. |
+| LINE | Yes | No | — | LINE outbound media requires a provider-reachable HTTPS content URL; uv-im-connector has no public media origin. |
+| Mail | Yes | Yes | `file`, `image`, `audio`, `video` | Sent as MIME attachments; adapter total is 25 MiB and 10 attachments per message. |
+| Matrix | Yes | Yes | `file`, `image`, `audio`, `video` | Content-repository upload followed by an `mxc://` room message; adapter cap is 100 MiB and the homeserver may enforce a lower limit. |
+| OneBot | Yes | No | — | Compatible-endpoint file/CQ upload behavior is not yet normalized. |
+| QQ | Yes | No | — | Same OneBot-style limitation as the QQ adapter. |
+| QQ Guild | Yes | No | — | Official rich-media upload handshake is not implemented. |
+| Slack | Yes | Yes | `file`, `image`, `audio`, `video` | External upload URL + raw upload + completion flow; adapter cap is 100 MiB and workspace policy may be lower. |
+| Telegram | Yes | Yes | `file`, `image`, `audio`, `video` | Multipart Bot API upload; photos up to 10 MiB, other files up to 50 MiB; unsupported native formats fall back to documents. |
+| WeChat Official Account | Yes | Yes (media only) | `image`, `audio`, `video` | Temporary-media upload plus customer-service send; no arbitrary file message. Images/video 10 MiB, voice 2 MiB. |
+| WhatsApp | Yes | Yes | `file`, `image`, `audio`, `video` | Cloud API media upload then message send; images 5 MiB, audio/video 16 MiB, documents 100 MiB. |
+| Zulip | Yes | Yes | `file`, `image`, `audio`, `video` | Simple user upload followed by a Markdown attachment link; adapter cap is 25 MiB and server policy may be lower. |
+
 ## Resources
 
 Provider download URLs, resource keys, encrypted payload keys, metadata needed for provider resource lookup, and raw payloads are provider-private. They must not be exposed to callers after normalization.

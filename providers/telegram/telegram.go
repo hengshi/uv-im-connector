@@ -1,10 +1,14 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
@@ -12,6 +16,11 @@ import (
 
 	uvim "github.com/hengshi/uv-im-connector"
 	"github.com/hengshi/uv-im-connector/providers/httpchannel"
+)
+
+const (
+	maxPhotoBytes = 10 * 1024 * 1024
+	maxMediaBytes = 50 * 1024 * 1024
 )
 
 type Config struct {
@@ -71,11 +80,29 @@ func New(config Config) (*Provider, error) {
 func (p *Provider) ID() string          { return p.base.ID() }
 func (p *Provider) ConnectorID() string { return p.base.ConnectorID() }
 func (p *Provider) Capabilities() uvim.Capabilities {
-	return p.base.Capabilities()
+	caps := p.base.Capabilities()
+	caps.UploadResource = p.config.ResourceStore != nil
+	return caps
 }
 func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error { return p.base.Run(ctx, sink) }
 func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
-	return p.base.Send(ctx, msg)
+	if len(msg.Resources) == 0 {
+		return p.base.Send(ctx, msg)
+	}
+	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, fmt.Errorf("telegram send: %w", err)
+	}
+	if err := uvim.ValidateOutboundResources(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, fmt.Errorf("telegram send: %w", err)
+	}
+	if len(msg.Resources) != 1 {
+		return uvim.SendResult{}, fmt.Errorf("telegram send: one resource per message is supported")
+	}
+	if strings.TrimSpace(msg.Text) != "" || len(msg.Elements) > 0 {
+		return uvim.SendResult{}, fmt.Errorf("telegram send: text, elements, and resources must be sent separately")
+	}
+	return p.sendResource(ctx, msg, msg.Resources[0])
+
 }
 func (p *Provider) Health(ctx context.Context) uvim.Health { return p.base.Health(ctx) }
 func (p *Provider) ServeWebhook(w http.ResponseWriter, req *http.Request, sink uvim.EventSink) {
@@ -126,6 +153,107 @@ func (p *Provider) filePath(ctx context.Context, fileID string) (string, error) 
 		return "", fmt.Errorf("telegram getFile: file path missing")
 	}
 	return decoded.Result.FilePath, nil
+}
+
+func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, ref uvim.ResourceRef) (uvim.SendResult, error) {
+	if p.config.ResourceStore == nil {
+		return uvim.SendResult{}, fmt.Errorf("telegram upload: resource store is not configured")
+	}
+	if !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
+		return uvim.SendResult{}, fmt.Errorf("telegram upload: internal resource is required")
+	}
+	file, _, err := p.config.ResourceStore.Open(ref.InternalURL)
+	if err != nil {
+		return uvim.SendResult{}, uvim.NewProviderSendError("telegram resource is unavailable", err)
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, maxMediaBytes+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return uvim.SendResult{}, uvim.NewProviderSendError("telegram resource read failed", readErr)
+	}
+	if closeErr != nil {
+		return uvim.SendResult{}, uvim.NewProviderSendError("telegram resource close failed", closeErr)
+	}
+	if len(data) == 0 {
+		return uvim.SendResult{}, fmt.Errorf("telegram upload: empty resources are not supported")
+	}
+	method, field, limit := telegramMediaRoute(ref)
+	if len(data) > limit {
+		return uvim.SendResult{}, fmt.Errorf("telegram upload: resource exceeds %d bytes", limit)
+	}
+	target := msg.ResolvedTarget()
+	if target.ID == "" {
+		return uvim.SendResult{}, fmt.Errorf("telegram send: target chat id is required")
+	}
+	name := uvim.ResourceUploadName(0, ref, ref.MIME)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("chat_id", target.ID); err != nil {
+		return uvim.SendResult{}, err
+	}
+	if replyTo, err := strconv.ParseInt(msg.Referrer.MessageID, 10, 64); err == nil && replyTo != 0 {
+		raw, _ := json.Marshal(map[string]int64{"message_id": replyTo})
+		if err := writer.WriteField("reply_parameters", string(raw)); err != nil {
+			return uvim.SendResult{}, err
+		}
+	}
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, field, name))
+	if strings.TrimSpace(ref.MIME) != "" {
+		header.Set("Content-Type", ref.MIME)
+	}
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return uvim.SendResult{}, err
+	}
+	if _, err := part.Write(data); err != nil {
+		return uvim.SendResult{}, err
+	}
+	if err := writer.Close(); err != nil {
+		return uvim.SendResult{}, err
+	}
+	endpoint := strings.TrimRight(p.config.BaseURL, "/") + "/bot" + p.config.Token + "/" + method
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
+	if err != nil {
+		return uvim.SendResult{}, err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := p.config.HTTPClient.Do(req)
+	if err != nil {
+		return uvim.SendResult{}, err
+	}
+	defer resp.Body.Close()
+	respRaw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return uvim.SendResult{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return uvim.SendResult{}, uvim.NewProviderSendError(fmt.Sprintf("telegram send: http %d", resp.StatusCode), fmt.Errorf("telegram send: http %d", resp.StatusCode))
+	}
+	messageID, err := ParseSendResponse(respRaw)
+	if err != nil {
+		return uvim.SendResult{}, err
+	}
+	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: messageID, Time: time.Now().UTC()}, nil
+}
+
+func telegramMediaRoute(ref uvim.ResourceRef) (method, field string, limit int) {
+	mimeType := strings.ToLower(strings.TrimSpace(ref.MIME))
+	switch strings.ToLower(strings.TrimSpace(ref.Kind)) {
+	case uvim.ElementImage:
+		if mimeType == "image/jpeg" || mimeType == "image/png" || mimeType == "image/webp" {
+			return "sendPhoto", "photo", maxPhotoBytes
+		}
+	case uvim.ElementAudio:
+		if mimeType == "audio/mpeg" || mimeType == "audio/mp4" || mimeType == "audio/x-m4a" {
+			return "sendAudio", "audio", maxMediaBytes
+		}
+	case uvim.ElementVideo:
+		if mimeType == "video/mp4" {
+			return "sendVideo", "video", maxMediaBytes
+		}
+	}
+	return "sendDocument", "document", maxMediaBytes
 }
 
 func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
