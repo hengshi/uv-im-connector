@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestEventDedupeKeyUsesProviderConnectorAndMessage(t *testing.T) {
@@ -170,6 +171,37 @@ func TestOutboundTargetIsAdditiveJSON(t *testing.T) {
 	target, _ := got["target"].(map[string]any)
 	if target["id"] != "ou_user" || target["kind"] != TargetUser {
 		t.Fatalf("target = %+v", target)
+	}
+}
+
+func TestReplyHandlePolicyIsAdditiveJSON(t *testing.T) {
+	expiresAt := time.Date(2026, 7, 16, 10, 10, 0, 0, time.UTC)
+	raw, err := json.Marshal(Event{
+		ID:       "evt-1",
+		Provider: "line",
+		Referrer: Referrer{ReplyToken: "reply-1", ExpiresAt: &expiresAt},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event Event
+	if err := json.Unmarshal(raw, &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Referrer.ExpiresAt == nil || !event.Referrer.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("reply expiry = %v, want %v", event.Referrer.ExpiresAt, expiresAt)
+	}
+
+	raw, err = json.Marshal(Capabilities{ReplyMessage: true, ReplyMaxUses: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capabilities Capabilities
+	if err := json.Unmarshal(raw, &capabilities); err != nil {
+		t.Fatal(err)
+	}
+	if capabilities.ReplyMaxUses != 1 {
+		t.Fatalf("reply max uses = %d, want 1", capabilities.ReplyMaxUses)
 	}
 }
 

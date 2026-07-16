@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	uvim "github.com/hengshi/uv-im-connector"
 	"github.com/hengshi/uv-im-connector/providers/httpchannel"
@@ -45,6 +46,7 @@ func New(config Config) (*Provider, error) {
 			DirectMessage:   true,
 			GroupMessage:    true,
 			ReplyMessage:    true,
+			ReplyMaxUses:    1,
 			ProactiveDirect: true,
 			ProactiveGroup:  true,
 			TargetKinds:     []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
@@ -113,6 +115,11 @@ func DecodeEvents(raw []byte, config httpchannel.Config) ([]uvim.Event, error) {
 }
 
 func eventFromWebhookItem(item lineWebhookEvent, config httpchannel.Config) uvim.Event {
+	now := time.Now().UTC()
+	if config.Now != nil {
+		now = config.Now().UTC()
+	}
+	expiresAt := now.Add(time.Minute)
 	channelID := firstNonEmpty(item.Source.GroupID, item.Source.RoomID, item.Source.UserID)
 	channelType := uvim.ChannelDirect
 	target := uvim.OutboundTarget{ID: item.Source.UserID, Kind: uvim.TargetUser}
@@ -142,7 +149,7 @@ func eventFromWebhookItem(item lineWebhookEvent, config httpchannel.Config) uvim
 		Channel:   uvim.Channel{ID: channelID, Type: channelType},
 		User:      uvim.User{ID: item.Source.UserID},
 		Message:   uvim.Message{ID: item.Message.ID, Text: item.Message.Text, Type: item.Message.Type, Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: item.Message.ID, ChannelID: channelID, ReplyToken: item.ReplyToken, Target: &target},
+		Referrer:  uvim.Referrer{MessageID: item.Message.ID, ChannelID: channelID, ReplyToken: item.ReplyToken, ExpiresAt: &expiresAt, Target: &target},
 		Addressed: true,
 	}
 }

@@ -68,6 +68,8 @@ Use the event fields to send a reply:
 
 A proactive server send has no inbound `referrer`, so it must provide `target` explicitly after checking the provider's `proactive_direct` / `proactive_group` and `target_kinds` capabilities.
 
+A reply flow should also retain the complete `referrer` and honor its `expires_at` value plus the provider's `reply_max_uses`. After a reply handle expires or is exhausted, clear the handle and use `referrer.target` only when proactive delivery is supported; do not hard-code deadlines from provider names.
+
 When a send fails, `POST /v1/message.create` returns HTTP `502` and `error: "provider_send_failed"`. If the adapter has a provider business failure reason that is safe to expose, the response also includes it as a bounded `detail`; arbitrary network errors are not echoed because they can contain credentials. Callers can surface `detail` or use it to decide whether to retry or fall back when it is present.
 
 Callers should not call provider-native send APIs directly. Provider-specific send behavior belongs in provider adapters.

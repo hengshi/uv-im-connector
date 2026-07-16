@@ -158,12 +158,12 @@ The 16 external providers have the following conversation and outbound capabilit
 
 | Provider | Direct inbound | Group inbound | Reply | Proactive direct | Proactive group | Outbound target kinds | Constraint |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| WeCom | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `conversation` | Uses the AI Bot WebSocket API. |
+| WeCom | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `conversation` | AI Bot stream reply handles expire after 10 minutes; the inbound target supports proactive fallback. |
 | Lark / Feishu | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `conversation` | User targets are Open IDs; group/conversation targets are chat IDs. |
-| DingTalk | Yes | Yes | Yes | No | Conditional | `user`, `group` | Replies use the inbound session webhook; proactive sends use the configured group webhook. |
+| DingTalk | Yes | Yes | Yes | No | Conditional | Replies use the inbound session webhook and its payload deadline; proactive fallback is available only for configured group webhooks. |
 | Discord | Yes | Yes | Yes | Yes | Yes | `user`, `channel`, `conversation` | A user target opens or reuses a Discord DM channel before sending. |
 | KOOK | Yes | Yes | Yes | Yes | Yes | `user`, `channel` | Direct messages use the KOOK direct-message API. |
-| LINE | Yes | Yes | Yes | Conditional | Conditional | `user`, `group`, `conversation` | Push targets must satisfy LINE friendship, recent-contact, or group-membership rules. |
+| LINE | Yes | Yes | Yes | Conditional | Conditional | `user`, `group`, `conversation` | Reply tokens are single-use and short-lived; push fallback targets must satisfy LINE friendship, recent-contact, or group-membership rules. |
 | Mail | Yes | No | Yes | Yes | No | `user` | The user target is an email address. |
 | Matrix | Yes (room) | Yes (room) | Yes | Conditional | Yes | `conversation` | Matrix message events do not identify direct versus group rooms; the target must be a known room ID. |
 | OneBot | Yes | Yes | Yes | Yes | Yes | `user`, `group` | Requires a compatible OneBot endpoint. |
@@ -346,6 +346,8 @@ Reply to a known message or thread by carrying the event referrer back:
 `target.kind` is one of `user`, `group`, `channel`, or `conversation`. Use a kind declared in the provider's `capabilities.target_kinds`. For a reply, copy the inbound event's complete `referrer`; its target takes precedence over legacy channel fields. The legacy `channel_id` and `channel_type` fields remain accepted for protocol-v1 callers: `direct` resolves to `user`, `group` to `group`, `thread` to `channel`, and `room` or an empty type resolves to `conversation`. The legacy `channel_id` remains the provider-native existing conversation/channel ID; only the semantic kind is mapped, so it is not reinterpreted as a proactive user ID. A legacy request must include a channel ID or a message/reply handle. Unknown non-empty legacy channel types are rejected instead of being guessed.
 
 `GET /v1/meta` exposes `reply_message`, `proactive_direct`, `proactive_group`, and `target_kinds` for each configured provider. Callers should check these fields before displaying or invoking an outbound operation.
+
+Some inbound `referrer` values contain short-lived or limited-use reply handles. `referrer.expires_at` is the provider-supplied or adapter-derived deadline, and `capabilities.reply_max_uses` is the maximum number of outbound attempts that may carry the handle; an omitted or zero maximum means that no finite use limit is declared. A caller that needs to send after the deadline or use limit must remove the message/reply handle and send to `referrer.target` only when the corresponding proactive capability and target kind are available. This contract is capability-driven: provider business windows that do not behave like expiring reply handles remain provider constraints rather than generic retries.
 
 Provider adapters map the normalized outbound request into the provider-native API. Unsupported rich elements or resource types should return explicit errors instead of being silently dropped.
 

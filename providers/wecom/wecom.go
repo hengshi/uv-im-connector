@@ -529,6 +529,8 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 	userID := uvim.StringValue(from["userid"])
 	channelID := uvim.FirstNonEmpty(uvim.StringValue(body["chatid"]), userID)
 	messageID := uvim.FirstNonEmpty(uvim.StringValue(body["msgid"]), in.Headers.ReqID)
+	now := p.now().UTC()
+	expiresAt := now.Add(10 * time.Minute)
 	targetKind := uvim.TargetUser
 	if channelType == uvim.ChannelGroup {
 		targetKind = uvim.TargetGroup
@@ -538,7 +540,7 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 		Type:      uvim.EventMessageCreate,
 		Provider:  p.ID(),
 		Connector: p.ConnectorID(),
-		Time:      time.Now().UTC(),
+		Time:      now,
 		Login:     uvim.Login{Platform: p.ID(), Connector: p.ConnectorID(), ID: p.config.BotID},
 		Channel:   uvim.Channel{ID: channelID, Type: channelType},
 		User:      uvim.User{ID: userID},
@@ -549,7 +551,7 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 			Elements:  elementsFromTextAndResources(text, resources),
 			Resources: resources,
 		},
-		Referrer:  uvim.Referrer{MessageID: messageID, ChannelID: channelID, ReplyToken: in.Headers.ReqID, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
+		Referrer:  uvim.Referrer{MessageID: messageID, ChannelID: channelID, ReplyToken: in.Headers.ReqID, ExpiresAt: &expiresAt, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
 		Addressed: channelType != uvim.ChannelGroup,
 	}, true
 }

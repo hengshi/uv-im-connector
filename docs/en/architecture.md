@@ -43,18 +43,20 @@ The normalized protocol has these stable objects:
 
 `reply_message` means that an outbound message can carry an inbound event's `referrer` to reply to an existing message. `proactive_direct` and `proactive_group` mean the server can send to a direct or group target without a current inbound message. Callers should read these capabilities from `/v1/meta` instead of inferring them from a provider name.
 
+Some inbound `referrer` values contain short-lived or limited-use reply handles. `referrer.expires_at` is the provider-supplied or adapter-derived deadline, and `capabilities.reply_max_uses` is the maximum number of outbound attempts that may carry the handle; an omitted or zero maximum means that no finite use limit is declared. After the deadline or use limit, callers must remove the message/reply handle and may use `referrer.target` only when the corresponding proactive capability and target kind are available. Provider business windows without reply-handle semantics remain provider constraints and must not be treated as a generic retry of the same proactive message.
+
 ## Provider Capability Matrix
 
 This table covers the 16 external providers and excludes `memory`, which is used for tests and local development. `Conditional` means the adapter supports the operation when the platform condition in the last column is met.
 
 | Provider | Direct inbound | Group inbound | Reply | Proactive direct | Proactive group | Outbound target kinds | Constraint |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| WeCom | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `conversation` | Uses the AI Bot WebSocket API. |
+| WeCom | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `conversation` | AI Bot stream reply handles expire after 10 minutes; the inbound target supports proactive fallback. |
 | Lark / Feishu | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `conversation` | User targets are Open IDs; group/conversation targets are chat IDs. |
-| DingTalk | Yes | Yes | Yes | No | Conditional | `user`, `group` | Replies use the inbound session webhook; proactive sends use the configured group webhook. |
+| DingTalk | Yes | Yes | Yes | No | Conditional | `user`, `group` | Replies use the inbound session webhook and its payload deadline; proactive fallback is available only for configured group webhooks. |
 | Discord | Yes | Yes | Yes | Yes | Yes | `user`, `channel`, `conversation` | A user target opens or reuses a Discord DM channel before sending. |
 | KOOK | Yes | Yes | Yes | Yes | Yes | `user`, `channel` | Direct messages use the KOOK direct-message API. |
-| LINE | Yes | Yes | Yes | Conditional | Conditional | `user`, `group`, `conversation` | Push targets must satisfy LINE friendship, recent-contact, or group-membership rules. |
+| LINE | Yes | Yes | Yes | Conditional | Conditional | `user`, `group`, `conversation` | Reply tokens are single-use and short-lived; push fallback targets must satisfy LINE friendship, recent-contact, or group-membership rules. |
 | Mail | Yes | No | Yes | Yes | No | `user` | The user target is an email address. |
 | Matrix | Yes (room) | Yes (room) | Yes | Conditional | Yes | `conversation` | Matrix message events do not identify direct versus group rooms; the target must be a known room ID. |
 | OneBot | Yes | Yes | Yes | Yes | Yes | `user`, `group` | Requires a compatible OneBot endpoint. |

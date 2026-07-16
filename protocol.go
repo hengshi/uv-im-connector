@@ -172,6 +172,7 @@ type Referrer struct {
 	ChannelID       string          `json:"channel_id,omitempty"`
 	ThreadID        string          `json:"thread_id,omitempty"`
 	ReplyToken      string          `json:"reply_token,omitempty"`
+	ExpiresAt       *time.Time      `json:"expires_at,omitempty"`
 	Target          *OutboundTarget `json:"target,omitempty"`
 }
 
@@ -220,6 +221,7 @@ type Capabilities struct {
 	GroupMessage     bool     `json:"group_message,omitempty"`
 	ThreadReply      bool     `json:"thread_reply,omitempty"`
 	ReplyMessage     bool     `json:"reply_message,omitempty"`
+	ReplyMaxUses     int      `json:"reply_max_uses,omitempty"`
 	ProactiveDirect  bool     `json:"proactive_direct,omitempty"`
 	ProactiveGroup   bool     `json:"proactive_group,omitempty"`
 	TargetKinds      []string `json:"target_kinds,omitempty"`
