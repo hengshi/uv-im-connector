@@ -33,7 +33,8 @@ func TestProviderConformanceShape(t *testing.T) {
 }
 
 func TestDecodeMessageFile(t *testing.T) {
-	provider, err := New(Config{BotID: "bot", Secret: "secret"})
+	now := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
+	provider, err := New(Config{BotID: "bot", Secret: "secret", Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +58,9 @@ func TestDecodeMessageFile(t *testing.T) {
 	}
 	if event.Referrer.Target == nil || event.Referrer.Target.ID != "chat-1" || event.Referrer.Target.Kind != uvim.TargetGroup {
 		t.Fatalf("reply target = %+v", event.Referrer.Target)
+	}
+	if event.Referrer.ExpiresAt == nil || !event.Referrer.ExpiresAt.Equal(now.Add(10*time.Minute)) {
+		t.Fatalf("reply expiry = %v", event.Referrer.ExpiresAt)
 	}
 	if len(event.Message.Resources) != 1 || event.Message.Resources[0].Name != "log.txt" {
 		t.Fatalf("resources = %+v", event.Message.Resources)

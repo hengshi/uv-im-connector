@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,5 +144,34 @@ func TestServiceMetaReturnsTypedServiceMetadata(t *testing.T) {
 	}
 	if meta.Service != uvim.ServiceName || meta.ConnectorVersion != "v0.0.4" || meta.ProtocolVersion != uvim.ProtocolVersion {
 		t.Fatalf("meta = %+v", meta)
+	}
+}
+
+func TestSendSurfacesStructuredProviderFailureDetail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error":  "provider_send_failed",
+			"detail": "stream message update expired",
+		})
+	}))
+	defer server.Close()
+
+	_, err := New(server.URL).Send(context.Background(), uvim.OutboundMessage{Provider: "wecom", Text: "done"})
+	if err == nil || !strings.Contains(err.Error(), "http 502") || !strings.Contains(err.Error(), "stream message update expired") {
+		t.Fatalf("Send error = %v", err)
+	}
+}
+
+func TestSendDoesNotSurfaceUnstructuredFailureBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("upstream token=secret"))
+	}))
+	defer server.Close()
+
+	_, err := New(server.URL).Send(context.Background(), uvim.OutboundMessage{Provider: "wecom", Text: "done"})
+	if err == nil || err.Error() != "http 502" {
+		t.Fatalf("Send error = %v", err)
 	}
 }

@@ -53,6 +53,9 @@ func AssertProviderMetadata(t *testing.T, provider uvim.Provider) {
 	if caps.Outbound && !caps.ReplyMessage && !caps.ProactiveDirect && !caps.ProactiveGroup {
 		t.Fatalf("provider %s must declare at least one outbound mode", provider.ID())
 	}
+	if caps.ReplyMaxUses < 0 || (caps.ReplyMaxUses > 0 && !caps.ReplyMessage) {
+		t.Fatalf("provider %s has invalid reply_max_uses %d", provider.ID(), caps.ReplyMaxUses)
+	}
 	if caps.Outbound && len(caps.TargetKinds) == 0 {
 		t.Fatalf("provider %s must declare outbound target kinds", provider.ID())
 	}

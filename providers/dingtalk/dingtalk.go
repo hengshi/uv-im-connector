@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	uvim "github.com/hengshi/uv-im-connector"
 	"github.com/hengshi/uv-im-connector/providers/httpchannel"
@@ -53,6 +54,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		ConversationID   string `json:"conversationId"`
 		ConversationType string `json:"conversationType"`
 		SessionWebhook   string `json:"sessionWebhook"`
+		SessionExpiresAt int64  `json:"sessionWebhookExpiredTime"`
 		Text             struct {
 			Content string `json:"content"`
 		} `json:"text"`
@@ -74,6 +76,11 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		target = uvim.OutboundTarget{ID: msg.SenderStaffID, Kind: uvim.TargetUser}
 	}
 	refs := dingtalkResources(config, msg.MsgType, msg.Image, msg.File, msg.Video, msg.Voice)
+	var expiresAt *time.Time
+	if msg.SessionExpiresAt > 0 {
+		value := time.UnixMilli(msg.SessionExpiresAt).UTC()
+		expiresAt = &value
+	}
 	return uvim.Event{
 		ID:        msg.MsgID,
 		Type:      uvim.EventMessageCreate,
@@ -82,7 +89,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Channel:   uvim.Channel{ID: msg.ConversationID, Type: channelType},
 		User:      uvim.User{ID: msg.SenderStaffID, Name: msg.SenderNick},
 		Message:   uvim.Message{ID: msg.MsgID, Text: strings.TrimSpace(msg.Text.Content), Type: uvim.FirstNonEmpty(msg.MsgType, "text"), Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: msg.MsgID, ChannelID: msg.ConversationID, ReplyToken: msg.SessionWebhook, Target: &target},
+		Referrer:  uvim.Referrer{MessageID: msg.MsgID, ChannelID: msg.ConversationID, ReplyToken: msg.SessionWebhook, ExpiresAt: expiresAt, Target: &target},
 		Addressed: true,
 	}, true, nil
 }

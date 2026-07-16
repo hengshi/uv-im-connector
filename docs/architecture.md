@@ -43,18 +43,20 @@ caller application
 
 `reply_message` 表示可以携带入站事件的 `referrer` 回复已有消息；`proactive_direct` 和 `proactive_group` 表示没有当前入站消息时，Server 能否主动发送私聊或群聊消息。调用方应从 `/v1/meta` 读取这些能力，不应根据 provider 名称推断。
 
+部分入站 `referrer` 带有短效或限次 reply handle。`referrer.expires_at` 表示 provider 给出或 adapter 推导的截止时间；`capabilities.reply_max_uses` 表示该 handle 最多可用于多少次出站尝试，字段缺失或为 `0` 表示没有声明有限次数。超过截止时间或次数后，调用方必须移除 message / reply handle，并且只能在对应主动发送能力和 target kind 可用时改用 `referrer.target`。不具备 reply-handle 语义的平台业务会话窗口仍属于 provider 限制，不能统一重试为同一条主动消息。
+
 ## Provider 能力矩阵
 
 下表只列 16 个外部 provider，不包含用于测试和本地开发的 `memory`。`有条件` 表示 adapter 已支持该操作，但必须满足“限制”列的平台条件。
 
 | Provider | 私聊入站 | 群聊入站 | 回复已有消息 | Server 主动私聊 | Server 主动群聊 | 出站 target kind | 限制 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| WeCom | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`group`、`conversation` | 使用 AI Bot WebSocket API。 |
+| WeCom | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`group`、`conversation` | AI Bot stream reply handle 在 10 分钟后过期；入站 target 可用于主动发送 fallback。 |
 | Lark / Feishu | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`group`、`conversation` | 用户目标是 Open ID；群聊 / 会话目标是 chat ID。 |
-| DingTalk | 支持 | 支持 | 支持 | 不支持 | 有条件 | `user`、`group` | 回复使用入站 session webhook；主动发送使用配置的群机器人 webhook。 |
+| DingTalk | 支持 | 支持 | 支持 | 不支持 | 有条件 | `user`、`group` | 回复使用入站 session webhook 及 payload 中的截止时间；主动 fallback 只适用于已配置的群机器人 webhook。 |
 | Discord | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`channel`、`conversation` | 用户目标会先创建或复用 Discord DM channel。 |
 | KOOK | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`channel` | 私聊使用 KOOK direct-message API。 |
-| LINE | 支持 | 支持 | 支持 | 有条件 | 有条件 | `user`、`group`、`conversation` | Push target 必须满足 LINE 的好友、近期联系或群成员规则。 |
+| LINE | 支持 | 支持 | 支持 | 有条件 | 有条件 | `user`、`group`、`conversation` | Reply token 单次且短效；push fallback target 必须满足 LINE 的好友、近期联系或群成员规则。 |
 | Mail | 支持 | 不支持 | 支持 | 支持 | 不支持 | `user` | 用户目标是 email address。 |
 | Matrix | 支持（room） | 支持（room） | 支持 | 有条件 | 支持 | `conversation` | Matrix 消息事件不区分私聊 / 群聊 room；调用方必须提供已知 room ID。 |
 | OneBot | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`group` | 需要兼容的 OneBot endpoint。 |

@@ -68,6 +68,8 @@ caller application
 
 Server 主动发送没有入站 `referrer`，必须显式传 `target`，并先检查 provider 的 `proactive_direct` / `proactive_group` 和 `target_kinds`。
 
+回复流程还应保留完整 `referrer`，并遵守 `expires_at` 和 provider 的 `reply_max_uses`。reply handle 过期或耗尽后，只能在主动发送能力允许时清除 handle、改用 `referrer.target`；不要根据 provider 名称硬编码超时时间。
+
 发送失败时，`POST /v1/message.create` 返回 HTTP `502` 和 `error: "provider_send_failed"`。如果 adapter 拿到了可安全公开的平台业务失败原因，响应还会通过限长的 `detail` 返回；可能包含凭证的任意网络错误不会原样回传。调用方可以在 `detail` 存在时展示该原因，或据此决定重试和 fallback。
 
 调用方不应该直接调用 provider-native send API。Provider 特有发送逻辑属于 provider adapter。

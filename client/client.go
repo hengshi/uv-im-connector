@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -146,9 +147,31 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("http %d", resp.StatusCode)
+		return structuredHTTPError(resp.StatusCode, resp.Body)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func structuredHTTPError(statusCode int, body io.Reader) error {
+	var response struct {
+		Error  string `json:"error"`
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(io.LimitReader(body, 64<<10)).Decode(&response); err != nil {
+		return fmt.Errorf("http %d", statusCode)
+	}
+	detail := strings.Join(strings.Fields(response.Detail), " ")
+	if runes := []rune(detail); len(runes) > 512 {
+		detail = string(runes[:512])
+	}
+	if detail != "" {
+		return fmt.Errorf("http %d: %s", statusCode, detail)
+	}
+	code := strings.TrimSpace(response.Error)
+	if code != "" {
+		return fmt.Errorf("http %d: %s", statusCode, code)
+	}
+	return fmt.Errorf("http %d", statusCode)
 }
 
 func (c *Client) postJSON(ctx context.Context, path string, in any, out any) error {
@@ -168,7 +191,7 @@ func (c *Client) postJSON(ctx context.Context, path string, in any, out any) err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("http %d", resp.StatusCode)
+		return structuredHTTPError(resp.StatusCode, resp.Body)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
