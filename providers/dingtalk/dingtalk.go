@@ -16,14 +16,23 @@ type Config struct {
 	BaseURL       string
 	Token         string
 	WebhookSecret string
+	ClientID      string
+	ClientSecret  string
 }
 
-func New(config Config) (*httpchannel.Provider, error) {
+func New(config Config) (*Provider, error) {
+	clientID := strings.TrimSpace(config.ClientID)
+	clientSecret := strings.TrimSpace(config.ClientSecret)
+	if (clientID == "") != (clientSecret == "") {
+		return nil, fmt.Errorf("dingtalk provider: client_id and client_secret must be configured together")
+	}
+	config.ClientID = clientID
+	config.ClientSecret = clientSecret
 	baseURL := config.BaseURL
 	if baseURL == "" {
 		baseURL = "https://oapi.dingtalk.com"
 	}
-	return httpchannel.New(httpchannel.Config{
+	base, err := httpchannel.New(httpchannel.Config{
 		ProviderID:        "dingtalk",
 		ConnectorID:       firstNonEmpty(config.ConnectorID, "dingtalk"),
 		BaseURL:           baseURL,
@@ -43,6 +52,10 @@ func New(config Config) (*httpchannel.Provider, error) {
 			ChannelTypes:   []string{uvim.ChannelDirect, uvim.ChannelGroup},
 		},
 	})
+	if err != nil {
+		return nil, err
+	}
+	return newProvider(config, base), nil
 }
 
 func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {

@@ -20,6 +20,8 @@
 | `UV_LARK_BOT_UNION_ID` | 可选 bot union ID，用于 mention stripping。 |
 | `UV_LARK_BASE_URL` | 可选 OpenAPI base URL override。 |
 | `UV_LARK_CALLBACK_BASE_URL` | 可选 callback WebSocket endpoint base URL override。 |
+| `UV_DINGTALK_CLIENT_ID` | DingTalk 应用 Client ID。必须与 `UV_DINGTALK_CLIENT_SECRET` 同时配置；配置后使用 Stream 模式接收入站消息，不需要公网 callback。 |
+| `UV_DINGTALK_CLIENT_SECRET` | DingTalk 应用 Client Secret。必须与 `UV_DINGTALK_CLIENT_ID` 同时配置。 |
 | `UV_<PROVIDER>_CONNECTOR_ID` | HTTP/webhook 类 provider 的 connector ID，默认 provider ID。 |
 | `UV_<PROVIDER>_BASE_URL` | Provider API base URL override。 |
 | `UV_<PROVIDER>_TOKEN` | Provider API token。值以 `Bearer `、`Bot ` 或 `Basic ` 开头时，会原样作为 Authorization；否则当 provider 需要 Authorization header 时作为 bearer token 发送。 |
@@ -40,3 +42,5 @@ DINGTALK DISCORD KOOK LINE MATRIX ONEBOT QQ QQGUILD SLACK TELEGRAM WECHAT_OFFICI
 ```
 
 `UV_IM_PROVIDERS` 为空时，二进制只会自动加载检测到 credentials 或 webhook 配置的 provider。`memory` 不会在生产模式下自动加载。
+
+DingTalk 有两种入站模式。配置完整的 `UV_DINGTALK_CLIENT_ID` 和 `UV_DINGTALK_CLIENT_SECRET` 时使用 Stream 模式；两者都不配置时保留原有 webhook 模式，并由 `UV_DINGTALK_WEBHOOK_SECRET` 验证入站请求。只配置其中一个会直接启动失败，不能静默降级。两种模式的回复都复用入站消息携带的 session webhook；`UV_DINGTALK_TOKEN` 仅用于已配置群机器人的主动群消息。
