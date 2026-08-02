@@ -123,7 +123,14 @@ func buildProviders(providerList string, resourceDir string) ([]uvim.Provider, e
 			providers = append(providers, provider)
 		case "dingtalk":
 			c := httpEnv("DINGTALK", "dingtalk")
-			provider, err := dingtalk.New(dingtalk.Config(c))
+			provider, err := dingtalk.New(dingtalk.Config{
+				ConnectorID:   c.ConnectorID,
+				BaseURL:       c.BaseURL,
+				Token:         c.Token,
+				WebhookSecret: c.WebhookSecret,
+				ClientID:      os.Getenv("UV_DINGTALK_CLIENT_ID"),
+				ClientSecret:  os.Getenv("UV_DINGTALK_CLIENT_SECRET"),
+			})
 			if err != nil {
 				return nil, err
 			}
@@ -290,11 +297,13 @@ func autoProviders() []string {
 	if os.Getenv("UV_LARK_APP_ID") != "" || os.Getenv("UV_LARK_APP_SECRET") != "" {
 		out = append(out, "lark")
 	}
+	if hasHTTPProviderEnv("DINGTALK") || os.Getenv("UV_DINGTALK_CLIENT_ID") != "" || os.Getenv("UV_DINGTALK_CLIENT_SECRET") != "" {
+		out = append(out, "dingtalk")
+	}
 	for _, item := range []struct {
 		name   string
 		prefix string
 	}{
-		{"dingtalk", "DINGTALK"},
 		{"discord", "DISCORD"},
 		{"kook", "KOOK"},
 		{"line", "LINE"},

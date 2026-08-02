@@ -53,7 +53,7 @@ This table covers the 16 external providers and excludes `memory`, which is used
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | WeCom | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `conversation` | AI Bot stream reply handles expire after 10 minutes; the inbound target supports proactive fallback. |
 | Lark / Feishu | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `conversation` | User targets are Open IDs; group/conversation targets are chat IDs. |
-| DingTalk | Yes | Yes | Yes | No | Conditional | `user`, `group` | Replies use the inbound session webhook and its payload deadline; proactive fallback is available only for configured group webhooks. |
+| DingTalk | Yes | Yes | Yes | No | Conditional | `user`, `group` | Ingress supports Stream mode or a verified webhook. Replies use the inbound session webhook and its payload deadline; proactive fallback is available only for configured group webhooks. |
 | Discord | Yes | Yes | Yes | Yes | Yes | `user`, `channel`, `conversation` | A user target opens or reuses a Discord DM channel before sending. |
 | KOOK | Yes | Yes | Yes | Yes | Yes | `user`, `channel` | Direct messages use the KOOK direct-message API. |
 | LINE | Yes | Yes | Yes | Conditional | Conditional | `user`, `group`, `conversation` | Reply tokens are single-use and short-lived; push fallback targets must satisfy LINE friendship, recent-contact, or group-membership rules. |

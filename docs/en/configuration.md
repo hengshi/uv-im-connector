@@ -20,6 +20,8 @@ The standalone binary reads `UV_IM_*` variables.
 | `UV_LARK_BOT_UNION_ID` | Optional bot union ID for mention stripping. |
 | `UV_LARK_BASE_URL` | Optional OpenAPI base URL override. |
 | `UV_LARK_CALLBACK_BASE_URL` | Optional callback WebSocket endpoint base URL override. |
+| `UV_DINGTALK_CLIENT_ID` | DingTalk application Client ID. Must be configured with `UV_DINGTALK_CLIENT_SECRET`; enables Stream ingress without a public callback. |
+| `UV_DINGTALK_CLIENT_SECRET` | DingTalk application Client Secret. Must be configured with `UV_DINGTALK_CLIENT_ID`. |
 | `UV_<PROVIDER>_CONNECTOR_ID` | Connector ID for HTTP/webhook providers. Defaults to the provider ID. |
 | `UV_<PROVIDER>_BASE_URL` | Provider API base URL override. |
 | `UV_<PROVIDER>_TOKEN` | Provider API token. If the value starts with `Bearer `, `Bot `, or `Basic ` it is used as the full Authorization value. Otherwise it is sent as bearer token when the provider requires Authorization headers. |
@@ -40,3 +42,5 @@ DINGTALK DISCORD KOOK LINE MATRIX ONEBOT QQ QQGUILD SLACK TELEGRAM WECHAT_OFFICI
 ```
 
 When `UV_IM_PROVIDERS` is empty, the binary auto-loads only providers with detected credentials or webhook configuration. `memory` is never auto-loaded in production mode.
+
+DingTalk supports two ingress modes. A complete `UV_DINGTALK_CLIENT_ID` and `UV_DINGTALK_CLIENT_SECRET` pair enables Stream mode; when both are absent, the existing webhook mode remains available and validates ingress with `UV_DINGTALK_WEBHOOK_SECRET`. Supplying only one Stream credential fails startup instead of silently falling back. Both modes reply through the session webhook carried by the inbound message. `UV_DINGTALK_TOKEN` is only used for proactive messages to a configured group robot.
