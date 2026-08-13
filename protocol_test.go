@@ -1,8 +1,10 @@
 package uvim
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"testing"
 	"time"
 )
@@ -271,5 +273,38 @@ func TestProviderSendErrorDetail(t *testing.T) {
 	}
 	if got := ProviderSendErrorDetail(internal); got != "" {
 		t.Fatalf("unmarked error detail = %q", got)
+	}
+}
+
+func TestProviderSendErrorLogDetail(t *testing.T) {
+	internal := errors.New("request URL contains a secret")
+	marked := NewProviderSendError("provider rejected recipient", internal)
+	if got := ProviderSendErrorLogDetail(marked); got != "provider rejected recipient" {
+		t.Fatalf("marked log detail = %q", got)
+	}
+
+	transport := &url.Error{
+		Op:  "Post",
+		URL: "https://api.example.test/bot-secret/send?access_token=query-secret",
+		Err: context.DeadlineExceeded,
+	}
+	got := ProviderSendErrorLogDetail(transport)
+	if got != `Post "https://api.example.test": context deadline exceeded` {
+		t.Fatalf("transport log detail = %q", got)
+	}
+	nested := &url.Error{
+		Op:  "Post",
+		URL: "https://api.example.test/send?access_token=outer-secret",
+		Err: &url.Error{
+			Op:  "Get",
+			URL: "https://download.example.test/private/file?token=inner-secret",
+			Err: context.DeadlineExceeded,
+		},
+	}
+	if got := ProviderSendErrorLogDetail(nested); got != `Post "https://api.example.test": Get "https://download.example.test": context deadline exceeded` {
+		t.Fatalf("nested transport log detail = %q", got)
+	}
+	if got := ProviderSendErrorLogDetail(errors.New("decode lark send response:\nunexpected EOF")); got != "decode lark send response: unexpected EOF" {
+		t.Fatalf("plain log detail = %q", got)
 	}
 }

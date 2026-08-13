@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -191,6 +192,45 @@ func TestHubReturnsProviderSendFailureDetail(t *testing.T) {
 	}
 	if body.Error != "provider_send_failed" || body.Detail != "provider rejected message: invalid recipient" {
 		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestHubLogsUnmarkedProviderSendFailureDetail(t *testing.T) {
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	provider := &downloadProvider{
+		id:        "lark",
+		connector: "main",
+		sendErr:   errors.New("decode lark send response: unexpected EOF"),
+	}
+	hub := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, ""), &uvim.ResourceStore{Dir: t.TempDir()})
+	server := httptest.NewServer(hub.Handler())
+	defer server.Close()
+
+	raw, _ := json.Marshal(uvim.OutboundMessage{Provider: "lark", Connector: "main", ChannelID: "c1", Text: "hello"})
+	resp, err := http.Post(server.URL+"/v1/message.create", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var body struct {
+		Error  string `json:"error"`
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error != "provider_send_failed" || body.Detail != "" {
+		t.Fatalf("body = %+v", body)
+	}
+	if got := logs.String(); !strings.Contains(got, `provider=lark connector=main reason="decode lark send response: unexpected EOF"`) || strings.Contains(got, "internal_error") {
+		t.Fatalf("logs = %q", got)
 	}
 }
 

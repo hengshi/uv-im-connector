@@ -3,6 +3,7 @@ package uvim
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -397,6 +398,35 @@ func ProviderSendErrorDetail(err error) string {
 		return sendErr.detail
 	}
 	return ""
+}
+
+// ProviderSendErrorLogDetail returns a credential-safe diagnostic for private
+// service logs. Adapter-marked details are already safe; unmarked URL errors
+// retain the operation, provider origin, and cause without path/query secrets.
+func ProviderSendErrorLogDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	if detail := ProviderSendErrorDetail(err); detail != "" {
+		return providerSendErrorLogText(detail)
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		endpoint := "<redacted-url>"
+		if parsed, parseErr := url.Parse(urlErr.URL); parseErr == nil && parsed.Scheme != "" && parsed.Host != "" {
+			endpoint = parsed.Scheme + "://" + parsed.Host
+		}
+		cause := ProviderSendErrorLogDetail(urlErr.Err)
+		if cause == "" {
+			cause = "provider request failed"
+		}
+		return providerSendErrorLogText(fmt.Sprintf("%s %q: %s", urlErr.Op, endpoint, cause))
+	}
+	return providerSendErrorLogText(err.Error())
+}
+
+func providerSendErrorLogText(detail string) string {
+	return TrimOutboundText(strings.Join(strings.Fields(detail), " "), 1024)
 }
 
 type Health struct {
