@@ -2,10 +2,19 @@ package uvim
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/textproto"
 	"net/url"
+	"os"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -422,18 +431,29 @@ func NewProviderSendLogError(detail string, err error) error {
 }
 
 // ProviderSendErrorLogDetail returns a credential-safe diagnostic for private
-// service logs. Adapter-marked details are already safe; unmarked URL errors
-// retain the operation, provider origin, and cause without path/query secrets.
+// service logs. Adapter-marked details are already safe; known transport errors
+// retain bounded structured causes without copying arbitrary error strings.
 func ProviderSendErrorLogDetail(err error) string {
+	detail, ok := providerSendErrorLogDetail(err, 0)
+	if !ok {
+		return "unmarked provider error"
+	}
+	return providerSendErrorLogText(detail)
+}
+
+func providerSendErrorLogDetail(err error, depth int) (string, bool) {
 	if err == nil {
-		return ""
+		return "", false
+	}
+	if depth >= 8 {
+		return "provider error chain truncated", true
 	}
 	if detail := ProviderSendErrorDetail(err); detail != "" {
-		return providerSendErrorLogText(detail)
+		return detail, true
 	}
 	var logErr *providerSendLogError
 	if errors.As(err, &logErr) && logErr.detail != "" {
-		return logErr.detail
+		return logErr.detail, true
 	}
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
@@ -441,19 +461,170 @@ func ProviderSendErrorLogDetail(err error) string {
 		if parsed, parseErr := url.Parse(urlErr.URL); parseErr == nil && parsed.Scheme != "" && parsed.Host != "" {
 			endpoint = parsed.Scheme + "://" + parsed.Host
 		}
-		cause := ProviderSendErrorLogDetail(urlErr.Err)
-		if cause == "" {
-			cause = "provider request failed"
+		cause, known := providerSendErrorLogDetail(urlErr.Err, depth+1)
+		if !known {
+			cause = "transport failure"
 		}
-		return providerSendErrorLogText(fmt.Sprintf("%s %q: %s", urlErr.Op, endpoint, cause))
+		return fmt.Sprintf("%s %q: %s", providerHTTPMethod(urlErr.Op), endpoint, cause), true
+	}
+	var netErr *net.OpError
+	if errors.As(err, &netErr) {
+		cause, known := providerSendErrorLogDetail(netErr.Err, depth+1)
+		if !known {
+			cause = "network failure"
+		}
+		return providerNetOperation(netErr.Op, netErr.Net) + ": " + cause, true
+	}
+	var syscallErr *os.SyscallError
+	if errors.As(err, &syscallErr) {
+		cause, known := providerSendErrorLogDetail(syscallErr.Err, depth+1)
+		if !known {
+			cause = "system call failed"
+		}
+		return providerSystemCall(syscallErr.Syscall) + ": " + cause, true
 	}
 	if errors.Is(err, context.Canceled) {
-		return "provider request canceled"
+		return "provider request canceled", true
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return "provider request timed out"
+		return "provider request timed out", true
 	}
-	return "unmarked provider error"
+	if detail := providerErrnoLogDetail(err); detail != "" {
+		return detail, true
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		switch {
+		case dnsErr.IsTimeout:
+			return "dns lookup timed out", true
+		case dnsErr.IsNotFound:
+			return "dns name not found", true
+		case dnsErr.IsTemporary:
+			return "temporary dns failure", true
+		default:
+			return "dns lookup failed", true
+		}
+	}
+	var certificateErr *tls.CertificateVerificationError
+	if errors.As(err, &certificateErr) {
+		return "tls certificate verification failed", true
+	}
+	var unknownAuthority x509.UnknownAuthorityError
+	if errors.As(err, &unknownAuthority) {
+		return "tls certificate signed by unknown authority", true
+	}
+	var hostnameErr x509.HostnameError
+	if errors.As(err, &hostnameErr) {
+		return "tls certificate hostname mismatch", true
+	}
+	var invalidCertificate x509.CertificateInvalidError
+	if errors.As(err, &invalidCertificate) {
+		return "tls certificate is invalid", true
+	}
+	var recordHeaderErr tls.RecordHeaderError
+	if errors.As(err, &recordHeaderErr) {
+		return "invalid tls record", true
+	}
+	var protocolErr *http.ProtocolError
+	if errors.As(err, &protocolErr) {
+		return "invalid HTTP response", true
+	}
+	var textProtocolErr *textproto.Error
+	if errors.As(err, &textProtocolErr) {
+		return fmt.Sprintf("remote protocol error: code %d", textProtocolErr.Code), true
+	}
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return "invalid JSON response", true
+	}
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) {
+		return "invalid JSON response type", true
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return "truncated provider response", true
+	}
+	if errors.Is(err, io.EOF) {
+		return "empty provider response", true
+	}
+	var genericNetErr net.Error
+	if errors.As(err, &genericNetErr) {
+		if genericNetErr.Timeout() {
+			return "network operation timed out", true
+		}
+		return "network operation failed", true
+	}
+	return "", false
+}
+
+func providerHTTPMethod(method string) string {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case http.MethodGet:
+		return "Get"
+	case http.MethodHead:
+		return "Head"
+	case http.MethodPost:
+		return "Post"
+	case http.MethodPut:
+		return "Put"
+	case http.MethodPatch:
+		return "Patch"
+	case http.MethodDelete:
+		return "Delete"
+	case http.MethodConnect:
+		return "Connect"
+	case http.MethodOptions:
+		return "Options"
+	case http.MethodTrace:
+		return "Trace"
+	default:
+		return "request"
+	}
+}
+
+func providerNetOperation(operation, network string) string {
+	switch strings.ToLower(strings.TrimSpace(operation)) {
+	case "accept", "dial", "listen", "lookup", "read", "readfrom", "resolve", "write", "writeto":
+		operation = strings.ToLower(strings.TrimSpace(operation))
+	default:
+		operation = "network"
+	}
+	switch strings.ToLower(strings.TrimSpace(network)) {
+	case "ip", "ip4", "ip6", "tcp", "tcp4", "tcp6", "udp", "udp4", "udp6", "unix", "unixgram", "unixpacket":
+		return operation + " " + strings.ToLower(strings.TrimSpace(network))
+	default:
+		return operation
+	}
+}
+
+func providerSystemCall(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "accept", "connect", "read", "recvfrom", "sendto", "write":
+		return strings.ToLower(strings.TrimSpace(name))
+	default:
+		return "system call"
+	}
+}
+
+func providerErrnoLogDetail(err error) string {
+	switch {
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "connection refused"
+	case errors.Is(err, syscall.ECONNRESET):
+		return "connection reset"
+	case errors.Is(err, syscall.ECONNABORTED):
+		return "connection aborted"
+	case errors.Is(err, syscall.EPIPE):
+		return "broken pipe"
+	case errors.Is(err, syscall.ETIMEDOUT):
+		return "connection timed out"
+	case errors.Is(err, syscall.ENETUNREACH):
+		return "network unreachable"
+	case errors.Is(err, syscall.EHOSTUNREACH):
+		return "host unreachable"
+	default:
+		return ""
+	}
 }
 
 func providerSendErrorLogText(detail string) string {

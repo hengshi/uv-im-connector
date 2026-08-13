@@ -2,9 +2,13 @@ package uvim
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/url"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -313,6 +317,39 @@ func TestProviderSendErrorLogDetail(t *testing.T) {
 	}
 	if got := ProviderSendErrorLogDetail(nested); got != `Post "https://api.example.test": Get "https://download.example.test": provider request timed out` {
 		t.Fatalf("nested transport log detail = %q", got)
+	}
+	refused := &url.Error{
+		Op:  "Post",
+		URL: "https://api.example.test/private/send?access_token=secret",
+		Err: &net.OpError{
+			Op:   "dial",
+			Net:  "tcp",
+			Addr: &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 443},
+			Err:  &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED},
+		},
+	}
+	if got := ProviderSendErrorLogDetail(refused); got != `Post "https://api.example.test": dial tcp: connect: connection refused` {
+		t.Fatalf("connection-refused log detail = %q", got)
+	}
+	dnsFailure := &url.Error{
+		Op:  "Post",
+		URL: "https://api.example.test/private/send?access_token=secret",
+		Err: &net.OpError{
+			Op:  "dial",
+			Net: "tcp",
+			Err: &net.DNSError{Err: "lookup secret.internal: no such host", Name: "secret.internal", IsNotFound: true},
+		},
+	}
+	if got := ProviderSendErrorLogDetail(dnsFailure); got != `Post "https://api.example.test": dial tcp: dns name not found` {
+		t.Fatalf("dns log detail = %q", got)
+	}
+	tlsFailure := &url.Error{
+		Op:  "Post",
+		URL: "https://api.example.test/private/send?access_token=secret",
+		Err: &net.OpError{Op: "read", Net: "tcp", Err: x509.UnknownAuthorityError{}},
+	}
+	if got := ProviderSendErrorLogDetail(tlsFailure); got != `Post "https://api.example.test": read tcp: tls certificate signed by unknown authority` {
+		t.Fatalf("tls log detail = %q", got)
 	}
 	plain := errors.New("POST https://user:password@example.test/private?access_token=secret failed")
 	if got := ProviderSendErrorLogDetail(plain); got != "unmarked provider error" {

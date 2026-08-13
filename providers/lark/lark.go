@@ -318,7 +318,7 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	respRaw, err := p.doJSON(req)
+	respRaw, err := p.doJSON(req, "lark send")
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
@@ -422,7 +422,7 @@ func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	respRaw, err := p.doJSON(req)
+	respRaw, err := p.doJSON(req, "lark upload")
 	if err != nil {
 		return "", err
 	}
@@ -493,7 +493,7 @@ func (p *Provider) endpoint(ctx context.Context) (endpoint, error) {
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	req.Header.Set("locale", "zh")
-	respRaw, err := p.doJSON(req)
+	respRaw, err := p.doJSON(req, "lark ws endpoint")
 	if err != nil {
 		return endpoint{}, err
 	}
@@ -538,7 +538,7 @@ func (p *Provider) tenantAccessToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	respRaw, err := p.doJSON(req)
+	respRaw, err := p.doJSON(req, "lark tenant access token")
 	if err != nil {
 		return "", err
 	}
@@ -561,18 +561,20 @@ func (p *Provider) tenantAccessToken(ctx context.Context) (string, error) {
 	return decoded.TenantAccessToken, nil
 }
 
-func (p *Provider) doJSON(req *http.Request) (json.RawMessage, error) {
+func (p *Provider) doJSON(req *http.Request, operation string) (json.RawMessage, error) {
 	resp, err := p.config.HTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		detail := fmt.Sprintf("%s: http %d", operation, resp.StatusCode)
+		return nil, uvim.NewProviderSendLogError(detail, errors.New(detail))
+	}
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("http %d", resp.StatusCode)
+		detail := operation + ": read response: " + uvim.ProviderSendErrorLogDetail(err)
+		return nil, uvim.NewProviderSendLogError(detail, err)
 	}
 	return raw, nil
 }
