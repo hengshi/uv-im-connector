@@ -1,6 +1,7 @@
 package uvim
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -400,6 +401,26 @@ func ProviderSendErrorDetail(err error) string {
 	return ""
 }
 
+type providerSendLogError struct {
+	detail string
+	err    error
+}
+
+func (e *providerSendLogError) Error() string {
+	if e.err != nil {
+		return e.err.Error()
+	}
+	return e.detail
+}
+
+func (e *providerSendLogError) Unwrap() error { return e.err }
+
+// NewProviderSendLogError marks a bounded provider diagnostic as safe for
+// private service logs only while preserving the internal error.
+func NewProviderSendLogError(detail string, err error) error {
+	return &providerSendLogError{detail: providerSendErrorLogText(detail), err: err}
+}
+
 // ProviderSendErrorLogDetail returns a credential-safe diagnostic for private
 // service logs. Adapter-marked details are already safe; unmarked URL errors
 // retain the operation, provider origin, and cause without path/query secrets.
@@ -409,6 +430,10 @@ func ProviderSendErrorLogDetail(err error) string {
 	}
 	if detail := ProviderSendErrorDetail(err); detail != "" {
 		return providerSendErrorLogText(detail)
+	}
+	var logErr *providerSendLogError
+	if errors.As(err, &logErr) && logErr.detail != "" {
+		return logErr.detail
 	}
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
@@ -422,7 +447,13 @@ func ProviderSendErrorLogDetail(err error) string {
 		}
 		return providerSendErrorLogText(fmt.Sprintf("%s %q: %s", urlErr.Op, endpoint, cause))
 	}
-	return providerSendErrorLogText(err.Error())
+	if errors.Is(err, context.Canceled) {
+		return "provider request canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "provider request timed out"
+	}
+	return "unmarked provider error"
 }
 
 func providerSendErrorLogText(detail string) string {

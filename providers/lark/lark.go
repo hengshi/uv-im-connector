@@ -330,7 +330,8 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(respRaw, &decoded); err != nil {
-		return uvim.SendResult{}, fmt.Errorf("decode lark send response: %w", err)
+		sendErr := fmt.Errorf("decode lark send response: %w", err)
+		return uvim.SendResult{}, uvim.NewProviderSendLogError(sendErr.Error(), sendErr)
 	}
 	if decoded.Code != 0 {
 		sendErr := fmt.Errorf("lark send: code=%d msg=%q", decoded.Code, decoded.Msg)

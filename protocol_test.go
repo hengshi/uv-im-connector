@@ -282,6 +282,16 @@ func TestProviderSendErrorLogDetail(t *testing.T) {
 	if got := ProviderSendErrorLogDetail(marked); got != "provider rejected recipient" {
 		t.Fatalf("marked log detail = %q", got)
 	}
+	private := NewProviderSendLogError("decode lark send response: unexpected EOF", internal)
+	if got := ProviderSendErrorLogDetail(private); got != "decode lark send response: unexpected EOF" {
+		t.Fatalf("private log detail = %q", got)
+	}
+	if got := ProviderSendErrorDetail(private); got != "" {
+		t.Fatalf("private public detail = %q", got)
+	}
+	if !errors.Is(private, internal) {
+		t.Fatal("private log error does not preserve its internal cause")
+	}
 
 	transport := &url.Error{
 		Op:  "Post",
@@ -289,7 +299,7 @@ func TestProviderSendErrorLogDetail(t *testing.T) {
 		Err: context.DeadlineExceeded,
 	}
 	got := ProviderSendErrorLogDetail(transport)
-	if got != `Post "https://api.example.test": context deadline exceeded` {
+	if got != `Post "https://api.example.test": provider request timed out` {
 		t.Fatalf("transport log detail = %q", got)
 	}
 	nested := &url.Error{
@@ -301,10 +311,11 @@ func TestProviderSendErrorLogDetail(t *testing.T) {
 			Err: context.DeadlineExceeded,
 		},
 	}
-	if got := ProviderSendErrorLogDetail(nested); got != `Post "https://api.example.test": Get "https://download.example.test": context deadline exceeded` {
+	if got := ProviderSendErrorLogDetail(nested); got != `Post "https://api.example.test": Get "https://download.example.test": provider request timed out` {
 		t.Fatalf("nested transport log detail = %q", got)
 	}
-	if got := ProviderSendErrorLogDetail(errors.New("decode lark send response:\nunexpected EOF")); got != "decode lark send response: unexpected EOF" {
-		t.Fatalf("plain log detail = %q", got)
+	plain := errors.New("POST https://user:password@example.test/private?access_token=secret failed")
+	if got := ProviderSendErrorLogDetail(plain); got != "unmarked provider error" {
+		t.Fatalf("unmarked log detail = %q", got)
 	}
 }

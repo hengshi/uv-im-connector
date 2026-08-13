@@ -322,6 +322,34 @@ func TestLegacyDirectChannelRemainsChatID(t *testing.T) {
 	}
 }
 
+func TestSendMarksDecodeFailureForPrivateLogs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+		case "/open-apis/im/v1/messages":
+			_, _ = w.Write([]byte(`{"code":`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Send(context.Background(), uvim.OutboundMessage{ChannelID: "oc_chat", Text: "hello"})
+	if err == nil {
+		t.Fatal("Send() error = nil")
+	}
+	if got := uvim.ProviderSendErrorDetail(err); got != "" {
+		t.Fatalf("public detail = %q", got)
+	}
+	if got := uvim.ProviderSendErrorLogDetail(err); got != "decode lark send response: unexpected end of JSON input" {
+		t.Fatalf("private log detail = %q", got)
+	}
+}
+
 func TestProactiveSendRejectsNonOpenIDUserTarget(t *testing.T) {
 	provider, err := New(Config{AppID: "app", AppSecret: "secret"})
 	if err != nil {

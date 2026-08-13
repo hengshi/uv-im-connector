@@ -195,42 +195,59 @@ func TestHubReturnsProviderSendFailureDetail(t *testing.T) {
 	}
 }
 
-func TestHubLogsUnmarkedProviderSendFailureDetail(t *testing.T) {
-	var logs bytes.Buffer
-	previousLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+func TestHubLogsCredentialSafeProviderSendFailureDetail(t *testing.T) {
+	tests := []struct {
+		name       string
+		sendErr    error
+		wantReason string
+	}{
+		{
+			name:       "marked private diagnostic",
+			sendErr:    uvim.NewProviderSendLogError("decode lark send response: unexpected EOF", errors.New("access_token=secret")),
+			wantReason: "decode lark send response: unexpected EOF",
+		},
+		{
+			name:       "unmarked error",
+			sendErr:    errors.New("POST https://user:password@example.test/private?access_token=secret failed"),
+			wantReason: "unmarked provider error",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previousLogger := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previousLogger) })
 
-	provider := &downloadProvider{
-		id:        "lark",
-		connector: "main",
-		sendErr:   errors.New("decode lark send response: unexpected EOF"),
-	}
-	hub := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, ""), &uvim.ResourceStore{Dir: t.TempDir()})
-	server := httptest.NewServer(hub.Handler())
-	defer server.Close()
+			provider := &downloadProvider{id: "lark", connector: "main", sendErr: tt.sendErr}
+			hub := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, ""), &uvim.ResourceStore{Dir: t.TempDir()})
+			server := httptest.NewServer(hub.Handler())
+			defer server.Close()
 
-	raw, _ := json.Marshal(uvim.OutboundMessage{Provider: "lark", Connector: "main", ChannelID: "c1", Text: "hello"})
-	resp, err := http.Post(server.URL+"/v1/message.create", "application/json", bytes.NewReader(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Fatalf("status = %d", resp.StatusCode)
-	}
-	var body struct {
-		Error  string `json:"error"`
-		Detail string `json:"detail"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Error != "provider_send_failed" || body.Detail != "" {
-		t.Fatalf("body = %+v", body)
-	}
-	if got := logs.String(); !strings.Contains(got, `provider=lark connector=main reason="decode lark send response: unexpected EOF"`) || strings.Contains(got, "internal_error") {
-		t.Fatalf("logs = %q", got)
+			raw, _ := json.Marshal(uvim.OutboundMessage{Provider: "lark", Connector: "main", ChannelID: "c1", Text: "hello"})
+			resp, err := http.Post(server.URL+"/v1/message.create", "application/json", bytes.NewReader(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadGateway {
+				t.Fatalf("status = %d", resp.StatusCode)
+			}
+			var body struct {
+				Error  string `json:"error"`
+				Detail string `json:"detail"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Error != "provider_send_failed" || body.Detail != "" {
+				t.Fatalf("body = %+v", body)
+			}
+			got := logs.String()
+			if !strings.Contains(got, `provider=lark connector=main reason="`+tt.wantReason+`"`) || strings.Contains(got, "internal_error") || strings.Contains(got, "secret") {
+				t.Fatalf("logs = %q", got)
+			}
+		})
 	}
 }
 
