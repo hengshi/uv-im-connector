@@ -430,6 +430,31 @@ func NewProviderSendLogError(detail string, err error) error {
 	return &providerSendLogError{detail: providerSendErrorLogText(detail), err: err}
 }
 
+// NewProviderSendOperationError adds a credential-safe provider stage without
+// exposing an arbitrary underlying error. Existing public/private markers are
+// preserved, while known structured causes retain their safe classification.
+func NewProviderSendOperationError(operation string, err error) error {
+	if err == nil || ProviderSendErrorDetail(err) != "" {
+		return err
+	}
+	var logErr *providerSendLogError
+	if errors.As(err, &logErr) && logErr.detail != "" {
+		return err
+	}
+	detail := strings.TrimSpace(operation)
+	if cause, known := providerSendErrorLogDetail(err, 0); known {
+		if detail != "" {
+			detail += ": " + cause
+		} else {
+			detail = cause
+		}
+	}
+	if detail == "" {
+		detail = "provider operation failed"
+	}
+	return NewProviderSendLogError(detail, err)
+}
+
 // ProviderSendErrorLogDetail returns a credential-safe diagnostic for private
 // service logs. Adapter-marked details are already safe; known transport errors
 // retain bounded structured causes without copying arbitrary error strings.
@@ -448,12 +473,12 @@ func providerSendErrorLogDetail(err error, depth int) (string, bool) {
 	if depth >= 8 {
 		return "provider error chain truncated", true
 	}
-	if detail := ProviderSendErrorDetail(err); detail != "" {
-		return detail, true
-	}
 	var logErr *providerSendLogError
 	if errors.As(err, &logErr) && logErr.detail != "" {
 		return logErr.detail, true
+	}
+	if detail := ProviderSendErrorDetail(err); detail != "" {
+		return detail, true
 	}
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {

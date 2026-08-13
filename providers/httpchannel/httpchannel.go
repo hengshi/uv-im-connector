@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -114,7 +115,10 @@ func (p *Provider) Run(ctx context.Context, _ uvim.EventSink) error {
 	return ctx.Err()
 }
 
-func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError(p.ID()+" send", err)
+	}()
 	if p.config.Send == nil {
 		return uvim.SendResult{}, fmt.Errorf("%s send: outbound is not supported", p.ID())
 	}
@@ -173,14 +177,19 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 		return uvim.SendResult{}, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return uvim.SendResult{}, fmt.Errorf("%s send: read response: %w", p.ID(), err)
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if readErr != nil {
+			detail := fmt.Sprintf("%s send: http %d", p.ID(), resp.StatusCode)
+			return uvim.SendResult{}, uvim.NewProviderSendError(detail, fmt.Errorf("%s: read response: %w", detail, readErr))
+		}
 		sendErr := sendHTTPError(p.ID(), resp.StatusCode, raw)
 		detail := fmt.Sprintf("%s send: http %d", p.ID(), resp.StatusCode)
 		return uvim.SendResult{}, uvim.NewProviderSendError(detail, sendErr)
+	}
+	raw, err := ReadSendResponse(resp, p.ID()+" send")
+	if err != nil {
+		return uvim.SendResult{}, err
 	}
 	messageID := msg.ID
 	if p.config.ParseSendResponse != nil {
@@ -381,6 +390,51 @@ func BotAuthorization(token string) string {
 
 func Authorization(token string) string {
 	return authorizationValue(token)
+}
+
+// ReadSendResponse reads a provider response while preserving a bounded send
+// stage and public HTTP status. operation must be a static, credential-safe
+// provider label such as "slack upload".
+func ReadSendResponse(resp *http.Response, operation string) ([]byte, error) {
+	return readSendResponse(resp, operation, operation, true)
+}
+
+// ReadSendResponseWithPublicOperation preserves an established public status
+// label while recording a more precise private send stage.
+func ReadSendResponseWithPublicOperation(resp *http.Response, operation, publicOperation string) ([]byte, error) {
+	return readSendResponse(resp, operation, publicOperation, true)
+}
+
+// ReadPrivateSendResponse is the private-log-only variant used where exposing
+// the provider HTTP status would change the public API contract.
+func ReadPrivateSendResponse(resp *http.Response, operation string) ([]byte, error) {
+	return readSendResponse(resp, operation, "", false)
+}
+
+func readSendResponse(resp *http.Response, operation, publicOperation string, publicStatus bool) ([]byte, error) {
+	operation = strings.TrimSpace(operation)
+	if operation == "" {
+		operation = "provider send"
+	}
+	publicOperation = strings.TrimSpace(publicOperation)
+	if publicOperation == "" {
+		publicOperation = operation
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		logDetail := fmt.Sprintf("%s: http %d", operation, resp.StatusCode)
+		err := errors.New(logDetail)
+		if publicStatus {
+			publicDetail := fmt.Sprintf("%s: http %d", publicOperation, resp.StatusCode)
+			return nil, uvim.NewProviderSendLogError(logDetail, uvim.NewProviderSendError(publicDetail, err))
+		}
+		return nil, uvim.NewProviderSendLogError(logDetail, err)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, uvim.NewProviderSendOperationError(operation+": read response", err)
+	}
+	return raw, nil
 }
 
 func sendHTTPError(provider string, status int, raw []byte) error {

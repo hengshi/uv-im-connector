@@ -261,7 +261,10 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 	}
 }
 
-func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("wecom send", err)
+	}()
 	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("wecom send: %w", err)
 	}
@@ -272,7 +275,8 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 		return uvim.SendResult{}, fmt.Errorf("wecom send: one resource per message is supported")
 	}
 	if hasNonTextElements(msg.Elements) {
-		return uvim.SendResult{}, fmt.Errorf("wecom send: rich elements are not supported")
+		sendErr := fmt.Errorf("wecom send: rich elements are not supported")
+		return uvim.SendResult{}, uvim.NewProviderSendLogError("wecom send: rich elements are not supported", sendErr)
 	}
 	text := uvim.TrimOutboundText(msg.Text, 20000)
 	if text == "" && len(msg.Elements) > 0 {
@@ -339,7 +343,10 @@ type uploadedMedia struct {
 	mediaID string
 }
 
-func (p *Provider) uploadResource(ctx context.Context, conn WSConn, writeMu *sync.Mutex, ref uvim.ResourceRef) (uploadedMedia, error) {
+func (p *Provider) uploadResource(ctx context.Context, conn WSConn, writeMu *sync.Mutex, ref uvim.ResourceRef) (media uploadedMedia, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("wecom upload", err)
+	}()
 	if p.config.ResourceStore == nil {
 		return uploadedMedia{}, fmt.Errorf("wecom upload: resource store is not configured")
 	}
@@ -386,7 +393,8 @@ func (p *Provider) uploadResource(ctx context.Context, conn WSConn, writeMu *syn
 	}
 	uploadID := uvim.StringValue(initAck.Body["upload_id"])
 	if uploadID == "" {
-		return uploadedMedia{}, fmt.Errorf("wecom upload: init response missing upload_id")
+		missingErr := fmt.Errorf("wecom upload: init response missing upload_id")
+		return uploadedMedia{}, uvim.NewProviderSendLogError("wecom upload: upload ID missing", missingErr)
 	}
 	for index := 0; index < totalChunks; index++ {
 		start := index * uploadChunkSize
@@ -415,7 +423,8 @@ func (p *Provider) uploadResource(ctx context.Context, conn WSConn, writeMu *syn
 	}
 	mediaID := uvim.StringValue(finishAck.Body["media_id"])
 	if mediaID == "" {
-		return uploadedMedia{}, fmt.Errorf("wecom upload: finish response missing media_id")
+		missingErr := fmt.Errorf("wecom upload: finish response missing media_id")
+		return uploadedMedia{}, uvim.NewProviderSendLogError("wecom upload: media ID missing", missingErr)
 	}
 	return uploadedMedia{kind: kind, mediaID: mediaID}, nil
 }
@@ -431,7 +440,10 @@ func wecomUploadChunkCount(size int) (int, error) {
 	return chunks, nil
 }
 
-func (p *Provider) sendMedia(ctx context.Context, conn WSConn, writeMu *sync.Mutex, msg uvim.OutboundMessage, media uploadedMedia) (uvim.SendResult, error) {
+func (p *Provider) sendMedia(ctx context.Context, conn WSConn, writeMu *sync.Mutex, msg uvim.OutboundMessage, media uploadedMedia) (result uvim.SendResult, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("wecom send", err)
+	}()
 	content := map[string]any{"media_id": media.mediaID}
 	body := map[string]any{"msgtype": media.kind, media.kind: content}
 	if msg.Referrer.ReplyToken != "" {

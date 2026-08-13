@@ -175,7 +175,10 @@ func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Requ
 	return httpchannel.Request{Path: "/api/v10/channels/" + target.ID + "/messages", Body: body, Header: header}, nil
 }
 
-func PrepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchannel.Config) (uvim.OutboundMessage, error) {
+func PrepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchannel.Config) (prepared uvim.OutboundMessage, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("discord create dm", err)
+	}()
 	target := msg.ResolvedTarget()
 	if msg.Target == nil || target.Kind != uvim.TargetUser {
 		return msg, nil
@@ -194,12 +197,9 @@ func PrepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 		return msg, err
 	}
 	defer resp.Body.Close()
-	responseRaw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	responseRaw, err := httpchannel.ReadPrivateSendResponse(resp, "discord create dm")
 	if err != nil {
 		return msg, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return msg, fmt.Errorf("discord create dm: http %d: %s", resp.StatusCode, strings.TrimSpace(string(responseRaw)))
 	}
 	var channel struct {
 		ID string `json:"id"`
@@ -208,7 +208,8 @@ func PrepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 		return msg, fmt.Errorf("discord create dm: decode response: %w", err)
 	}
 	if channel.ID == "" {
-		return msg, fmt.Errorf("discord create dm: channel id missing")
+		missingErr := fmt.Errorf("discord create dm: channel id missing")
+		return msg, uvim.NewProviderSendLogError("discord create dm: channel ID missing", missingErr)
 	}
 	msg.Target = &uvim.OutboundTarget{ID: channel.ID, Kind: uvim.TargetChannel}
 	return msg, nil

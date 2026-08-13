@@ -85,7 +85,10 @@ func (p *Provider) Capabilities() uvim.Capabilities {
 	return caps
 }
 func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error { return p.base.Run(ctx, sink) }
-func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("telegram send", err)
+	}()
 	if len(msg.Resources) == 0 {
 		return p.base.Send(ctx, msg)
 	}
@@ -155,7 +158,10 @@ func (p *Provider) filePath(ctx context.Context, fileID string) (string, error) 
 	return decoded.Result.FilePath, nil
 }
 
-func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, ref uvim.ResourceRef) (uvim.SendResult, error) {
+func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, ref uvim.ResourceRef) (result uvim.SendResult, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("telegram upload", err)
+	}()
 	if p.config.ResourceStore == nil {
 		return uvim.SendResult{}, fmt.Errorf("telegram upload: resource store is not configured")
 	}
@@ -223,12 +229,9 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 		return uvim.SendResult{}, err
 	}
 	defer resp.Body.Close()
-	respRaw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	respRaw, err := httpchannel.ReadSendResponse(resp, "telegram send")
 	if err != nil {
 		return uvim.SendResult{}, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return uvim.SendResult{}, uvim.NewProviderSendError(fmt.Sprintf("telegram send: http %d", resp.StatusCode), fmt.Errorf("telegram send: http %d", resp.StatusCode))
 	}
 	messageID, err := ParseSendResponse(respRaw)
 	if err != nil {

@@ -19,6 +19,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	uvim "github.com/hengshi/uv-im-connector"
+	"github.com/hengshi/uv-im-connector/providers/httpchannel"
 )
 
 const (
@@ -249,7 +250,10 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 	}
 }
 
-func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("lark send", err)
+	}()
 	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("lark send: %w", err)
 	}
@@ -340,7 +344,10 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: decoded.Data.MessageID, Time: time.Now().UTC()}, nil
 }
 
-func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (string, map[string]string, error) {
+func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (kind string, content map[string]string, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("lark upload", err)
+	}()
 	if p.config.ResourceStore == nil {
 		return "", nil, fmt.Errorf("lark upload: resource store is not configured")
 	}
@@ -389,7 +396,10 @@ func larkNativeImageMIME(mimeType string) bool {
 	}
 }
 
-func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[string]string, fileField, name, mimeType string, data []byte, responseKey string) (string, error) {
+func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[string]string, fileField, name, mimeType string, data []byte, responseKey string) (key string, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("lark upload", err)
+	}()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	for key, value := range fields {
@@ -438,9 +448,10 @@ func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[
 		sendErr := fmt.Errorf("lark upload: code=%d msg=%q", decoded.Code, decoded.Msg)
 		return "", uvim.NewProviderSendError(sendErr.Error(), sendErr)
 	}
-	key := strings.TrimSpace(decoded.Data[responseKey])
+	key = strings.TrimSpace(decoded.Data[responseKey])
 	if key == "" {
-		return "", fmt.Errorf("lark upload: response missing %s", responseKey)
+		missingErr := fmt.Errorf("lark upload: response missing %s", responseKey)
+		return "", uvim.NewProviderSendLogError("lark upload: response key missing", missingErr)
 	}
 	return key, nil
 }
@@ -567,16 +578,7 @@ func (p *Provider) doJSON(req *http.Request, operation string) (json.RawMessage,
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		detail := fmt.Sprintf("%s: http %d", operation, resp.StatusCode)
-		return nil, uvim.NewProviderSendLogError(detail, errors.New(detail))
-	}
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		detail := operation + ": read response: " + uvim.ProviderSendErrorLogDetail(err)
-		return nil, uvim.NewProviderSendLogError(detail, err)
-	}
-	return raw, nil
+	return httpchannel.ReadPrivateSendResponse(resp, operation)
 }
 
 func (p *Provider) writeFrame(mu *sync.Mutex, conn WSConn, frame *wsFrame) error {

@@ -356,3 +356,32 @@ func TestProviderSendErrorLogDetail(t *testing.T) {
 		t.Fatalf("unmarked log detail = %q", got)
 	}
 }
+
+func TestNewProviderSendOperationErrorPreservesSafeCauseAndHidesUnknownText(t *testing.T) {
+	transport := &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}
+	err := NewProviderSendOperationError("slack upload", transport)
+	if got := ProviderSendErrorLogDetail(err); got != "slack upload: read tcp: connection reset" {
+		t.Fatalf("transport log detail = %q", got)
+	}
+	if !errors.Is(err, transport) {
+		t.Fatal("transport cause was not preserved")
+	}
+	secret := errors.New("POST https://user:password@example.test/private?access_token=secret failed")
+	err = NewProviderSendOperationError("discord create dm", secret)
+	if got := ProviderSendErrorLogDetail(err); got != "discord create dm" {
+		t.Fatalf("unknown log detail = %q", got)
+	}
+	if got := ProviderSendErrorDetail(err); got != "" {
+		t.Fatalf("unknown public detail = %q", got)
+	}
+	if !errors.Is(err, secret) {
+		t.Fatal("unknown cause was not preserved")
+	}
+	publicErr := NewProviderSendLogError("matrix upload: http 502", NewProviderSendError("matrix send: http 502", secret))
+	if got := ProviderSendErrorLogDetail(publicErr); got != "matrix upload: http 502" {
+		t.Fatalf("private stage detail = %q", got)
+	}
+	if got := ProviderSendErrorDetail(publicErr); got != "matrix send: http 502" {
+		t.Fatalf("public compatibility detail = %q", got)
+	}
+}

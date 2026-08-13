@@ -214,6 +214,40 @@ func TestSendResourceUploadsThenReplies(t *testing.T) {
 	}
 }
 
+func TestSendResourceMarksMissingUploadKeyForPrivateLogs(t *testing.T) {
+	store := &uvim.ResourceStore{Dir: t.TempDir()}
+	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+		case "/open-apis/im/v1/files":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
+		default:
+			t.Errorf("unexpected path %s", req.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL, ResourceStore: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Send(context.Background(), uvim.OutboundMessage{Resources: []uvim.ResourceRef{ref}, Referrer: uvim.Referrer{MessageID: "om_in"}})
+	if err == nil {
+		t.Fatal("Send() error = nil")
+	}
+	if got := uvim.ProviderSendErrorLogDetail(err); got != "lark upload: response key missing" {
+		t.Fatalf("private log detail = %q", got)
+	}
+	if got := uvim.ProviderSendErrorDetail(err); got != "" {
+		t.Fatalf("public detail = %q", got)
+	}
+}
+
 func TestSendImageUsesImageUpload(t *testing.T) {
 	store := &uvim.ResourceStore{Dir: t.TempDir()}
 	ref, err := store.Save(context.Background(), bytes.NewReader([]byte("png")), uvim.ResourceRef{Kind: uvim.ElementImage, Name: "chart.png", MIME: "image/png"})

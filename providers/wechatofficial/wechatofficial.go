@@ -65,7 +65,10 @@ func New(config Config) (*httpchannel.Provider, error) {
 	})
 }
 
-func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchannel.Config) (uvim.OutboundMessage, error) {
+func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchannel.Config) (prepared uvim.OutboundMessage, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("wechat-official upload", err)
+	}()
 	if len(msg.Resources) == 0 {
 		return msg, nil
 	}
@@ -134,12 +137,9 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 		return msg, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, err := httpchannel.ReadSendResponse(resp, "wechat-official upload")
 	if err != nil {
 		return msg, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return msg, uvim.NewProviderSendError(fmt.Sprintf("wechat-official upload: http %d", resp.StatusCode), fmt.Errorf("wechat-official upload: http %d", resp.StatusCode))
 	}
 	var decoded struct {
 		MediaID string `json:"media_id"`
@@ -154,7 +154,8 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 		return msg, uvim.NewProviderSendError(businessErr.Error(), businessErr)
 	}
 	if decoded.MediaID == "" {
-		return msg, fmt.Errorf("wechat-official upload: response missing media_id")
+		missingErr := fmt.Errorf("wechat-official upload: response missing media_id")
+		return msg, uvim.NewProviderSendLogError("wechat-official upload: media ID missing", missingErr)
 	}
 	if msg.Metadata == nil {
 		msg.Metadata = map[string]string{}

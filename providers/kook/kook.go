@@ -63,7 +63,10 @@ func New(config Config) (*httpchannel.Provider, error) {
 	})
 }
 
-func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchannel.Config) (uvim.OutboundMessage, error) {
+func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchannel.Config) (prepared uvim.OutboundMessage, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("kook upload", err)
+	}()
 	if len(msg.Resources) == 0 {
 		return msg, nil
 	}
@@ -130,12 +133,9 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 		return msg, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, err := httpchannel.ReadSendResponse(resp, "kook upload")
 	if err != nil {
 		return msg, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return msg, uvim.NewProviderSendError(fmt.Sprintf("kook upload: http %d", resp.StatusCode), fmt.Errorf("kook upload: http %d", resp.StatusCode))
 	}
 	var decoded struct {
 		Code    int    `json:"code"`
@@ -152,7 +152,8 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 		return msg, uvim.NewProviderSendError(businessErr.Error(), businessErr)
 	}
 	if decoded.Data.URL == "" {
-		return msg, fmt.Errorf("kook upload: response missing url")
+		missingErr := fmt.Errorf("kook upload: response missing url")
+		return msg, uvim.NewProviderSendLogError("kook upload: URL missing", missingErr)
 	}
 	if msg.Metadata == nil {
 		msg.Metadata = map[string]string{}
