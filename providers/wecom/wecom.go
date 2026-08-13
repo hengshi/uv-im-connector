@@ -397,7 +397,7 @@ func (p *Provider) uploadResource(ctx context.Context, conn WSConn, writeMu *syn
 			Headers: headers{ReqID: chunkReqID},
 			Body: map[string]any{
 				"upload_id":   uploadID,
-				"chunk_index": index + 1,
+				"chunk_index": index,
 				"base64_data": base64.StdEncoding.EncodeToString(data[start:end]),
 			},
 		}); err != nil {

@@ -198,8 +198,8 @@ func TestSendResourceReplyUploadsChunksAndSendsMedia(t *testing.T) {
 	}
 	var uploaded []byte
 	for index, sent := range frames[1:3] {
-		if got := int(sent.Body["chunk_index"].(float64)); got != index+1 {
-			t.Fatalf("chunk index = %d, want %d", got, index+1)
+		if got := int(sent.Body["chunk_index"].(float64)); got != index {
+			t.Fatalf("chunk index = %d, want %d", got, index)
 		}
 		decoded, err := base64.StdEncoding.DecodeString(sent.Body["base64_data"].(string))
 		if err != nil {
