@@ -104,7 +104,10 @@ func (p *Provider) ServeWebhook(w http.ResponseWriter, req *http.Request, sink u
 	p.base.ServeWebhook(w, req, sink)
 }
 
-func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("mail send", err)
+	}()
 	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("mail send: %w", err)
 	}
@@ -118,7 +121,8 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 		msg.Text = textFromElements(msg.Elements)
 	}
 	if strings.TrimSpace(msg.Text) == "" && len(msg.Resources) == 0 {
-		return uvim.SendResult{}, fmt.Errorf("mail send: text or resource is required")
+		sendErr := fmt.Errorf("mail send: text or resource is required")
+		return uvim.SendResult{}, uvim.NewProviderSendLogError("mail send: text or resource is required", sendErr)
 	}
 	to := msg.ResolvedTarget().ID
 	if _, err := mail.ParseAddress(to); err != nil {
@@ -150,7 +154,10 @@ type outboundMailAttachment struct {
 	data []byte
 }
 
-func (p *Provider) outboundAttachments(refs []uvim.ResourceRef) ([]outboundMailAttachment, error) {
+func (p *Provider) outboundAttachments(refs []uvim.ResourceRef) (attachments []outboundMailAttachment, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("mail upload", err)
+	}()
 	if len(refs) == 0 {
 		return nil, nil
 	}
@@ -160,7 +167,7 @@ func (p *Provider) outboundAttachments(refs []uvim.ResourceRef) ([]outboundMailA
 	if len(refs) > maxOutboundAttachmentCount {
 		return nil, fmt.Errorf("mail upload: %d resources exceed maximum %d", len(refs), maxOutboundAttachmentCount)
 	}
-	attachments := make([]outboundMailAttachment, 0, len(refs))
+	attachments = make([]outboundMailAttachment, 0, len(refs))
 	remaining := int64(maxOutboundAttachmentBytes)
 	for index, ref := range refs {
 		if !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {

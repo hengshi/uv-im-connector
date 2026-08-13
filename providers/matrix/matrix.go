@@ -77,7 +77,10 @@ func (p *Provider) Download(ctx context.Context, req uvim.ResourceDownloadReques
 	return p.base.Download(ctx, req)
 }
 
-func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("matrix send", err)
+	}()
 	if len(msg.Resources) == 0 {
 		return p.base.Send(ctx, msg)
 	}
@@ -96,7 +99,10 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 	return p.sendResource(ctx, msg, msg.Resources[0])
 }
 
-func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, ref uvim.ResourceRef) (uvim.SendResult, error) {
+func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, ref uvim.ResourceRef) (result uvim.SendResult, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("matrix upload", err)
+	}()
 	if p.config.ResourceStore == nil || !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
 		return uvim.SendResult{}, fmt.Errorf("matrix upload: internal resource is required")
 	}
@@ -128,7 +134,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	if strings.TrimSpace(ref.MIME) != "" {
 		uploadReq.Header.Set("Content-Type", ref.MIME)
 	}
-	uploadRaw, err := p.do(uploadReq)
+	uploadRaw, err := p.do(uploadReq, "matrix upload")
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
@@ -139,7 +145,8 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 		return uvim.SendResult{}, fmt.Errorf("matrix upload: decode response: %w", err)
 	}
 	if strings.TrimSpace(upload.ContentURI) == "" {
-		return uvim.SendResult{}, fmt.Errorf("matrix upload: content_uri missing")
+		missingErr := fmt.Errorf("matrix upload: content_uri missing")
+		return uvim.SendResult{}, uvim.NewProviderSendLogError("matrix upload: content URI missing", missingErr)
 	}
 	target := msg.ResolvedTarget()
 	txnID := url.PathEscape(uvim.FirstNonEmpty(msg.ID, uvim.NewID("txn")))
@@ -160,7 +167,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	}
 	p.authorize(sendReq)
 	sendReq.Header.Set("Content-Type", "application/json; charset=utf-8")
-	responseRaw, err := p.do(sendReq)
+	responseRaw, err := p.do(sendReq, "matrix send")
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
@@ -177,20 +184,17 @@ func (p *Provider) authorize(req *http.Request) {
 	}
 }
 
-func (p *Provider) do(req *http.Request) ([]byte, error) {
+func (p *Provider) do(req *http.Request, operation string) ([]byte, error) {
 	resp, err := p.config.HTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, err
+	publicOperation := operation
+	if operation == "matrix upload" {
+		publicOperation = "matrix send"
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, uvim.NewProviderSendError(fmt.Sprintf("matrix send: http %d", resp.StatusCode), fmt.Errorf("matrix send: http %d", resp.StatusCode))
-	}
-	return raw, nil
+	return httpchannel.ReadSendResponseWithPublicOperation(resp, operation, publicOperation)
 }
 
 func matrixMessageType(kind string) string {

@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -429,9 +431,43 @@ func TestSendReturnsProviderAckError(t *testing.T) {
 	}
 }
 
+func TestSendPreservesWebSocketTransportCause(t *testing.T) {
+	provider, err := New(Config{BotID: "bot", Secret: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := &sendTestConn{writeErr: &net.OpError{Op: "write", Net: "tcp", Err: syscall.ECONNRESET}}
+	activateSendTestConn(provider, conn)
+	_, err = provider.Send(context.Background(), uvim.OutboundMessage{ChannelID: "u1", ChannelType: uvim.ChannelDirect, Text: "hello"})
+	if err == nil {
+		t.Fatal("Send() error = nil")
+	}
+	if got := uvim.ProviderSendErrorLogDetail(err); got != "wecom send: write tcp: connection reset" {
+		t.Fatalf("private log detail = %q", got)
+	}
+}
+
+func TestSendMarksFixedLocalFailure(t *testing.T) {
+	provider, err := New(Config{BotID: "bot", Secret: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Send(context.Background(), uvim.OutboundMessage{
+		Target:   &uvim.OutboundTarget{ID: "user-1", Kind: uvim.TargetUser},
+		Elements: []uvim.Element{{Type: "button"}},
+	})
+	if err == nil {
+		t.Fatal("Send() error = nil")
+	}
+	if got := uvim.ProviderSendErrorLogDetail(err); got != "wecom send: rich elements are not supported" {
+		t.Fatalf("private log detail = %q", got)
+	}
+}
+
 type sendTestConn struct {
-	onWrite func([]byte)
-	sent    frame
+	onWrite  func([]byte)
+	sent     frame
+	writeErr error
 }
 
 func activateSendTestConn(provider *Provider, conn *sendTestConn) {
@@ -448,7 +484,7 @@ func (c *sendTestConn) WriteMessage(_ int, raw []byte) error {
 	if c.onWrite != nil {
 		c.onWrite(raw)
 	}
-	return nil
+	return c.writeErr
 }
 func (c *sendTestConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *sendTestConn) SetWriteDeadline(time.Time) error { return nil }

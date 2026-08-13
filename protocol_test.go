@@ -1,8 +1,14 @@
 package uvim
 
 import (
+	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"net"
+	"net/url"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -271,5 +277,111 @@ func TestProviderSendErrorDetail(t *testing.T) {
 	}
 	if got := ProviderSendErrorDetail(internal); got != "" {
 		t.Fatalf("unmarked error detail = %q", got)
+	}
+}
+
+func TestProviderSendErrorLogDetail(t *testing.T) {
+	internal := errors.New("request URL contains a secret")
+	marked := NewProviderSendError("provider rejected recipient", internal)
+	if got := ProviderSendErrorLogDetail(marked); got != "provider rejected recipient" {
+		t.Fatalf("marked log detail = %q", got)
+	}
+	private := NewProviderSendLogError("decode lark send response: unexpected EOF", internal)
+	if got := ProviderSendErrorLogDetail(private); got != "decode lark send response: unexpected EOF" {
+		t.Fatalf("private log detail = %q", got)
+	}
+	if got := ProviderSendErrorDetail(private); got != "" {
+		t.Fatalf("private public detail = %q", got)
+	}
+	if !errors.Is(private, internal) {
+		t.Fatal("private log error does not preserve its internal cause")
+	}
+
+	transport := &url.Error{
+		Op:  "Post",
+		URL: "https://api.example.test/bot-secret/send?access_token=query-secret",
+		Err: context.DeadlineExceeded,
+	}
+	got := ProviderSendErrorLogDetail(transport)
+	if got != `Post "https://api.example.test": provider request timed out` {
+		t.Fatalf("transport log detail = %q", got)
+	}
+	nested := &url.Error{
+		Op:  "Post",
+		URL: "https://api.example.test/send?access_token=outer-secret",
+		Err: &url.Error{
+			Op:  "Get",
+			URL: "https://download.example.test/private/file?token=inner-secret",
+			Err: context.DeadlineExceeded,
+		},
+	}
+	if got := ProviderSendErrorLogDetail(nested); got != `Post "https://api.example.test": Get "https://download.example.test": provider request timed out` {
+		t.Fatalf("nested transport log detail = %q", got)
+	}
+	refused := &url.Error{
+		Op:  "Post",
+		URL: "https://api.example.test/private/send?access_token=secret",
+		Err: &net.OpError{
+			Op:   "dial",
+			Net:  "tcp",
+			Addr: &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 443},
+			Err:  &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED},
+		},
+	}
+	if got := ProviderSendErrorLogDetail(refused); got != `Post "https://api.example.test": dial tcp: connect: connection refused` {
+		t.Fatalf("connection-refused log detail = %q", got)
+	}
+	dnsFailure := &url.Error{
+		Op:  "Post",
+		URL: "https://api.example.test/private/send?access_token=secret",
+		Err: &net.OpError{
+			Op:  "dial",
+			Net: "tcp",
+			Err: &net.DNSError{Err: "lookup secret.internal: no such host", Name: "secret.internal", IsNotFound: true},
+		},
+	}
+	if got := ProviderSendErrorLogDetail(dnsFailure); got != `Post "https://api.example.test": dial tcp: dns name not found` {
+		t.Fatalf("dns log detail = %q", got)
+	}
+	tlsFailure := &url.Error{
+		Op:  "Post",
+		URL: "https://api.example.test/private/send?access_token=secret",
+		Err: &net.OpError{Op: "read", Net: "tcp", Err: x509.UnknownAuthorityError{}},
+	}
+	if got := ProviderSendErrorLogDetail(tlsFailure); got != `Post "https://api.example.test": read tcp: tls certificate signed by unknown authority` {
+		t.Fatalf("tls log detail = %q", got)
+	}
+	plain := errors.New("POST https://user:password@example.test/private?access_token=secret failed")
+	if got := ProviderSendErrorLogDetail(plain); got != "unmarked provider error" {
+		t.Fatalf("unmarked log detail = %q", got)
+	}
+}
+
+func TestNewProviderSendOperationErrorPreservesSafeCauseAndHidesUnknownText(t *testing.T) {
+	transport := &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}
+	err := NewProviderSendOperationError("slack upload", transport)
+	if got := ProviderSendErrorLogDetail(err); got != "slack upload: read tcp: connection reset" {
+		t.Fatalf("transport log detail = %q", got)
+	}
+	if !errors.Is(err, transport) {
+		t.Fatal("transport cause was not preserved")
+	}
+	secret := errors.New("POST https://user:password@example.test/private?access_token=secret failed")
+	err = NewProviderSendOperationError("discord create dm", secret)
+	if got := ProviderSendErrorLogDetail(err); got != "discord create dm" {
+		t.Fatalf("unknown log detail = %q", got)
+	}
+	if got := ProviderSendErrorDetail(err); got != "" {
+		t.Fatalf("unknown public detail = %q", got)
+	}
+	if !errors.Is(err, secret) {
+		t.Fatal("unknown cause was not preserved")
+	}
+	publicErr := NewProviderSendLogError("matrix upload: http 502", NewProviderSendError("matrix send: http 502", secret))
+	if got := ProviderSendErrorLogDetail(publicErr); got != "matrix upload: http 502" {
+		t.Fatalf("private stage detail = %q", got)
+	}
+	if got := ProviderSendErrorDetail(publicErr); got != "matrix send: http 502" {
+		t.Fatalf("public compatibility detail = %q", got)
 	}
 }

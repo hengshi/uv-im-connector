@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"syscall"
 	"testing"
 
 	uvim "github.com/hengshi/uv-im-connector"
@@ -210,6 +214,40 @@ func TestSendResourceUploadsThenReplies(t *testing.T) {
 	}
 }
 
+func TestSendResourceMarksMissingUploadKeyForPrivateLogs(t *testing.T) {
+	store := &uvim.ResourceStore{Dir: t.TempDir()}
+	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+		case "/open-apis/im/v1/files":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
+		default:
+			t.Errorf("unexpected path %s", req.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL, ResourceStore: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Send(context.Background(), uvim.OutboundMessage{Resources: []uvim.ResourceRef{ref}, Referrer: uvim.Referrer{MessageID: "om_in"}})
+	if err == nil {
+		t.Fatal("Send() error = nil")
+	}
+	if got := uvim.ProviderSendErrorLogDetail(err); got != "lark upload: response key missing" {
+		t.Fatalf("private log detail = %q", got)
+	}
+	if got := uvim.ProviderSendErrorDetail(err); got != "" {
+		t.Fatalf("public detail = %q", got)
+	}
+}
+
 func TestSendImageUsesImageUpload(t *testing.T) {
 	store := &uvim.ResourceStore{Dir: t.TempDir()}
 	ref, err := store.Save(context.Background(), bytes.NewReader([]byte("png")), uvim.ResourceRef{Kind: uvim.ElementImage, Name: "chart.png", MIME: "image/png"})
@@ -321,6 +359,124 @@ func TestLegacyDirectChannelRemainsChatID(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSendMarksDecodeFailureForPrivateLogs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+		case "/open-apis/im/v1/messages":
+			_, _ = w.Write([]byte(`{"code":`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Send(context.Background(), uvim.OutboundMessage{ChannelID: "oc_chat", Text: "hello"})
+	if err == nil {
+		t.Fatal("Send() error = nil")
+	}
+	if got := uvim.ProviderSendErrorDetail(err); got != "" {
+		t.Fatalf("public detail = %q", got)
+	}
+	if got := uvim.ProviderSendErrorLogDetail(err); got != "decode lark send response: unexpected end of JSON input" {
+		t.Fatalf("private log detail = %q", got)
+	}
+}
+
+func TestSendMarksHTTPFailureForPrivateLogs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+		case "/open-apis/im/v1/messages":
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"error":"access_token=secret"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Send(context.Background(), uvim.OutboundMessage{ChannelID: "oc_chat", Text: "hello"})
+	if err == nil {
+		t.Fatal("Send() error = nil")
+	}
+	if got := uvim.ProviderSendErrorDetail(err); got != "" {
+		t.Fatalf("public detail = %q", got)
+	}
+	if got := uvim.ProviderSendErrorLogDetail(err); got != "lark send: http 502" {
+		t.Fatalf("private log detail = %q", got)
+	}
+}
+
+func TestDoJSONPreservesStatusAndBodyReadCause(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		readErr    error
+		want       string
+	}{
+		{
+			name:       "bad gateway before unreadable body",
+			statusCode: http.StatusBadGateway,
+			readErr:    errors.New("access_token=secret"),
+			want:       "lark send: http 502",
+		},
+		{
+			name:       "successful status with reset body",
+			statusCode: http.StatusOK,
+			readErr:    &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET},
+			want:       "lark send: read response: read tcp: connection reset",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, err := New(Config{
+				AppID:     "app",
+				AppSecret: "secret",
+				HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: tt.statusCode,
+						Body:       io.NopCloser(errorReader{err: tt.readErr}),
+						Header:     make(http.Header),
+					}, nil
+				})},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://api.example.test/private?access_token=secret", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = provider.doJSON(req, "lark send")
+			if err == nil {
+				t.Fatal("doJSON() error = nil")
+			}
+			if got := uvim.ProviderSendErrorLogDetail(err); got != tt.want {
+				t.Fatalf("private log detail = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type errorReader struct{ err error }
+
+func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
 
 func TestProactiveSendRejectsNonOpenIDUserTarget(t *testing.T) {
 	provider, err := New(Config{AppID: "app", AppSecret: "secret"})

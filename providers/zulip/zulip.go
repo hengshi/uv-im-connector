@@ -58,7 +58,10 @@ func New(config Config) (*httpchannel.Provider, error) {
 
 const maxSimpleUploadBytes = 25 * 1024 * 1024
 
-func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchannel.Config) (uvim.OutboundMessage, error) {
+func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchannel.Config) (prepared uvim.OutboundMessage, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("zulip upload", err)
+	}()
 	if len(msg.Resources) == 0 {
 		return msg, nil
 	}
@@ -122,12 +125,9 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 		return msg, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, err := httpchannel.ReadSendResponse(resp, "zulip upload")
 	if err != nil {
 		return msg, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return msg, uvim.NewProviderSendError(fmt.Sprintf("zulip upload: http %d", resp.StatusCode), fmt.Errorf("zulip upload: http %d", resp.StatusCode))
 	}
 	var decoded struct {
 		Result   string `json:"result"`
@@ -145,7 +145,8 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	}
 	uploadURL := firstNonEmpty(decoded.URL, decoded.URI)
 	if uploadURL == "" {
-		return msg, fmt.Errorf("zulip upload: response missing url")
+		missingErr := fmt.Errorf("zulip upload: response missing url")
+		return msg, uvim.NewProviderSendLogError("zulip upload: URL missing", missingErr)
 	}
 	displayName := firstNonEmpty(decoded.Filename, name)
 	displayName = strings.NewReplacer("[", "", "]", "").Replace(displayName)

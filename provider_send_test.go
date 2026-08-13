@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -775,10 +776,166 @@ func TestProviderSendResponseParsers(t *testing.T) {
 			}
 			if _, err := tt.parse([]byte(tt.failureRaw)); err == nil {
 				t.Fatal("failure response accepted")
+			} else if detail := uvim.ProviderSendErrorDetail(err); detail == "" {
+				t.Fatalf("business failure has no provider detail: %v", err)
 			}
 		})
 	}
 }
+
+func TestCustomHTTPSendStagesPreserveStatusAcrossProviders(t *testing.T) {
+	store := &uvim.ResourceStore{Dir: t.TempDir()}
+	ref, err := store.Save(context.Background(), bytes.NewBufferString("image"), uvim.ResourceRef{Kind: uvim.ElementImage, Name: "chart.png", MIME: "image/png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: providerSendRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Body:       io.NopCloser(providerSendErrorReader{err: errors.New("access_token=secret")}),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	baseURL := "https://api.example.test"
+	tests := []struct {
+		name       string
+		build      func() (uvim.Provider, error)
+		message    uvim.OutboundMessage
+		wantLog    string
+		wantPublic string
+	}{
+		{
+			name: "discord create dm",
+			build: func() (uvim.Provider, error) {
+				return discord.New(discord.Config{BaseURL: baseURL, Token: "token", HTTPClient: client})
+			},
+			message: targetMessage(uvim.TargetUser, "user1"),
+			wantLog: "discord create dm: http 502",
+		},
+		{
+			name: "kook upload",
+			build: func() (uvim.Provider, error) {
+				return kook.New(kook.Config{BaseURL: baseURL, Token: "token", ResourceStore: store, HTTPClient: client})
+			},
+			message:    uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "channel1", Kind: uvim.TargetChannel}, Resources: []uvim.ResourceRef{ref}},
+			wantLog:    "kook upload: http 502",
+			wantPublic: "kook upload: http 502",
+		},
+		{
+			name: "matrix upload",
+			build: func() (uvim.Provider, error) {
+				return matrix.New(matrix.Config{BaseURL: baseURL, Token: "token", ResourceStore: store, HTTPClient: client})
+			},
+			message:    uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "!room:example.org", Kind: uvim.TargetConversation}, Resources: []uvim.ResourceRef{ref}},
+			wantLog:    "matrix upload: http 502",
+			wantPublic: "matrix send: http 502",
+		},
+		{
+			name: "slack upload init",
+			build: func() (uvim.Provider, error) {
+				return slack.New(slack.Config{BaseURL: baseURL, Token: "token", ResourceStore: store, HTTPClient: client})
+			},
+			message:    uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "C1", Kind: uvim.TargetChannel}, Resources: []uvim.ResourceRef{ref}},
+			wantLog:    "slack upload init: http 502",
+			wantPublic: "slack send: http 502",
+		},
+		{
+			name: "telegram send",
+			build: func() (uvim.Provider, error) {
+				return telegram.New(telegram.Config{BaseURL: baseURL, Token: "token", ResourceStore: store, HTTPClient: client})
+			},
+			message:    uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "user1", Kind: uvim.TargetUser}, Resources: []uvim.ResourceRef{ref}},
+			wantLog:    "telegram send: http 502",
+			wantPublic: "telegram send: http 502",
+		},
+		{
+			name: "wechat official upload",
+			build: func() (uvim.Provider, error) {
+				return wechatofficial.New(wechatofficial.Config{BaseURL: baseURL, Token: "token", ResourceStore: store, HTTPClient: client})
+			},
+			message:    uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "user1", Kind: uvim.TargetUser}, Resources: []uvim.ResourceRef{ref}},
+			wantLog:    "wechat-official upload: http 502",
+			wantPublic: "wechat-official upload: http 502",
+		},
+		{
+			name: "whatsapp upload",
+			build: func() (uvim.Provider, error) {
+				return whatsapp.New(whatsapp.Config{BaseURL: baseURL, Token: "token", PhoneNumberID: "phone1", ResourceStore: store, HTTPClient: client})
+			},
+			message:    uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "user1", Kind: uvim.TargetUser}, Resources: []uvim.ResourceRef{ref}},
+			wantLog:    "whatsapp upload: http 502",
+			wantPublic: "whatsapp send: http 502",
+		},
+		{
+			name: "zulip upload",
+			build: func() (uvim.Provider, error) {
+				return zulip.New(zulip.Config{BaseURL: baseURL, Token: "Basic token", ResourceStore: store, HTTPClient: client})
+			},
+			message:    uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "engineering", Kind: uvim.TargetGroup}, Resources: []uvim.ResourceRef{ref}, Referrer: uvim.Referrer{ThreadID: "general"}},
+			wantLog:    "zulip upload: http 502",
+			wantPublic: "zulip upload: http 502",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, err := tt.build()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = provider.Send(context.Background(), tt.message)
+			if err == nil {
+				t.Fatal("Send() error = nil")
+			}
+			if got := uvim.ProviderSendErrorLogDetail(err); got != tt.wantLog {
+				t.Fatalf("private log detail = %q, want %q", got, tt.wantLog)
+			}
+			if got := uvim.ProviderSendErrorDetail(err); got != tt.wantPublic {
+				t.Fatalf("public detail = %q, want %q", got, tt.wantPublic)
+			}
+			if strings.Contains(uvim.ProviderSendErrorLogDetail(err), "access_token") {
+				t.Fatalf("private log detail leaked response body: %q", uvim.ProviderSendErrorLogDetail(err))
+			}
+		})
+	}
+}
+
+func TestSlackUploadDecodeFailureKeepsSafeStage(t *testing.T) {
+	store := &uvim.ResourceStore{Dir: t.TempDir()}
+	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: providerSendRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"ok":`)), Header: make(http.Header)}, nil
+	})}
+	provider, err := slack.New(slack.Config{BaseURL: "https://api.example.test", Token: "token", ResourceStore: store, HTTPClient: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Send(context.Background(), uvim.OutboundMessage{
+		Target:    &uvim.OutboundTarget{ID: "C1", Kind: uvim.TargetChannel},
+		Resources: []uvim.ResourceRef{ref},
+	})
+	if err == nil {
+		t.Fatal("Send() error = nil")
+	}
+	if got := uvim.ProviderSendErrorLogDetail(err); got != "slack upload: invalid JSON response" {
+		t.Fatalf("private log detail = %q", got)
+	}
+	if got := uvim.ProviderSendErrorDetail(err); got != "" {
+		t.Fatalf("public detail = %q", got)
+	}
+}
+
+type providerSendRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f providerSendRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type providerSendErrorReader struct{ err error }
+
+func (r providerSendErrorReader) Read([]byte) (int, error) { return 0, r.err }
 
 func TestDingTalkSessionReplyRejectsDifferentOrigin(t *testing.T) {
 	msg := targetMessage(uvim.TargetUser, "u1")

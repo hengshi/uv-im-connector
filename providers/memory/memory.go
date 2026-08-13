@@ -70,9 +70,12 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 	return ctx.Err()
 }
 
-func (p *Provider) Send(_ context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+func (p *Provider) Send(_ context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("memory send", err)
+	}()
 	if err := uvim.ValidateOutboundTarget(msg, p.caps); err != nil {
-		return uvim.SendResult{}, err
+		return uvim.SendResult{}, uvim.NewProviderSendLogError("memory send: invalid target", err)
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()

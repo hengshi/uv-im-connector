@@ -82,7 +82,10 @@ func (p *Provider) Capabilities() uvim.Capabilities {
 	return caps
 }
 func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error { return p.base.Run(ctx, sink) }
-func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("whatsapp send", err)
+	}()
 	if len(msg.Resources) == 0 {
 		return p.base.Send(ctx, msg)
 	}
@@ -163,7 +166,10 @@ const (
 	maxDocumentBytes = 100 * 1024 * 1024
 )
 
-func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, ref uvim.ResourceRef) (uvim.SendResult, error) {
+func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, ref uvim.ResourceRef) (result uvim.SendResult, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("whatsapp upload", err)
+	}()
 	phoneNumberID := strings.TrimSpace(p.config.PhoneNumberID)
 	if phoneNumberID == "" {
 		return uvim.SendResult{}, fmt.Errorf("whatsapp send: phone_number_id is required")
@@ -217,7 +223,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	}
 	p.authorize(uploadReq)
 	uploadReq.Header.Set("Content-Type", writer.FormDataContentType())
-	uploadRaw, err := p.do(uploadReq)
+	uploadRaw, err := p.do(uploadReq, "whatsapp upload")
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
@@ -236,7 +242,8 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 		return uvim.SendResult{}, uvim.NewProviderSendError(businessErr.Error(), businessErr)
 	}
 	if uploadResponse.ID == "" {
-		return uvim.SendResult{}, fmt.Errorf("whatsapp upload: response missing media id")
+		missingErr := fmt.Errorf("whatsapp upload: response missing media id")
+		return uvim.SendResult{}, uvim.NewProviderSendLogError("whatsapp upload: media ID missing", missingErr)
 	}
 	target := msg.ResolvedTarget()
 	recipientType := "individual"
@@ -264,7 +271,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	}
 	p.authorize(sendReq)
 	sendReq.Header.Set("Content-Type", "application/json; charset=utf-8")
-	responseRaw, err := p.do(sendReq)
+	responseRaw, err := p.do(sendReq, "whatsapp send")
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
@@ -294,20 +301,13 @@ func (p *Provider) authorize(req *http.Request) {
 	}
 }
 
-func (p *Provider) do(req *http.Request) ([]byte, error) {
+func (p *Provider) do(req *http.Request, operation string) ([]byte, error) {
 	resp, err := p.config.HTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, uvim.NewProviderSendError(fmt.Sprintf("whatsapp send: http %d", resp.StatusCode), fmt.Errorf("whatsapp send: http %d", resp.StatusCode))
-	}
-	return raw, nil
+	return httpchannel.ReadSendResponseWithPublicOperation(resp, operation, "whatsapp send")
 }
 
 func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {

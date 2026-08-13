@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net/smtp"
+	"net/textproto"
 	"strings"
 	"testing"
 	"time"
@@ -77,5 +78,52 @@ func TestSendRejectsExternalResourceBeforeSMTP(t *testing.T) {
 	}
 	if called {
 		t.Fatal("SMTP called")
+	}
+}
+
+func TestSendPreservesSMTPStatusWithoutMessageText(t *testing.T) {
+	provider, err := New(Config{
+		SMTPAddr:     "smtp.example.com:25",
+		SMTPUsername: "bot@example.com",
+		From:         "bot@example.com",
+		SendMail: func(string, smtp.Auth, string, []string, []byte) error {
+			return &textproto.Error{Code: 550, Msg: "recipient secret@example.test rejected"}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Send(context.Background(), uvim.OutboundMessage{
+		Target: &uvim.OutboundTarget{ID: "user@example.com", Kind: uvim.TargetUser},
+		Text:   "hello",
+	})
+	if err == nil {
+		t.Fatal("Send() error = nil")
+	}
+	if got := uvim.ProviderSendErrorLogDetail(err); got != "mail send: remote protocol error: code 550" {
+		t.Fatalf("private log detail = %q", got)
+	}
+	if strings.Contains(uvim.ProviderSendErrorLogDetail(err), "secret@example.test") {
+		t.Fatalf("private log detail leaked SMTP text: %q", uvim.ProviderSendErrorLogDetail(err))
+	}
+}
+
+func TestSendMarksFixedLocalFailure(t *testing.T) {
+	provider, err := New(Config{
+		SMTPAddr:     "smtp.example.com:25",
+		SMTPUsername: "bot@example.com",
+		From:         "bot@example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Send(context.Background(), uvim.OutboundMessage{
+		Target: &uvim.OutboundTarget{ID: "user@example.com", Kind: uvim.TargetUser},
+	})
+	if err == nil {
+		t.Fatal("Send() error = nil")
+	}
+	if got := uvim.ProviderSendErrorLogDetail(err); got != "mail send: text or resource is required" {
+		t.Fatalf("private log detail = %q", got)
 	}
 }

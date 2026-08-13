@@ -86,7 +86,10 @@ func (p *Provider) Download(ctx context.Context, req uvim.ResourceDownloadReques
 	return p.base.Download(ctx, req)
 }
 
-func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("slack send", err)
+	}()
 	if len(msg.Resources) == 0 {
 		return p.base.Send(ctx, msg)
 	}
@@ -105,7 +108,10 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 	return p.sendResource(ctx, msg, msg.Resources[0])
 }
 
-func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, ref uvim.ResourceRef) (uvim.SendResult, error) {
+func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, ref uvim.ResourceRef) (result uvim.SendResult, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("slack upload", err)
+	}()
 	if p.config.ResourceStore == nil || !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
 		return uvim.SendResult{}, fmt.Errorf("slack upload: internal resource is required")
 	}
@@ -133,7 +139,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 		return uvim.SendResult{}, err
 	}
 	form := url.Values{"filename": {name}, "length": {strconv.Itoa(len(data))}}
-	initRaw, err := p.request(ctx, "/api/files.getUploadURLExternal", strings.NewReader(form.Encode()), "application/x-www-form-urlencoded")
+	initRaw, err := p.request(ctx, "/api/files.getUploadURLExternal", strings.NewReader(form.Encode()), "application/x-www-form-urlencoded", "slack upload init")
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
@@ -163,16 +169,12 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
-	_, copyErr := io.Copy(io.Discard, io.LimitReader(uploadResp.Body, 1<<20))
-	closeErr = uploadResp.Body.Close()
-	if copyErr != nil {
-		return uvim.SendResult{}, copyErr
+	if _, err := httpchannel.ReadSendResponseWithPublicOperation(uploadResp, "slack upload data", "slack upload"); err != nil {
+		_ = uploadResp.Body.Close()
+		return uvim.SendResult{}, err
 	}
-	if closeErr != nil {
-		return uvim.SendResult{}, closeErr
-	}
-	if uploadResp.StatusCode < 200 || uploadResp.StatusCode >= 300 {
-		return uvim.SendResult{}, uvim.NewProviderSendError(fmt.Sprintf("slack upload: http %d", uploadResp.StatusCode), fmt.Errorf("slack upload: http %d", uploadResp.StatusCode))
+	if closeErr = uploadResp.Body.Close(); closeErr != nil {
+		return uvim.SendResult{}, uvim.NewProviderSendLogError("slack upload data: close response failed", closeErr)
 	}
 	complete := map[string]any{
 		"files":      []map[string]string{{"id": initResponse.FileID, "title": name}},
@@ -185,7 +187,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 		complete["thread_ts"] = threadID
 	}
 	completeRaw, _ := json.Marshal(complete)
-	responseRaw, err := p.request(ctx, "/api/files.completeUploadExternal", bytes.NewReader(completeRaw), "application/json; charset=utf-8")
+	responseRaw, err := p.request(ctx, "/api/files.completeUploadExternal", bytes.NewReader(completeRaw), "application/json; charset=utf-8", "slack upload completion")
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
@@ -210,12 +212,15 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: messageID, Time: time.Now().UTC()}, nil
 }
 
-func (p *Provider) resourceChannelID(ctx context.Context, target uvim.OutboundTarget) (string, error) {
+func (p *Provider) resourceChannelID(ctx context.Context, target uvim.OutboundTarget) (channelID string, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("slack conversation open", err)
+	}()
 	if target.Kind != uvim.TargetUser || strings.HasPrefix(strings.ToUpper(target.ID), "D") {
 		return target.ID, nil
 	}
 	raw, _ := json.Marshal(map[string]string{"users": target.ID})
-	responseRaw, err := p.request(ctx, "/api/conversations.open", bytes.NewReader(raw), "application/json; charset=utf-8")
+	responseRaw, err := p.request(ctx, "/api/conversations.open", bytes.NewReader(raw), "application/json; charset=utf-8", "slack conversation open")
 	if err != nil {
 		return "", err
 	}
@@ -236,7 +241,7 @@ func (p *Provider) resourceChannelID(ctx context.Context, target uvim.OutboundTa
 	return response.Channel.ID, nil
 }
 
-func (p *Provider) request(ctx context.Context, path string, body io.Reader, contentType string) ([]byte, error) {
+func (p *Provider) request(ctx context.Context, path string, body io.Reader, contentType, operation string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(p.config.BaseURL, "/")+path, body)
 	if err != nil {
 		return nil, err
@@ -250,14 +255,7 @@ func (p *Provider) request(ctx context.Context, path string, body io.Reader, con
 		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, uvim.NewProviderSendError(fmt.Sprintf("slack send: http %d", resp.StatusCode), fmt.Errorf("slack send: http %d", resp.StatusCode))
-	}
-	return raw, nil
+	return httpchannel.ReadSendResponseWithPublicOperation(resp, operation, "slack send")
 }
 
 func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {

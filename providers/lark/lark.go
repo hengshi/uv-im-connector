@@ -19,6 +19,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	uvim "github.com/hengshi/uv-im-connector"
+	"github.com/hengshi/uv-im-connector/providers/httpchannel"
 )
 
 const (
@@ -249,7 +250,10 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 	}
 }
 
-func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("lark send", err)
+	}()
 	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("lark send: %w", err)
 	}
@@ -318,7 +322,7 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	respRaw, err := p.doJSON(req)
+	respRaw, err := p.doJSON(req, "lark send")
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
@@ -330,7 +334,8 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(respRaw, &decoded); err != nil {
-		return uvim.SendResult{}, fmt.Errorf("decode lark send response: %w", err)
+		sendErr := fmt.Errorf("decode lark send response: %w", err)
+		return uvim.SendResult{}, uvim.NewProviderSendLogError(sendErr.Error(), sendErr)
 	}
 	if decoded.Code != 0 {
 		sendErr := fmt.Errorf("lark send: code=%d msg=%q", decoded.Code, decoded.Msg)
@@ -339,7 +344,10 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.Sen
 	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: decoded.Data.MessageID, Time: time.Now().UTC()}, nil
 }
 
-func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (string, map[string]string, error) {
+func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (kind string, content map[string]string, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("lark upload", err)
+	}()
 	if p.config.ResourceStore == nil {
 		return "", nil, fmt.Errorf("lark upload: resource store is not configured")
 	}
@@ -388,7 +396,10 @@ func larkNativeImageMIME(mimeType string) bool {
 	}
 }
 
-func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[string]string, fileField, name, mimeType string, data []byte, responseKey string) (string, error) {
+func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[string]string, fileField, name, mimeType string, data []byte, responseKey string) (key string, err error) {
+	defer func() {
+		err = uvim.NewProviderSendOperationError("lark upload", err)
+	}()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	for key, value := range fields {
@@ -421,7 +432,7 @@ func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	respRaw, err := p.doJSON(req)
+	respRaw, err := p.doJSON(req, "lark upload")
 	if err != nil {
 		return "", err
 	}
@@ -437,9 +448,10 @@ func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[
 		sendErr := fmt.Errorf("lark upload: code=%d msg=%q", decoded.Code, decoded.Msg)
 		return "", uvim.NewProviderSendError(sendErr.Error(), sendErr)
 	}
-	key := strings.TrimSpace(decoded.Data[responseKey])
+	key = strings.TrimSpace(decoded.Data[responseKey])
 	if key == "" {
-		return "", fmt.Errorf("lark upload: response missing %s", responseKey)
+		missingErr := fmt.Errorf("lark upload: response missing %s", responseKey)
+		return "", uvim.NewProviderSendLogError("lark upload: response key missing", missingErr)
 	}
 	return key, nil
 }
@@ -492,7 +504,7 @@ func (p *Provider) endpoint(ctx context.Context) (endpoint, error) {
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	req.Header.Set("locale", "zh")
-	respRaw, err := p.doJSON(req)
+	respRaw, err := p.doJSON(req, "lark ws endpoint")
 	if err != nil {
 		return endpoint{}, err
 	}
@@ -537,7 +549,7 @@ func (p *Provider) tenantAccessToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	respRaw, err := p.doJSON(req)
+	respRaw, err := p.doJSON(req, "lark tenant access token")
 	if err != nil {
 		return "", err
 	}
@@ -560,20 +572,13 @@ func (p *Provider) tenantAccessToken(ctx context.Context) (string, error) {
 	return decoded.TenantAccessToken, nil
 }
 
-func (p *Provider) doJSON(req *http.Request) (json.RawMessage, error) {
+func (p *Provider) doJSON(req *http.Request, operation string) (json.RawMessage, error) {
 	resp, err := p.config.HTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("http %d", resp.StatusCode)
-	}
-	return raw, nil
+	return httpchannel.ReadPrivateSendResponse(resp, operation)
 }
 
 func (p *Provider) writeFrame(mu *sync.Mutex, conn WSConn, frame *wsFrame) error {

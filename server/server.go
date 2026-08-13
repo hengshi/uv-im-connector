@@ -240,9 +240,9 @@ func (h *Hub) handleMessageCreate(w http.ResponseWriter, req *http.Request) {
 	}
 	result, err := provider.Send(req.Context(), msg)
 	if err != nil {
-		reason := uvim.ProviderSendErrorDetail(err)
+		reason := uvim.ProviderSendErrorLogDetail(err)
 		if reason == "" {
-			reason = "internal_error"
+			reason = "provider send failed"
 		}
 		slog.Error("provider send failed", "provider", provider.ID(), "connector", provider.ConnectorID(), "reason", reason)
 		writeProviderError(w, err)
