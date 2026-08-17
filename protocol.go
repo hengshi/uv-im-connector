@@ -458,9 +458,13 @@ func NewProviderSendFailure(failure SendFailure, detail string, err error) error
 // NewProviderResponseError marks a syntactically successful provider response
 // whose business result rejected the message. Only bounded machine-like codes
 // are extracted from raw; provider messages and response bodies are not copied.
-func NewProviderResponseError(raw []byte, detail string, err error) error {
+func NewProviderResponseError(raw []byte, _ string, err error) error {
 	failure := providerResponseFailure(raw)
-	return NewProviderSendFailure(failure, detail, err)
+	logDetail := "provider rejected request"
+	if failure.ProviderCode != "" {
+		logDetail += ": code " + failure.ProviderCode
+	}
+	return NewProviderSendLogError(logDetail, NewProviderSendFailure(failure, "", err))
 }
 
 // NewProviderHTTPError marks a non-2xx provider response. HTTP status, retry
@@ -564,9 +568,6 @@ func providerFailureCode(payload any) string {
 		if value := safeProviderMachineValue(fmt.Sprint(nested["code"])); value != "" && value != "<nil>" {
 			return value
 		}
-	}
-	if value, ok := object["error"].(string); ok {
-		return safeProviderMachineValue(value)
 	}
 	return ""
 }

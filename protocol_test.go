@@ -302,6 +302,31 @@ func TestProviderSendFailureClassifiesHTTPResponsesWithoutExposingBody(t *testin
 	}
 }
 
+func TestProviderResponseFailureDoesNotPromoteArbitraryErrorText(t *testing.T) {
+	internal := errors.New("provider returned access_token=secret")
+	err := NewProviderResponseError(
+		[]byte(`{"error":"xoxb-secret","message":"access_token=secret"}`),
+		"provider rejected request: access_token=secret",
+		internal,
+	)
+	failure, ok := ProviderSendFailure(err)
+	if !ok {
+		t.Fatal("provider response error has no normalized failure")
+	}
+	if failure.ProviderCode != "" || failure.Retryable || failure.DeliveryState != DeliveryRejected {
+		t.Fatalf("failure = %+v", failure)
+	}
+	if got := ProviderSendErrorDetail(err); got != "" {
+		t.Fatalf("public detail leaked provider text: %q", got)
+	}
+	if got := ProviderSendErrorLogDetail(err); got != "provider rejected request" {
+		t.Fatalf("private log detail = %q", got)
+	}
+	if !errors.Is(err, internal) {
+		t.Fatal("provider response error does not preserve its internal cause")
+	}
+}
+
 func TestProviderSendOperationErrorAlwaysCarriesNormalizedFailure(t *testing.T) {
 	transport := &url.Error{Op: "Post", URL: "https://api.example.test/send?token=secret", Err: context.DeadlineExceeded}
 	err := NewProviderSendOperationError("slack send", transport)

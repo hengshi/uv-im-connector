@@ -335,6 +335,38 @@ func TestProactiveSendSelectsRecipientIDType(t *testing.T) {
 	}
 }
 
+func TestSendBusinessFailureExposesOnlyNormalizedFacts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+		case "/open-apis/im/v1/messages":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 230020, "msg": "access_token=secret"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Send(context.Background(), uvim.OutboundMessage{ChannelID: "oc_chat", Text: "hello"})
+	if err == nil {
+		t.Fatal("Send() error = nil")
+	}
+	failure, ok := uvim.ProviderSendFailure(err)
+	if !ok || failure.Category != uvim.SendFailureProviderRejected || failure.Retryable || failure.DeliveryState != uvim.DeliveryRejected || failure.ProviderCode != "230020" {
+		t.Fatalf("failure = %+v, ok=%v", failure, ok)
+	}
+	if got := uvim.ProviderSendErrorDetail(err); got != "" {
+		t.Fatalf("public detail leaked provider message: %q", got)
+	}
+	if got := uvim.ProviderSendErrorLogDetail(err); got != "provider rejected request: code 230020" {
+		t.Fatalf("private log detail = %q", got)
+	}
+}
+
 func TestLegacyDirectChannelRemainsChatID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {
