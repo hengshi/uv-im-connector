@@ -459,7 +459,17 @@ func NewProviderSendFailure(failure SendFailure, detail string, err error) error
 // whose business result rejected the message. Only bounded machine-like codes
 // are extracted from raw; provider messages and response bodies are not copied.
 func NewProviderResponseError(raw []byte, _ string, err error) error {
+	return NewProviderResponseErrorWithCode(raw, "", err)
+}
+
+// NewProviderResponseErrorWithCode marks a provider's typed response code as
+// safe decision metadata. Adapters must pass a field they already parsed from
+// their provider response; arbitrary raw response strings remain untrusted.
+func NewProviderResponseErrorWithCode(raw []byte, providerCode string, err error) error {
 	failure := providerResponseFailure(raw)
+	if providerCode = safeProviderMachineValue(providerCode); providerCode != "" {
+		failure.ProviderCode = providerCode
+	}
 	logDetail := "provider rejected request"
 	if failure.ProviderCode != "" {
 		logDetail += ": code " + failure.ProviderCode
@@ -495,6 +505,10 @@ func ProviderSendFailure(err error) (SendFailure, bool) {
 // exposing its body. A non-2xx response is a rejection only where replay is
 // known to be safe; ambiguous timeout/server outcomes remain delivery unknown.
 func ProviderHTTPFailure(status int, header http.Header, raw []byte) SendFailure {
+	return providerHTTPFailureAt(status, header, raw, time.Now())
+}
+
+func providerHTTPFailureAt(status int, header http.Header, raw []byte, now time.Time) SendFailure {
 	failure := providerResponseFailure(raw)
 	failure.HTTPStatus = status
 	switch {
@@ -530,9 +544,7 @@ func ProviderHTTPFailure(status int, header http.Header, raw []byte) SendFailure
 		failure.DeliveryState = DeliveryRejected
 	}
 	if header != nil {
-		if seconds, err := strconv.Atoi(strings.TrimSpace(header.Get("Retry-After"))); err == nil && seconds > 0 {
-			failure.RetryAfterSeconds = min(seconds, 3600)
-		}
+		failure.RetryAfterSeconds = retryAfterSeconds(header.Get("Retry-After"), now)
 		for _, name := range []string{"X-Request-Id", "X-Request-ID", "X-Lark-Request-Id", "X-Slack-Req-Id"} {
 			if value := safeProviderMachineValue(header.Get(name)); value != "" {
 				failure.RequestID = value
@@ -541,6 +553,24 @@ func ProviderHTTPFailure(status int, header http.Header, raw []byte) SendFailure
 		}
 	}
 	return normalizeSendFailure(failure)
+}
+
+func retryAfterSeconds(value string, now time.Time) int {
+	value = strings.TrimSpace(value)
+	if seconds, err := strconv.ParseUint(value, 10, 64); err == nil {
+		return int(min(seconds, 3600))
+	} else if errors.Is(err, strconv.ErrRange) {
+		return 3600
+	}
+	retryAt, err := http.ParseTime(value)
+	if err != nil || !retryAt.After(now) {
+		return 0
+	}
+	delay := retryAt.Sub(now)
+	if delay >= time.Hour {
+		return 3600
+	}
+	return int((delay + time.Second - 1) / time.Second)
 }
 
 func providerResponseFailure(raw []byte) SendFailure {

@@ -302,6 +302,39 @@ func TestProviderSendFailureClassifiesHTTPResponsesWithoutExposingBody(t *testin
 	}
 }
 
+func TestProviderHTTPFailureParsesHTTPDateRetryAfterDeterministically(t *testing.T) {
+	// HTTP dates have one-second precision. Keeping now on a half-second
+	// boundary proves the remaining duration is rounded up, not truncated.
+	now := time.Date(2026, time.August, 17, 9, 30, 0, 500_000_000, time.UTC)
+	for _, test := range []struct {
+		name  string
+		delay time.Duration
+		want  int
+	}{
+		{name: "remaining seconds", delay: 17 * time.Second, want: 17},
+		{name: "bounded", delay: 2 * time.Hour, want: 3600},
+		{name: "elapsed", delay: -time.Second, want: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			failure := providerHTTPFailureAt(http.StatusServiceUnavailable, http.Header{
+				"Retry-After": []string{now.Add(test.delay).Format(http.TimeFormat)},
+			}, nil, now)
+			if failure.Category != SendFailureProviderUnavailable || !failure.Retryable || failure.RetryAfterSeconds != test.want {
+				t.Fatalf("failure = %+v", failure)
+			}
+		})
+	}
+}
+
+func TestProviderHTTPFailureCapsOverflowingDeltaSeconds(t *testing.T) {
+	failure := providerHTTPFailureAt(http.StatusTooManyRequests, http.Header{
+		"Retry-After": []string{"999999999999999999999999999999999999"},
+	}, nil, time.Time{})
+	if failure.RetryAfterSeconds != 3600 {
+		t.Fatalf("failure = %+v", failure)
+	}
+}
+
 func TestProviderResponseFailureDoesNotPromoteArbitraryErrorText(t *testing.T) {
 	internal := errors.New("provider returned access_token=secret")
 	err := NewProviderResponseError(
@@ -324,6 +357,25 @@ func TestProviderResponseFailureDoesNotPromoteArbitraryErrorText(t *testing.T) {
 	}
 	if !errors.Is(err, internal) {
 		t.Fatal("provider response error does not preserve its internal cause")
+	}
+}
+
+func TestProviderResponseFailureAcceptsOnlySafeTypedCode(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		code string
+		want string
+	}{
+		{name: "safe code", code: "channel_not_found", want: "channel_not_found"},
+		{name: "unsafe provider text", code: "access_token=secret"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := NewProviderResponseErrorWithCode(nil, test.code, errors.New("provider rejected request"))
+			failure, ok := ProviderSendFailure(err)
+			if !ok || failure.ProviderCode != test.want {
+				t.Fatalf("failure = %+v, ok=%v", failure, ok)
+			}
+		})
 	}
 }
 

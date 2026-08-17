@@ -763,7 +763,7 @@ func TestProviderSendResponseParsers(t *testing.T) {
 		{name: "onebot", parse: onebot.ParseSendResponse, successRaw: `{"status":"ok","retcode":0,"data":{"message_id":1}}`, wantID: "1", failureRaw: `{"status":"failed","retcode":100,"wording":"blocked"}`, wantCode: "100"},
 		{name: "qq", parse: qq.ParseSendResponse, successRaw: `{"status":"ok","retcode":0,"data":{"message_id":1}}`, wantID: "1", failureRaw: `{"status":"failed","retcode":100,"wording":"blocked"}`, wantCode: "100"},
 		{name: "qqguild", parse: qqguild.ParseSendResponse, successRaw: `{"id":"m1"}`, wantID: "m1", failureRaw: `{"code":11255,"message":"invalid request"}`, wantCode: "11255"},
-		{name: "slack", parse: slack.ParseSendResponse, successRaw: `{"ok":true,"ts":"m1"}`, wantID: "m1", failureRaw: `{"ok":false,"error":"channel_not_found"}`},
+		{name: "slack", parse: slack.ParseSendResponse, successRaw: `{"ok":true,"ts":"m1"}`, wantID: "m1", failureRaw: `{"ok":false,"error":"channel_not_found"}`, wantCode: "channel_not_found"},
 		{name: "telegram", parse: telegram.ParseSendResponse, successRaw: `{"ok":true,"result":{"message_id":1}}`, wantID: "1", failureRaw: `{"ok":false,"error_code":403,"description":"bot blocked"}`, wantCode: "403"},
 		{name: "wechat-official", parse: wechatofficial.ParseSendResponse, successRaw: `{"errcode":0,"errmsg":"ok","msgid":"m1"}`, wantID: "m1", failureRaw: `{"errcode":45015,"errmsg":"response out of time limit"}`, wantCode: "45015"},
 		{name: "whatsapp", parse: whatsapp.ParseSendResponse, successRaw: `{"messages":[{"id":"m1"}]}`, wantID: "m1", failureRaw: `{"error":{"code":131047,"message":"re-engagement message"}}`, wantCode: "131047"},
