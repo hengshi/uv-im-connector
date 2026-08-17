@@ -198,7 +198,7 @@ func ParseSendResponse(raw []byte) (string, error) {
 	}
 	if response.Message != "" {
 		businessErr := fmt.Errorf("message=%q", response.Message)
-		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return "", uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
 	}
 	if len(response.SentMessages) > 0 {
 		return response.SentMessages[0].ID, nil

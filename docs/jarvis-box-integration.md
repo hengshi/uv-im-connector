@@ -29,6 +29,7 @@ jarvis-box owns:
 5. jarvis-box resolves resources through `internal_url`, then copies allowed files into the Run attachment directory.
 6. jarvis-box starts or continues a Task/Run using its existing runtime-agent model.
 7. jarvis-box sends final replies through `POST /v1/message.create`.
+8. On failure, jarvis-box persists the normalized `failure`, applies its own bounded retry policy, and keeps delivery state separate from agent Run state.
 
 ## Release Boundary
 
@@ -44,6 +45,9 @@ jarvis-box does not host, spawn, or auto-update `uv-im-connector`. A connector b
 - Provider credentials and raw payload fields do not appear in public status or artifacts.
 - Duplicate event IDs do not create duplicate Runs.
 - Connector reconnect does not require jarvis-box to know provider-specific state.
+- Every provider send failure reaches jarvis-box through the same normalized failure contract.
+- Safe retryable rejection/not-attempted failures are retried without parsing text; ambiguous delivery is not replayed automatically.
+- A failed final reply reuses the persisted provider-ready result and does not rerun the agent.
 
 ## Non-Goals
 

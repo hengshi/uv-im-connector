@@ -156,7 +156,7 @@ func ParseSendResponse(raw []byte) (string, error) {
 	}
 	if response.ErrCode != 0 {
 		businessErr := fmt.Errorf("errcode=%d errmsg=%q", response.ErrCode, response.ErrMsg)
-		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return "", uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
 	}
 	return "", nil
 }

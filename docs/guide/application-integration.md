@@ -70,7 +70,34 @@ Server 主动发送没有入站 `referrer`，必须显式传 `target`，并先�
 
 回复流程还应保留完整 `referrer`，并遵守 `expires_at` 和 provider 的 `reply_max_uses`。reply handle 过期或耗尽后，只能在主动发送能力允许时清除 handle、改用 `referrer.target`；不要根据 provider 名称硬编码超时时间。
 
-发送失败时，`POST /v1/message.create` 返回 HTTP `502` 和 `error: "provider_send_failed"`。如果 adapter 拿到了可安全公开的平台业务失败原因，响应还会通过限长的 `detail` 返回；可能包含凭证的任意网络错误不会原样回传。调用方可以在 `detail` 存在时展示该原因，或据此决定重试和 fallback。
+发送失败时，`POST /v1/message.create` 仍返回兼容的 HTTP `502` 和 `error: "provider_send_failed"`，同时始终返回 provider-neutral `failure`。外层 `502` 表示 connector 没有完成发送，不等于上游 provider 返回了 502；上游 HTTP 状态只看 `failure.http_status`。非 HTTP 失败没有该字段。
+
+```json
+{
+  "ok": false,
+  "error": "provider_send_failed",
+  "detail": "lark send: http 429",
+  "failure": {
+    "category": "rate-limited",
+    "retryable": true,
+    "delivery_state": "rejected",
+    "http_status": 429,
+    "provider_code": "230020",
+    "retry_after_seconds": 3,
+    "request_id": "request-123"
+  }
+}
+```
+
+`detail` 是可选的人类可读说明，只适合展示；调用方不得解析它、`error` 或日志来决定行为。机器策略只使用 `failure`：
+
+| 条件 | 调用方策略 |
+| --- | --- |
+| `retryable=true` 且 `delivery_state` 为 `rejected` 或 `not-attempted` | 可执行有界自动重试，并遵守 `retry_after_seconds` |
+| `delivery_state=unknown` | 不自动重放；重复发送风险高于自动恢复收益 |
+| `retryable=false` | 不重试，直接展示结构化原因和可执行的配置/目标修复入口 |
+
+`category` 的稳定值包括 `invalid-request`、`authentication`、`permission`、`target-unavailable`、`rate-limited`、`provider-unavailable`、`timeout`、`transport`、`provider-rejected`、`payload-too-large` 和 `unknown`。`provider_code` 与 `request_id` 只保留限长的机器值；provider response body、任意错误文本和凭证不会进入 `failure`。旧 client 可以继续只读取外层字段，新 client 应把 `failure` 持久化到自己的 delivery/writeback artifact。
 
 调用方不应该直接调用 provider-native send API。Provider 特有发送逻辑属于 provider adapter。
 
@@ -95,6 +122,6 @@ Connector 会先发送该 sequence 之后的 backlog，再继续推送新事件�
 - 原生 resume handle；
 - workspace 创建或清理；
 - 用户 / 团队可见性策略；
-- 业务重试或升级策略。
+- 基于 normalized `failure` 的有界重试、升级和任务生命周期策略。
 
 这些职责属于调用方应用。

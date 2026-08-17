@@ -47,6 +47,34 @@ func TestSendRejectsProviderBusinessErrorOnHTTP200(t *testing.T) {
 	}
 }
 
+func TestReadPrivateSendResponseCarriesSafeNormalizedHTTPFailure(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header: http.Header{
+			"Retry-After":  []string{"9"},
+			"X-Request-Id": []string{"req-lark-1"},
+		},
+		Body: io.NopCloser(strings.NewReader(`{"code":230020,"msg":"access_token=secret"}`)),
+	}
+	_, err := ReadPrivateSendResponse(resp, "lark send")
+	if err == nil {
+		t.Fatal("ReadPrivateSendResponse() error = nil")
+	}
+	failure, ok := uvim.ProviderSendFailure(err)
+	if !ok {
+		t.Fatal("private HTTP error has no normalized failure")
+	}
+	if failure.Category != uvim.SendFailureRateLimited || !failure.Retryable || failure.DeliveryState != uvim.DeliveryRejected || failure.ProviderCode != "230020" || failure.RetryAfterSeconds != 9 || failure.RequestID != "req-lark-1" {
+		t.Fatalf("failure = %+v", failure)
+	}
+	if got := uvim.ProviderSendErrorDetail(err); got != "" {
+		t.Fatalf("private response exposed public detail %q", got)
+	}
+	if got := uvim.ProviderSendErrorLogDetail(err); strings.Contains(got, "secret") {
+		t.Fatalf("private response leaked body in log detail %q", got)
+	}
+}
+
 func TestSendIncludesBoundedHTTPErrorBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)

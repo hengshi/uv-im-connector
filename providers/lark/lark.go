@@ -300,7 +300,10 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 		typedTarget := msg.Target != nil || msg.Referrer.Target != nil
 		if typedTarget && target.Kind == uvim.TargetUser && !strings.HasPrefix(target.ID, "ou_") {
 			sendErr := fmt.Errorf("lark send: user target id must be an Open ID")
-			return uvim.SendResult{}, uvim.NewProviderSendError(sendErr.Error(), sendErr)
+			return uvim.SendResult{}, uvim.NewProviderSendFailure(uvim.SendFailure{
+				Category:      uvim.SendFailureInvalidRequest,
+				DeliveryState: uvim.DeliveryNotAttempted,
+			}, sendErr.Error(), sendErr)
 		}
 		if (typedTarget && target.Kind == uvim.TargetUser) || strings.HasPrefix(target.ID, "ou_") {
 			receiveIDType = "open_id"
@@ -339,7 +342,7 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	}
 	if decoded.Code != 0 {
 		sendErr := fmt.Errorf("lark send: code=%d msg=%q", decoded.Code, decoded.Msg)
-		return uvim.SendResult{}, uvim.NewProviderSendError(sendErr.Error(), sendErr)
+		return uvim.SendResult{}, uvim.NewProviderResponseError(respRaw, sendErr.Error(), sendErr)
 	}
 	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: decoded.Data.MessageID, Time: time.Now().UTC()}, nil
 }
@@ -446,7 +449,7 @@ func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[
 	}
 	if decoded.Code != 0 {
 		sendErr := fmt.Errorf("lark upload: code=%d msg=%q", decoded.Code, decoded.Msg)
-		return "", uvim.NewProviderSendError(sendErr.Error(), sendErr)
+		return "", uvim.NewProviderResponseError(respRaw, sendErr.Error(), sendErr)
 	}
 	key = strings.TrimSpace(decoded.Data[responseKey])
 	if key == "" {

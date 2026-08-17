@@ -753,19 +753,20 @@ func TestProviderSendResponseParsers(t *testing.T) {
 		successRaw string
 		wantID     string
 		failureRaw string
+		wantCode   string
 	}{
-		{name: "dingtalk", parse: dingtalk.ParseSendResponse, successRaw: `{"errcode":0,"errmsg":"ok"}`, failureRaw: `{"errcode":310000,"errmsg":"invalid token"}`},
-		{name: "discord", parse: discord.ParseSendResponse, successRaw: `{"id":"m1"}`, wantID: "m1", failureRaw: `{"code":50035,"message":"Invalid Form Body"}`},
-		{name: "kook", parse: kook.ParseSendResponse, successRaw: `{"code":0,"data":{"msg_id":"m1"}}`, wantID: "m1", failureRaw: `{"code":40000,"message":"invalid target"}`},
+		{name: "dingtalk", parse: dingtalk.ParseSendResponse, successRaw: `{"errcode":0,"errmsg":"ok"}`, failureRaw: `{"errcode":310000,"errmsg":"invalid token"}`, wantCode: "310000"},
+		{name: "discord", parse: discord.ParseSendResponse, successRaw: `{"id":"m1"}`, wantID: "m1", failureRaw: `{"code":50035,"message":"Invalid Form Body"}`, wantCode: "50035"},
+		{name: "kook", parse: kook.ParseSendResponse, successRaw: `{"code":0,"data":{"msg_id":"m1"}}`, wantID: "m1", failureRaw: `{"code":40000,"message":"invalid target"}`, wantCode: "40000"},
 		{name: "line", parse: line.ParseSendResponse, successRaw: `{"sentMessages":[{"id":"m1"}]}`, wantID: "m1", failureRaw: `{"message":"invalid user"}`},
-		{name: "matrix", parse: matrix.ParseSendResponse, successRaw: `{"event_id":"m1"}`, wantID: "m1", failureRaw: `{"errcode":"M_FORBIDDEN","error":"forbidden"}`},
-		{name: "onebot", parse: onebot.ParseSendResponse, successRaw: `{"status":"ok","retcode":0,"data":{"message_id":1}}`, wantID: "1", failureRaw: `{"status":"failed","retcode":100,"wording":"blocked"}`},
-		{name: "qq", parse: qq.ParseSendResponse, successRaw: `{"status":"ok","retcode":0,"data":{"message_id":1}}`, wantID: "1", failureRaw: `{"status":"failed","retcode":100,"wording":"blocked"}`},
-		{name: "qqguild", parse: qqguild.ParseSendResponse, successRaw: `{"id":"m1"}`, wantID: "m1", failureRaw: `{"code":11255,"message":"invalid request"}`},
-		{name: "slack", parse: slack.ParseSendResponse, successRaw: `{"ok":true,"ts":"m1"}`, wantID: "m1", failureRaw: `{"ok":false,"error":"channel_not_found"}`},
-		{name: "telegram", parse: telegram.ParseSendResponse, successRaw: `{"ok":true,"result":{"message_id":1}}`, wantID: "1", failureRaw: `{"ok":false,"error_code":403,"description":"bot blocked"}`},
-		{name: "wechat-official", parse: wechatofficial.ParseSendResponse, successRaw: `{"errcode":0,"errmsg":"ok","msgid":"m1"}`, wantID: "m1", failureRaw: `{"errcode":45015,"errmsg":"response out of time limit"}`},
-		{name: "whatsapp", parse: whatsapp.ParseSendResponse, successRaw: `{"messages":[{"id":"m1"}]}`, wantID: "m1", failureRaw: `{"error":{"code":131047,"message":"re-engagement message"}}`},
+		{name: "matrix", parse: matrix.ParseSendResponse, successRaw: `{"event_id":"m1"}`, wantID: "m1", failureRaw: `{"errcode":"M_FORBIDDEN","error":"forbidden"}`, wantCode: "M_FORBIDDEN"},
+		{name: "onebot", parse: onebot.ParseSendResponse, successRaw: `{"status":"ok","retcode":0,"data":{"message_id":1}}`, wantID: "1", failureRaw: `{"status":"failed","retcode":100,"wording":"blocked"}`, wantCode: "100"},
+		{name: "qq", parse: qq.ParseSendResponse, successRaw: `{"status":"ok","retcode":0,"data":{"message_id":1}}`, wantID: "1", failureRaw: `{"status":"failed","retcode":100,"wording":"blocked"}`, wantCode: "100"},
+		{name: "qqguild", parse: qqguild.ParseSendResponse, successRaw: `{"id":"m1"}`, wantID: "m1", failureRaw: `{"code":11255,"message":"invalid request"}`, wantCode: "11255"},
+		{name: "slack", parse: slack.ParseSendResponse, successRaw: `{"ok":true,"ts":"m1"}`, wantID: "m1", failureRaw: `{"ok":false,"error":"channel_not_found"}`, wantCode: "channel_not_found"},
+		{name: "telegram", parse: telegram.ParseSendResponse, successRaw: `{"ok":true,"result":{"message_id":1}}`, wantID: "1", failureRaw: `{"ok":false,"error_code":403,"description":"bot blocked"}`, wantCode: "403"},
+		{name: "wechat-official", parse: wechatofficial.ParseSendResponse, successRaw: `{"errcode":0,"errmsg":"ok","msgid":"m1"}`, wantID: "m1", failureRaw: `{"errcode":45015,"errmsg":"response out of time limit"}`, wantCode: "45015"},
+		{name: "whatsapp", parse: whatsapp.ParseSendResponse, successRaw: `{"messages":[{"id":"m1"}]}`, wantID: "m1", failureRaw: `{"error":{"code":131047,"message":"re-engagement message"}}`, wantCode: "131047"},
 		{name: "zulip", parse: zulip.ParseSendResponse, successRaw: `{"result":"success","id":1}`, wantID: "1", failureRaw: `{"result":"error","msg":"invalid email"}`},
 	}
 	for _, tt := range tests {
@@ -778,6 +779,8 @@ func TestProviderSendResponseParsers(t *testing.T) {
 				t.Fatal("failure response accepted")
 			} else if detail := uvim.ProviderSendErrorDetail(err); detail == "" {
 				t.Fatalf("business failure has no provider detail: %v", err)
+			} else if failure, ok := uvim.ProviderSendFailure(err); !ok || failure.Category != uvim.SendFailureProviderRejected || failure.DeliveryState != uvim.DeliveryRejected || failure.ProviderCode != tt.wantCode {
+				t.Fatalf("business failure is not normalized: %+v, ok=%v", failure, ok)
 			}
 		})
 	}
@@ -891,6 +894,10 @@ func TestCustomHTTPSendStagesPreserveStatusAcrossProviders(t *testing.T) {
 			}
 			if got := uvim.ProviderSendErrorDetail(err); got != tt.wantPublic {
 				t.Fatalf("public detail = %q, want %q", got, tt.wantPublic)
+			}
+			failure, ok := uvim.ProviderSendFailure(err)
+			if !ok || failure.Category != uvim.SendFailureProviderUnavailable || !failure.Retryable || failure.DeliveryState != uvim.DeliveryUnknown || failure.HTTPStatus != http.StatusBadGateway {
+				t.Fatalf("normalized HTTP failure = %+v, ok=%v", failure, ok)
 			}
 			if strings.Contains(uvim.ProviderSendErrorLogDetail(err), "access_token") {
 				t.Fatalf("private log detail leaked response body: %q", uvim.ProviderSendErrorLogDetail(err))

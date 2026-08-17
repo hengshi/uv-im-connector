@@ -372,7 +372,7 @@ func ParseSendResponse(raw []byte) (string, error) {
 	}
 	if !response.OK {
 		businessErr := fmt.Errorf("error_code=%d description=%q", response.ErrorCode, response.Description)
-		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return "", uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
 	}
 	if response.Result.MessageID == 0 {
 		return "", nil

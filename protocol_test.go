@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -277,6 +279,38 @@ func TestProviderSendErrorDetail(t *testing.T) {
 	}
 	if got := ProviderSendErrorDetail(internal); got != "" {
 		t.Fatalf("unmarked error detail = %q", got)
+	}
+}
+
+func TestProviderSendFailureClassifiesHTTPResponsesWithoutExposingBody(t *testing.T) {
+	failure := ProviderHTTPFailure(http.StatusTooManyRequests, http.Header{
+		"Retry-After":  []string{"17"},
+		"X-Request-Id": []string{"request-123"},
+	}, []byte(`{"error":{"code":429001,"message":"token=secret"}}`))
+	if failure.Category != SendFailureRateLimited || !failure.Retryable || failure.DeliveryState != DeliveryRejected {
+		t.Fatalf("failure classification = %+v", failure)
+	}
+	if failure.HTTPStatus != http.StatusTooManyRequests || failure.ProviderCode != "429001" || failure.RetryAfterSeconds != 17 || failure.RequestID != "request-123" {
+		t.Fatalf("failure evidence = %+v", failure)
+	}
+	raw, err := json.Marshal(failure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "secret") {
+		t.Fatalf("failure leaked response body: %s", raw)
+	}
+}
+
+func TestProviderSendOperationErrorAlwaysCarriesNormalizedFailure(t *testing.T) {
+	transport := &url.Error{Op: "Post", URL: "https://api.example.test/send?token=secret", Err: context.DeadlineExceeded}
+	err := NewProviderSendOperationError("slack send", transport)
+	failure, ok := ProviderSendFailure(err)
+	if !ok {
+		t.Fatal("transport error has no normalized send failure")
+	}
+	if failure.Category != SendFailureTimeout || !failure.Retryable || failure.DeliveryState != DeliveryUnknown {
+		t.Fatalf("transport failure = %+v", failure)
 	}
 }
 

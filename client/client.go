@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,37 @@ type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
 	Token      string
+}
+
+// HTTPError preserves the bounded error response contract returned by the
+// connector service. Failure is nil for older services and non-provider APIs.
+type HTTPError struct {
+	StatusCode int
+	Code       string
+	Detail     string
+	Failure    *uvim.SendFailure
+}
+
+func (e *HTTPError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Detail != "" {
+		return fmt.Sprintf("http %d: %s", e.StatusCode, e.Detail)
+	}
+	if e.Code != "" {
+		return fmt.Sprintf("http %d: %s", e.StatusCode, e.Code)
+	}
+	return fmt.Sprintf("http %d", e.StatusCode)
+}
+
+// ProviderSendFailure extracts normalized delivery facts from a client error.
+func ProviderSendFailure(err error) (uvim.SendFailure, bool) {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Failure == nil {
+		return uvim.SendFailure{}, false
+	}
+	return *httpErr.Failure, true
 }
 
 func New(baseURL string) *Client {
@@ -154,24 +186,23 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 
 func structuredHTTPError(statusCode int, body io.Reader) error {
 	var response struct {
-		Error  string `json:"error"`
-		Detail string `json:"detail"`
+		Error   string            `json:"error"`
+		Detail  string            `json:"detail"`
+		Failure *uvim.SendFailure `json:"failure"`
 	}
 	if err := json.NewDecoder(io.LimitReader(body, 64<<10)).Decode(&response); err != nil {
-		return fmt.Errorf("http %d", statusCode)
+		return &HTTPError{StatusCode: statusCode}
 	}
 	detail := strings.Join(strings.Fields(response.Detail), " ")
 	if runes := []rune(detail); len(runes) > 512 {
 		detail = string(runes[:512])
 	}
-	if detail != "" {
-		return fmt.Errorf("http %d: %s", statusCode, detail)
-	}
 	code := strings.TrimSpace(response.Error)
-	if code != "" {
-		return fmt.Errorf("http %d: %s", statusCode, code)
+	if response.Failure != nil {
+		failure := response.Failure.Sanitized()
+		response.Failure = &failure
 	}
-	return fmt.Errorf("http %d", statusCode)
+	return &HTTPError{StatusCode: statusCode, Code: code, Detail: detail, Failure: response.Failure}
 }
 
 func (c *Client) postJSON(ctx context.Context, path string, in any, out any) error {

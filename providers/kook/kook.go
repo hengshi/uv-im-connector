@@ -149,7 +149,7 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	}
 	if decoded.Code != 0 {
 		businessErr := fmt.Errorf("kook upload: code=%d message=%q", decoded.Code, decoded.Message)
-		return msg, uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return msg, uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
 	}
 	if decoded.Data.URL == "" {
 		missingErr := fmt.Errorf("kook upload: response missing url")
@@ -271,7 +271,7 @@ func ParseSendResponse(raw []byte) (string, error) {
 	}
 	if response.Code != 0 {
 		businessErr := fmt.Errorf("code=%d message=%q", response.Code, response.Message)
-		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return "", uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
 	}
 	return response.Data.MessageID, nil
 }

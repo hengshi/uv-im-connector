@@ -181,11 +181,11 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		if readErr != nil {
 			detail := fmt.Sprintf("%s send: http %d", p.ID(), resp.StatusCode)
-			return uvim.SendResult{}, uvim.NewProviderSendError(detail, fmt.Errorf("%s: read response: %w", detail, readErr))
+			return uvim.SendResult{}, uvim.NewProviderHTTPError(resp.StatusCode, resp.Header, nil, detail, fmt.Errorf("%s: read response: %w", detail, readErr))
 		}
 		sendErr := sendHTTPError(p.ID(), resp.StatusCode, raw)
 		detail := fmt.Sprintf("%s send: http %d", p.ID(), resp.StatusCode)
-		return uvim.SendResult{}, uvim.NewProviderSendError(detail, sendErr)
+		return uvim.SendResult{}, uvim.NewProviderHTTPError(resp.StatusCode, resp.Header, raw, detail, sendErr)
 	}
 	raw, err := ReadSendResponse(resp, p.ID()+" send")
 	if err != nil {
@@ -421,14 +421,14 @@ func readSendResponse(resp *http.Response, operation, publicOperation string, pu
 		publicOperation = operation
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		logDetail := fmt.Sprintf("%s: http %d", operation, resp.StatusCode)
 		err := errors.New(logDetail)
 		if publicStatus {
 			publicDetail := fmt.Sprintf("%s: http %d", publicOperation, resp.StatusCode)
-			return nil, uvim.NewProviderSendLogError(logDetail, uvim.NewProviderSendError(publicDetail, err))
+			return nil, uvim.NewProviderSendLogError(logDetail, uvim.NewProviderHTTPError(resp.StatusCode, resp.Header, raw, publicDetail, err))
 		}
-		return nil, uvim.NewProviderSendLogError(logDetail, err)
+		return nil, uvim.NewProviderSendLogError(logDetail, uvim.NewProviderHTTPError(resp.StatusCode, resp.Header, raw, "", err))
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {

@@ -239,7 +239,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	}
 	if uploadResponse.Error != nil {
 		businessErr := fmt.Errorf("whatsapp upload: code=%d message=%q", uploadResponse.Error.Code, uploadResponse.Error.Message)
-		return uvim.SendResult{}, uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return uvim.SendResult{}, uvim.NewProviderResponseError(uploadRaw, businessErr.Error(), businessErr)
 	}
 	if uploadResponse.ID == "" {
 		missingErr := fmt.Errorf("whatsapp upload: response missing media id")
@@ -436,11 +436,11 @@ func ParseSendResponse(raw []byte) (string, error) {
 	}
 	if response.Error != nil {
 		businessErr := fmt.Errorf("code=%d message=%q", response.Error.Code, response.Error.Message)
-		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return "", uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
 	}
 	if len(response.Messages) == 0 || response.Messages[0].ID == "" {
 		businessErr := fmt.Errorf("message id missing")
-		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return "", uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
 	}
 	return response.Messages[0].ID, nil
 }

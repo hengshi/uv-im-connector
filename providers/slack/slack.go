@@ -154,7 +154,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	}
 	if !initResponse.OK || initResponse.UploadURL == "" || initResponse.FileID == "" {
 		businessErr := fmt.Errorf("slack upload init: error=%q", initResponse.Error)
-		return uvim.SendResult{}, uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return uvim.SendResult{}, uvim.NewProviderResponseError(initRaw, businessErr.Error(), businessErr)
 	}
 	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPost, initResponse.UploadURL, bytes.NewReader(data))
 	if err != nil {
@@ -203,7 +203,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	}
 	if !completeResponse.OK {
 		businessErr := fmt.Errorf("slack upload completion: error=%q", completeResponse.Error)
-		return uvim.SendResult{}, uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return uvim.SendResult{}, uvim.NewProviderResponseError(responseRaw, businessErr.Error(), businessErr)
 	}
 	messageID := initResponse.FileID
 	if len(completeResponse.Files) > 0 && completeResponse.Files[0].ID != "" {
@@ -236,7 +236,7 @@ func (p *Provider) resourceChannelID(ctx context.Context, target uvim.OutboundTa
 	}
 	if !response.OK || response.Channel.ID == "" {
 		businessErr := fmt.Errorf("slack conversation open: error=%q", response.Error)
-		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return "", uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
 	}
 	return response.Channel.ID, nil
 }
@@ -343,7 +343,7 @@ func ParseSendResponse(raw []byte) (string, error) {
 	}
 	if !response.OK {
 		businessErr := fmt.Errorf("error=%q warning=%q", response.Error, response.Warning)
-		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return "", uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
 	}
 	return response.TS, nil
 }

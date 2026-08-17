@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -723,7 +724,11 @@ func (p *Provider) requestWithAck(ctx context.Context, conn WSConn, writeMu *syn
 	case ack := <-ch:
 		if ack.ErrCode != nil && *ack.ErrCode != 0 {
 			sendErr := fmt.Errorf("wecom ack error: errcode=%d errmsg=%q", *ack.ErrCode, ack.ErrMsg)
-			return frame{}, uvim.NewProviderSendError(sendErr.Error(), sendErr)
+			return frame{}, uvim.NewProviderSendFailure(uvim.SendFailure{
+				Category:      uvim.SendFailureProviderRejected,
+				DeliveryState: uvim.DeliveryRejected,
+				ProviderCode:  strconv.Itoa(*ack.ErrCode),
+			}, sendErr.Error(), sendErr)
 		}
 		return ack, nil
 	}

@@ -150,9 +150,17 @@ func TestServiceMetaReturnsTypedServiceMetadata(t *testing.T) {
 func TestSendSurfacesStructuredProviderFailureDetail(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
-		_ = json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"error":  "provider_send_failed",
 			"detail": "stream message update expired",
+			"failure": uvim.SendFailure{
+				Category:          uvim.SendFailureRateLimited,
+				Retryable:         true,
+				DeliveryState:     uvim.DeliveryRejected,
+				HTTPStatus:        http.StatusTooManyRequests,
+				ProviderCode:      "230020",
+				RetryAfterSeconds: 3,
+			},
 		})
 	}))
 	defer server.Close()
@@ -160,6 +168,13 @@ func TestSendSurfacesStructuredProviderFailureDetail(t *testing.T) {
 	_, err := New(server.URL).Send(context.Background(), uvim.OutboundMessage{Provider: "wecom", Text: "done"})
 	if err == nil || !strings.Contains(err.Error(), "http 502") || !strings.Contains(err.Error(), "stream message update expired") {
 		t.Fatalf("Send error = %v", err)
+	}
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Failure == nil {
+		t.Fatalf("Send error = %T %v, want typed HTTPError failure", err, err)
+	}
+	if httpErr.Failure.Category != uvim.SendFailureRateLimited || !httpErr.Failure.Retryable || httpErr.Failure.ProviderCode != "230020" {
+		t.Fatalf("Send failure = %+v", httpErr.Failure)
 	}
 }
 

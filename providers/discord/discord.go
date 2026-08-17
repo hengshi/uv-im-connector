@@ -226,7 +226,7 @@ func ParseSendResponse(raw []byte) (string, error) {
 	}
 	if response.ID == "" {
 		businessErr := fmt.Errorf("message id missing: code=%v message=%q", response.Code, response.Message)
-		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return "", uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
 	}
 	return response.ID, nil
 }
