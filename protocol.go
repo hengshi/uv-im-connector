@@ -13,6 +13,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -382,9 +383,47 @@ type SendResult struct {
 	Time      time.Time `json:"time"`
 }
 
+const (
+	SendFailureUnknown             = "unknown"
+	SendFailureInvalidRequest      = "invalid-request"
+	SendFailureAuthentication      = "authentication"
+	SendFailurePermission          = "permission"
+	SendFailureTargetUnavailable   = "target-unavailable"
+	SendFailureRateLimited         = "rate-limited"
+	SendFailureProviderUnavailable = "provider-unavailable"
+	SendFailureTimeout             = "timeout"
+	SendFailureTransport           = "transport"
+	SendFailureProviderRejected    = "provider-rejected"
+	SendFailurePayloadTooLarge     = "payload-too-large"
+
+	DeliveryNotAttempted = "not-attempted"
+	DeliveryRejected     = "rejected"
+	DeliveryUnknown      = "unknown"
+)
+
+// SendFailure is the provider-neutral, credential-safe decision input returned
+// to callers when an outbound message cannot be delivered. Detail remains a
+// human-readable compatibility field; callers should drive retry and lifecycle
+// policy from this structure instead of parsing provider text.
+type SendFailure struct {
+	Category          string `json:"category"`
+	Retryable         bool   `json:"retryable"`
+	DeliveryState     string `json:"delivery_state"`
+	HTTPStatus        int    `json:"http_status,omitempty"`
+	ProviderCode      string `json:"provider_code,omitempty"`
+	RetryAfterSeconds int    `json:"retry_after_seconds,omitempty"`
+	RequestID         string `json:"request_id,omitempty"`
+}
+
+// Sanitized returns a bounded failure suitable for persistence and policy.
+func (failure SendFailure) Sanitized() SendFailure {
+	return normalizeSendFailure(failure)
+}
+
 type providerSendError struct {
-	detail string
-	err    error
+	detail  string
+	failure SendFailure
+	err     error
 }
 
 func (e *providerSendError) Error() string {
@@ -399,7 +438,50 @@ func (e *providerSendError) Unwrap() error { return e.err }
 // NewProviderSendError marks a bounded provider failure reason as safe to
 // return to an authenticated API caller while preserving the internal error.
 func NewProviderSendError(detail string, err error) error {
-	return &providerSendError{detail: TrimOutboundText(detail, 1024), err: err}
+	failure, ok := ProviderSendFailure(err)
+	if !ok {
+		failure = classifyProviderSendFailure(err)
+	}
+	return NewProviderSendFailure(failure, detail, err)
+}
+
+// NewProviderSendFailure attaches provider-neutral delivery facts to a safe
+// public detail while preserving the original internal error.
+func NewProviderSendFailure(failure SendFailure, detail string, err error) error {
+	return &providerSendError{
+		detail:  TrimOutboundText(detail, 1024),
+		failure: normalizeSendFailure(failure),
+		err:     err,
+	}
+}
+
+// NewProviderResponseError marks a syntactically successful provider response
+// whose business result rejected the message. Only bounded machine-like codes
+// are extracted from raw; provider messages and response bodies are not copied.
+func NewProviderResponseError(raw []byte, _ string, err error) error {
+	return NewProviderResponseErrorWithCode(raw, "", err)
+}
+
+// NewProviderResponseErrorWithCode marks a provider's typed response code as
+// safe decision metadata. Adapters must pass a field they already parsed from
+// their provider response; arbitrary raw response strings remain untrusted.
+func NewProviderResponseErrorWithCode(raw []byte, providerCode string, err error) error {
+	failure := providerResponseFailure(raw)
+	if providerCode = safeProviderMachineValue(providerCode); providerCode != "" {
+		failure.ProviderCode = providerCode
+	}
+	logDetail := "provider rejected request"
+	if failure.ProviderCode != "" {
+		logDetail += ": code " + failure.ProviderCode
+	}
+	return NewProviderSendLogError(logDetail, NewProviderSendFailure(failure, "", err))
+}
+
+// NewProviderHTTPError marks a non-2xx provider response. HTTP status, retry
+// metadata, request ID, and a bounded provider code are safe decision facts;
+// the raw response body remains private.
+func NewProviderHTTPError(status int, header http.Header, raw []byte, detail string, err error) error {
+	return NewProviderSendFailure(ProviderHTTPFailure(status, header, raw), detail, err)
 }
 
 func ProviderSendErrorDetail(err error) string {
@@ -408,6 +490,187 @@ func ProviderSendErrorDetail(err error) string {
 		return sendErr.detail
 	}
 	return ""
+}
+
+// ProviderSendFailure returns normalized provider-neutral delivery facts.
+func ProviderSendFailure(err error) (SendFailure, bool) {
+	var sendErr *providerSendError
+	if !errors.As(err, &sendErr) {
+		return SendFailure{}, false
+	}
+	return normalizeSendFailure(sendErr.failure), true
+}
+
+// ProviderHTTPFailure classifies a provider HTTP response without retaining or
+// exposing its body. A non-2xx response is a rejection only where replay is
+// known to be safe; ambiguous timeout/server outcomes remain delivery unknown.
+func ProviderHTTPFailure(status int, header http.Header, raw []byte) SendFailure {
+	return providerHTTPFailureAt(status, header, raw, time.Now())
+}
+
+func providerHTTPFailureAt(status int, header http.Header, raw []byte, now time.Time) SendFailure {
+	failure := providerResponseFailure(raw)
+	failure.HTTPStatus = status
+	switch {
+	case status == http.StatusBadRequest || status == http.StatusUnprocessableEntity:
+		failure.Category = SendFailureInvalidRequest
+		failure.DeliveryState = DeliveryRejected
+	case status == http.StatusUnauthorized:
+		failure.Category = SendFailureAuthentication
+		failure.DeliveryState = DeliveryRejected
+	case status == http.StatusForbidden:
+		failure.Category = SendFailurePermission
+		failure.DeliveryState = DeliveryRejected
+	case status == http.StatusNotFound || status == http.StatusGone:
+		failure.Category = SendFailureTargetUnavailable
+		failure.DeliveryState = DeliveryRejected
+	case status == http.StatusRequestEntityTooLarge:
+		failure.Category = SendFailurePayloadTooLarge
+		failure.DeliveryState = DeliveryRejected
+	case status == http.StatusTooManyRequests || status == http.StatusTooEarly:
+		failure.Category = SendFailureRateLimited
+		failure.Retryable = true
+		failure.DeliveryState = DeliveryRejected
+	case status == http.StatusRequestTimeout || status == http.StatusGatewayTimeout:
+		failure.Category = SendFailureTimeout
+		failure.Retryable = true
+		failure.DeliveryState = DeliveryUnknown
+	case status >= 500 && status <= 599:
+		failure.Category = SendFailureProviderUnavailable
+		failure.Retryable = true
+		failure.DeliveryState = DeliveryUnknown
+	case status >= 400:
+		failure.Category = SendFailureProviderRejected
+		failure.DeliveryState = DeliveryRejected
+	}
+	if header != nil {
+		failure.RetryAfterSeconds = retryAfterSeconds(header.Get("Retry-After"), now)
+		for _, name := range []string{"X-Request-Id", "X-Request-ID", "X-Lark-Request-Id", "X-Slack-Req-Id"} {
+			if value := safeProviderMachineValue(header.Get(name)); value != "" {
+				failure.RequestID = value
+				break
+			}
+		}
+	}
+	return normalizeSendFailure(failure)
+}
+
+func retryAfterSeconds(value string, now time.Time) int {
+	value = strings.TrimSpace(value)
+	if seconds, err := strconv.ParseUint(value, 10, 64); err == nil {
+		return int(min(seconds, 3600))
+	} else if errors.Is(err, strconv.ErrRange) {
+		return 3600
+	}
+	retryAt, err := http.ParseTime(value)
+	if err != nil || !retryAt.After(now) {
+		return 0
+	}
+	delay := retryAt.Sub(now)
+	if delay >= time.Hour {
+		return 3600
+	}
+	return int((delay + time.Second - 1) / time.Second)
+}
+
+func providerResponseFailure(raw []byte) SendFailure {
+	failure := SendFailure{Category: SendFailureProviderRejected, DeliveryState: DeliveryRejected}
+	var payload any
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	if decoder.Decode(&payload) == nil {
+		failure.ProviderCode = providerFailureCode(payload)
+	}
+	return failure
+}
+
+func providerFailureCode(payload any) string {
+	object, ok := payload.(map[string]any)
+	if !ok {
+		return ""
+	}
+	for _, key := range []string{"code", "error_code", "errcode", "retcode"} {
+		if value := safeProviderMachineValue(fmt.Sprint(object[key])); value != "" && value != "<nil>" {
+			return value
+		}
+	}
+	if nested, ok := object["error"].(map[string]any); ok {
+		if value := safeProviderMachineValue(fmt.Sprint(nested["code"])); value != "" && value != "<nil>" {
+			return value
+		}
+	}
+	return ""
+}
+
+func safeProviderMachineValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 128 {
+		return ""
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("._:-/", r) {
+			continue
+		}
+		return ""
+	}
+	return value
+}
+
+func normalizeSendFailure(failure SendFailure) SendFailure {
+	switch failure.Category {
+	case SendFailureInvalidRequest, SendFailureAuthentication, SendFailurePermission,
+		SendFailureTargetUnavailable, SendFailureRateLimited, SendFailureProviderUnavailable,
+		SendFailureTimeout, SendFailureTransport, SendFailureProviderRejected, SendFailurePayloadTooLarge:
+	default:
+		failure.Category = SendFailureUnknown
+	}
+	switch failure.DeliveryState {
+	case DeliveryNotAttempted, DeliveryRejected, DeliveryUnknown:
+	default:
+		failure.DeliveryState = DeliveryUnknown
+	}
+	failure.ProviderCode = safeProviderMachineValue(failure.ProviderCode)
+	failure.RequestID = safeProviderMachineValue(failure.RequestID)
+	if failure.HTTPStatus < 100 || failure.HTTPStatus > 599 {
+		failure.HTTPStatus = 0
+	}
+	if failure.RetryAfterSeconds < 0 {
+		failure.RetryAfterSeconds = 0
+	} else if failure.RetryAfterSeconds > 3600 {
+		failure.RetryAfterSeconds = 3600
+	}
+	return failure
+}
+
+func classifyProviderSendFailure(err error) SendFailure {
+	failure := SendFailure{Category: SendFailureUnknown, DeliveryState: DeliveryUnknown}
+	if err == nil {
+		return failure
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		failure.Category = SendFailureTimeout
+		failure.Retryable = true
+		return failure
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		failure.Category = SendFailureTransport
+		failure.Retryable = true
+		failure.DeliveryState = DeliveryNotAttempted
+		return failure
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		failure.Category = SendFailureProviderUnavailable
+		failure.Retryable = true
+		failure.DeliveryState = DeliveryNotAttempted
+		return failure
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		failure.Category = SendFailureTransport
+		failure.Retryable = true
+	}
+	return failure
 }
 
 type providerSendLogError struct {
@@ -434,25 +697,29 @@ func NewProviderSendLogError(detail string, err error) error {
 // exposing an arbitrary underlying error. Existing public/private markers are
 // preserved, while known structured causes retain their safe classification.
 func NewProviderSendOperationError(operation string, err error) error {
-	if err == nil || ProviderSendErrorDetail(err) != "" {
+	if err == nil {
 		return err
 	}
+	if _, ok := ProviderSendFailure(err); ok {
+		return err
+	}
+	wrapped := err
 	var logErr *providerSendLogError
-	if errors.As(err, &logErr) && logErr.detail != "" {
-		return err
-	}
-	detail := strings.TrimSpace(operation)
-	if cause, known := providerSendErrorLogDetail(err, 0); known {
-		if detail != "" {
-			detail += ": " + cause
-		} else {
-			detail = cause
+	if !errors.As(err, &logErr) || logErr.detail == "" {
+		detail := strings.TrimSpace(operation)
+		if cause, known := providerSendErrorLogDetail(err, 0); known {
+			if detail != "" {
+				detail += ": " + cause
+			} else {
+				detail = cause
+			}
 		}
+		if detail == "" {
+			detail = "provider operation failed"
+		}
+		wrapped = NewProviderSendLogError(detail, err)
 	}
-	if detail == "" {
-		detail = "provider operation failed"
-	}
-	return NewProviderSendLogError(detail, err)
+	return NewProviderSendFailure(classifyProviderSendFailure(err), ProviderSendErrorDetail(err), wrapped)
 }
 
 // ProviderSendErrorLogDetail returns a credential-safe diagnostic for private

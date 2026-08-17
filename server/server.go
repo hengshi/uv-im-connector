@@ -358,11 +358,22 @@ func writeError(w http.ResponseWriter, status int, message string) {
 }
 
 func writeProviderError(w http.ResponseWriter, err error) {
-	body := map[string]any{"ok": false, "error": "provider_send_failed"}
+	body := map[string]any{
+		"ok":      false,
+		"error":   "provider_send_failed",
+		"failure": normalizedProviderFailure(err),
+	}
 	if detail := uvim.ProviderSendErrorDetail(err); detail != "" {
 		body["detail"] = detail
 	}
 	writeJSON(w, http.StatusBadGateway, body)
+}
+
+func normalizedProviderFailure(err error) uvim.SendFailure {
+	if failure, ok := uvim.ProviderSendFailure(err); ok {
+		return failure
+	}
+	return uvim.SendFailure{Category: uvim.SendFailureUnknown, DeliveryState: uvim.DeliveryUnknown}
 }
 
 func (h *Hub) resolveEventResources(ctx context.Context, event uvim.Event) uvim.Event {

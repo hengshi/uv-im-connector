@@ -184,14 +184,18 @@ func TestHubReturnsProviderSendFailureDetail(t *testing.T) {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 	var body struct {
-		Error  string `json:"error"`
-		Detail string `json:"detail"`
+		Error   string           `json:"error"`
+		Detail  string           `json:"detail"`
+		Failure uvim.SendFailure `json:"failure"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
 	if body.Error != "provider_send_failed" || body.Detail != "provider rejected message: invalid recipient" {
 		t.Fatalf("body = %+v", body)
+	}
+	if body.Failure.Category != uvim.SendFailureUnknown || body.Failure.DeliveryState != uvim.DeliveryUnknown {
+		t.Fatalf("failure = %+v", body.Failure)
 	}
 }
 

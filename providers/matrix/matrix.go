@@ -277,7 +277,7 @@ func ParseSendResponse(raw []byte) (string, error) {
 	}
 	if response.EventID == "" {
 		businessErr := fmt.Errorf("event id missing: errcode=%q error=%q", response.ErrCode, response.Error)
-		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return "", uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
 	}
 	return response.EventID, nil
 }

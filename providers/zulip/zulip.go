@@ -141,7 +141,7 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	}
 	if decoded.Result != "success" {
 		businessErr := fmt.Errorf("zulip upload: result=%q msg=%q", decoded.Result, decoded.Message)
-		return msg, uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return msg, uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
 	}
 	uploadURL := firstNonEmpty(decoded.URL, decoded.URI)
 	if uploadURL == "" {
@@ -254,7 +254,7 @@ func ParseSendResponse(raw []byte) (string, error) {
 	}
 	if response.Result != "success" {
 		businessErr := fmt.Errorf("result=%q msg=%q", response.Result, response.Message)
-		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return "", uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
 	}
 	if response.ID == nil {
 		return "", nil

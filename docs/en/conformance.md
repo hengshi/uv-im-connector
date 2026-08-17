@@ -16,6 +16,9 @@ Every provider must:
 - declare at least one of `reply_message`, `proactive_direct`, or `proactive_group` when outbound is enabled;
 - declare accepted `target_kinds` honestly for outbound messages and reject unsupported target kinds;
 - return explicit errors for unsupported outbound resources or rich elements instead of silently dropping them.
+- produce a normalized `SendFailure` for every outbound failure; callers must never infer retry policy from provider names, `detail`, or logs;
+- assert `category`, `retryable`, and `delivery_state` for HTTP/business ACK failures, plus `http_status`, `provider_code`, `retry_after_seconds`, and `request_id` when available;
+- never copy provider response bodies, arbitrary provider messages, or credentials into the structured failure.
 
 ## Test Shape
 
@@ -28,6 +31,7 @@ Provider tests should cover:
 - outbound group message;
 - outbound reply with `Referrer`;
 - explicit errors when a provider API returns an HTTP 2xx response with a failed business status;
+- one `SendFailure` shape for provider HTTP non-2xx, HTTP 2xx business failures, and transport failures;
 - resource download;
 - provider health;
 - duplicate event key stability.

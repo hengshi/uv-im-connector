@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -277,6 +279,115 @@ func TestProviderSendErrorDetail(t *testing.T) {
 	}
 	if got := ProviderSendErrorDetail(internal); got != "" {
 		t.Fatalf("unmarked error detail = %q", got)
+	}
+}
+
+func TestProviderSendFailureClassifiesHTTPResponsesWithoutExposingBody(t *testing.T) {
+	failure := ProviderHTTPFailure(http.StatusTooManyRequests, http.Header{
+		"Retry-After":  []string{"17"},
+		"X-Request-Id": []string{"request-123"},
+	}, []byte(`{"error":{"code":429001,"message":"token=secret"}}`))
+	if failure.Category != SendFailureRateLimited || !failure.Retryable || failure.DeliveryState != DeliveryRejected {
+		t.Fatalf("failure classification = %+v", failure)
+	}
+	if failure.HTTPStatus != http.StatusTooManyRequests || failure.ProviderCode != "429001" || failure.RetryAfterSeconds != 17 || failure.RequestID != "request-123" {
+		t.Fatalf("failure evidence = %+v", failure)
+	}
+	raw, err := json.Marshal(failure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "secret") {
+		t.Fatalf("failure leaked response body: %s", raw)
+	}
+}
+
+func TestProviderHTTPFailureParsesHTTPDateRetryAfterDeterministically(t *testing.T) {
+	// HTTP dates have one-second precision. Keeping now on a half-second
+	// boundary proves the remaining duration is rounded up, not truncated.
+	now := time.Date(2026, time.August, 17, 9, 30, 0, 500_000_000, time.UTC)
+	for _, test := range []struct {
+		name  string
+		delay time.Duration
+		want  int
+	}{
+		{name: "remaining seconds", delay: 17 * time.Second, want: 17},
+		{name: "bounded", delay: 2 * time.Hour, want: 3600},
+		{name: "elapsed", delay: -time.Second, want: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			failure := providerHTTPFailureAt(http.StatusServiceUnavailable, http.Header{
+				"Retry-After": []string{now.Add(test.delay).Format(http.TimeFormat)},
+			}, nil, now)
+			if failure.Category != SendFailureProviderUnavailable || !failure.Retryable || failure.RetryAfterSeconds != test.want {
+				t.Fatalf("failure = %+v", failure)
+			}
+		})
+	}
+}
+
+func TestProviderHTTPFailureCapsOverflowingDeltaSeconds(t *testing.T) {
+	failure := providerHTTPFailureAt(http.StatusTooManyRequests, http.Header{
+		"Retry-After": []string{"999999999999999999999999999999999999"},
+	}, nil, time.Time{})
+	if failure.RetryAfterSeconds != 3600 {
+		t.Fatalf("failure = %+v", failure)
+	}
+}
+
+func TestProviderResponseFailureDoesNotPromoteArbitraryErrorText(t *testing.T) {
+	internal := errors.New("provider returned access_token=secret")
+	err := NewProviderResponseError(
+		[]byte(`{"error":"xoxb-secret","message":"access_token=secret"}`),
+		"provider rejected request: access_token=secret",
+		internal,
+	)
+	failure, ok := ProviderSendFailure(err)
+	if !ok {
+		t.Fatal("provider response error has no normalized failure")
+	}
+	if failure.ProviderCode != "" || failure.Retryable || failure.DeliveryState != DeliveryRejected {
+		t.Fatalf("failure = %+v", failure)
+	}
+	if got := ProviderSendErrorDetail(err); got != "" {
+		t.Fatalf("public detail leaked provider text: %q", got)
+	}
+	if got := ProviderSendErrorLogDetail(err); got != "provider rejected request" {
+		t.Fatalf("private log detail = %q", got)
+	}
+	if !errors.Is(err, internal) {
+		t.Fatal("provider response error does not preserve its internal cause")
+	}
+}
+
+func TestProviderResponseFailureAcceptsOnlySafeTypedCode(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		code string
+		want string
+	}{
+		{name: "safe code", code: "channel_not_found", want: "channel_not_found"},
+		{name: "unsafe provider text", code: "access_token=secret"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := NewProviderResponseErrorWithCode(nil, test.code, errors.New("provider rejected request"))
+			failure, ok := ProviderSendFailure(err)
+			if !ok || failure.ProviderCode != test.want {
+				t.Fatalf("failure = %+v, ok=%v", failure, ok)
+			}
+		})
+	}
+}
+
+func TestProviderSendOperationErrorAlwaysCarriesNormalizedFailure(t *testing.T) {
+	transport := &url.Error{Op: "Post", URL: "https://api.example.test/send?token=secret", Err: context.DeadlineExceeded}
+	err := NewProviderSendOperationError("slack send", transport)
+	failure, ok := ProviderSendFailure(err)
+	if !ok {
+		t.Fatal("transport error has no normalized send failure")
+	}
+	if failure.Category != SendFailureTimeout || !failure.Retryable || failure.DeliveryState != DeliveryUnknown {
+		t.Fatalf("transport failure = %+v", failure)
 	}
 }
 

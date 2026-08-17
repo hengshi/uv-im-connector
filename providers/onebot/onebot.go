@@ -114,7 +114,7 @@ func ParseSendResponse(raw []byte) (string, error) {
 	}
 	if response.Status != "ok" || response.RetCode != 0 {
 		businessErr := fmt.Errorf("status=%q retcode=%d message=%q wording=%q", response.Status, response.RetCode, response.Message, response.Wording)
-		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return "", uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
 	}
 	if response.Data.MessageID == nil {
 		return "", nil

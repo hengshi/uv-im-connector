@@ -16,6 +16,9 @@ Provider conformance 是新增渠道的质量门。
 - 声明 outbound 时，至少声明 `reply_message`、`proactive_direct` 或 `proactive_group` 中的一种发送模式；
 - 声明 outbound 时，如实声明可接受的 `target_kinds`，并拒绝不支持的 target kind；
 - 对不支持的 outbound resources 或 rich elements 返回显式错误，而不是静默丢弃。
+- 所有 outbound 失败都生成 normalized `SendFailure`；不得让调用方按 provider 名称、`detail` 或日志猜测重试策略；
+- HTTP/业务 ACK 测试同时断言 `category`、`retryable`、`delivery_state`，并在可用时断言 `http_status`、`provider_code`、`retry_after_seconds` 和 `request_id`；
+- 不把 provider response body、任意 provider message 或 credential 复制到结构化 failure。
 
 ## 测试形态
 
@@ -28,6 +31,7 @@ Provider tests 应覆盖：
 - outbound group message；
 - 使用 `Referrer` 的 outbound reply；
 - provider API 返回 HTTP 2xx 但业务状态失败时，返回明确错误；
+- provider HTTP 非 2xx、HTTP 2xx 业务失败和 transport failure 都返回同一 `SendFailure` shape；
 - resource download；
 - provider health；
 - duplicate event key stability。

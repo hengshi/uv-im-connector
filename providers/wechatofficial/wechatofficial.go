@@ -151,7 +151,7 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	}
 	if decoded.ErrCode != 0 {
 		businessErr := fmt.Errorf("wechat-official upload: errcode=%d errmsg=%q", decoded.ErrCode, decoded.ErrMsg)
-		return msg, uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return msg, uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
 	}
 	if decoded.MediaID == "" {
 		missingErr := fmt.Errorf("wechat-official upload: response missing media_id")
@@ -227,7 +227,7 @@ func ParseSendResponse(raw []byte) (string, error) {
 	}
 	if response.ErrCode != 0 {
 		businessErr := fmt.Errorf("errcode=%d errmsg=%q", response.ErrCode, response.ErrMsg)
-		return "", uvim.NewProviderSendError(businessErr.Error(), businessErr)
+		return "", uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
 	}
 	if response.MessageID == nil {
 		return "", nil

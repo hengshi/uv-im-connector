@@ -70,7 +70,34 @@ A proactive server send has no inbound `referrer`, so it must provide `target` e
 
 A reply flow should also retain the complete `referrer` and honor its `expires_at` value plus the provider's `reply_max_uses`. After a reply handle expires or is exhausted, clear the handle and use `referrer.target` only when proactive delivery is supported; do not hard-code deadlines from provider names.
 
-When a send fails, `POST /v1/message.create` returns HTTP `502` and `error: "provider_send_failed"`. If the adapter has a provider business failure reason that is safe to expose, the response also includes it as a bounded `detail`; arbitrary network errors are not echoed because they can contain credentials. Callers can surface `detail` or use it to decide whether to retry or fall back when it is present.
+When a send fails, `POST /v1/message.create` keeps the compatible HTTP `502` and `error: "provider_send_failed"` fields and always adds a provider-neutral `failure`. The outer `502` means that the connector did not complete the send; it does not mean that the upstream provider returned 502. Read the upstream HTTP status from `failure.http_status`. Non-HTTP failures omit that field.
+
+```json
+{
+  "ok": false,
+  "error": "provider_send_failed",
+  "detail": "lark send: http 429",
+  "failure": {
+    "category": "rate-limited",
+    "retryable": true,
+    "delivery_state": "rejected",
+    "http_status": 429,
+    "provider_code": "230020",
+    "retry_after_seconds": 3,
+    "request_id": "request-123"
+  }
+}
+```
+
+`detail` is an optional human-readable display value. A caller must not parse it, `error`, or logs to make decisions. Machine policy uses only `failure`:
+
+| Condition | Caller policy |
+| --- | --- |
+| `retryable=true` and `delivery_state` is `rejected` or `not-attempted` | A bounded automatic retry is safe; honor `retry_after_seconds` |
+| `delivery_state=unknown` | Do not replay automatically because delivery may have happened |
+| `retryable=false` | Do not retry; expose the structured reason and an actionable configuration/target repair path |
+
+Stable `category` values are `invalid-request`, `authentication`, `permission`, `target-unavailable`, `rate-limited`, `provider-unavailable`, `timeout`, `transport`, `provider-rejected`, `payload-too-large`, and `unknown`. `provider_code` and `request_id` contain only bounded machine values. Provider response bodies, arbitrary error text, and credentials never enter `failure`. Older clients can continue reading only the outer fields; new clients should persist `failure` in their delivery/writeback artifact.
 
 Callers should not call provider-native send APIs directly. Provider-specific send behavior belongs in provider adapters.
 
@@ -95,6 +122,6 @@ The connector sends backlog events after that sequence before streaming fresh ev
 - native resume handles;
 - workspace creation or cleanup;
 - user/team visibility policy;
-- business retry or escalation policy.
+- bounded retry, escalation, and task lifecycle policy driven by normalized `failure`.
 
 Those responsibilities belong to the caller application.

@@ -351,7 +351,7 @@ Some inbound `referrer` values contain short-lived or limited-use reply handles.
 
 Provider adapters map the normalized outbound request into the provider-native API. Unsupported rich elements or resource types should return explicit errors instead of being silently dropped.
 
-When a send fails, `POST /v1/message.create` returns HTTP `502` with `error: "provider_send_failed"`. If the adapter has a provider business failure reason that is safe to expose, the response also includes it as a bounded `detail`; arbitrary network errors are not echoed because they can contain credentials. Callers can surface `detail` or use it for retry and fallback decisions when it is present.
+When a send fails, `POST /v1/message.create` keeps the compatible HTTP `502` and `error: "provider_send_failed"` fields and returns a normalized `failure` with `category`, `retryable`, `delivery_state`, and optional upstream `http_status`, `provider_code`, `retry_after_seconds`, and `request_id`. The outer 502 is the connector API result, not proof that the provider returned 502. Callers must drive retry and lifecycle policy from `failure`, never by parsing `detail` or logs. Raw provider response bodies and arbitrary transport text are not exposed because they can contain credentials.
 
 ## Resources
 
