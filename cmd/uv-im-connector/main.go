@@ -387,7 +387,7 @@ func envNameMap(key string) (map[string]string, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	values := map[string]string{}
+	values := map[string]*string{}
 	if err := json.Unmarshal([]byte(raw), &values); err != nil {
 		return nil, fmt.Errorf("%s must be a JSON object of ID-to-name strings: %w", key, err)
 	}
@@ -395,9 +395,12 @@ func envNameMap(key string) (map[string]string, error) {
 		return nil, fmt.Errorf("%s must be a JSON object of ID-to-name strings", key)
 	}
 	normalized := make(map[string]string, len(values))
-	for id, name := range values {
+	for id, rawName := range values {
+		if rawName == nil {
+			return nil, fmt.Errorf("%s must be a JSON object of ID-to-name strings", key)
+		}
 		id = strings.TrimSpace(id)
-		name = strings.TrimSpace(name)
+		name := strings.TrimSpace(*rawName)
 		if id != "" && name != "" {
 			normalized[id] = name
 		}

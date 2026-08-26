@@ -47,3 +47,10 @@ func TestEnvNameMapRejectsJSONNull(t *testing.T) {
 		t.Fatal("envNameMap() accepted JSON null")
 	}
 }
+
+func TestBuildProvidersRejectsJSONNullNameMapMember(t *testing.T) {
+	t.Setenv("UV_WECOM_USER_NAMES", `{"u1":null}`)
+	if _, err := buildProviders("wecom", t.TempDir()); err == nil {
+		t.Fatal("buildProviders() accepted a JSON null name-map member")
+	}
+}
