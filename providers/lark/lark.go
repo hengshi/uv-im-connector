@@ -305,6 +305,9 @@ func (p *Provider) cachedDisplayName(ctx context.Context, key string, lookup fun
 
 	name, err := lookup(ctx)
 	name = strings.TrimSpace(name)
+	if err != nil || name == "" {
+		return name, err
+	}
 	p.displayNameMu.Lock()
 	if len(p.displayNameCache) >= displayNameMax {
 		for cachedKey, cached := range p.displayNameCache {

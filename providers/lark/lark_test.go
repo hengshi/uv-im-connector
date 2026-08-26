@@ -114,13 +114,27 @@ func TestEnrichEventDisplayNamesUsesLarkAPIsAndCache(t *testing.T) {
 	}
 }
 
-func TestEnrichEventDisplayNamesKeepsEventWhenLarkLookupFails(t *testing.T) {
+func TestEnrichEventDisplayNamesRetriesAfterLarkLookupFails(t *testing.T) {
+	requests := map[string]int{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"code": 999, "msg": "permission denied"})
+		requests[req.URL.Path]++
+		if requests[req.URL.Path] == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 999, "msg": "temporary failure"})
+			return
+		}
+		switch req.URL.Path {
+		case "/open-apis/im/v1/chats/oc_chat":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"name": "恢复群"}})
+		case "/open-apis/contact/v3/users/ou_sender":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"user": map[string]any{"name": "恢复用户"}}})
+		default:
+			t.Errorf("unexpected path %s", req.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
 	}))
 	defer server.Close()
 
@@ -131,7 +145,16 @@ func TestEnrichEventDisplayNamesKeepsEventWhenLarkLookupFails(t *testing.T) {
 	event := uvim.Event{Channel: uvim.Channel{ID: "oc_chat", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou_sender"}}
 	provider.enrichEventDisplayNames(context.Background(), &event)
 	if event.Channel.ID != "oc_chat" || event.User.ID != "ou_sender" || event.Channel.Name != "" || event.User.DisplayName != "" {
-		t.Fatalf("event = %+v", event)
+		t.Fatalf("event after temporary failure = %+v", event)
+	}
+	provider.enrichEventDisplayNames(context.Background(), &event)
+	if event.Channel.Name != "恢复群" || event.User.DisplayName != "恢复用户" {
+		t.Fatalf("event after recovery = %+v", event)
+	}
+	for path, count := range requests {
+		if count != 2 {
+			t.Fatalf("requests[%q] = %d, want 2", path, count)
+		}
 	}
 }
 
