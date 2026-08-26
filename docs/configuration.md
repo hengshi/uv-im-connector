@@ -12,6 +12,8 @@
 | `UV_WECOM_BOT_ID` | WeCom bot ID。 |
 | `UV_WECOM_BOT_SECRET` | WeCom bot secret。 |
 | `UV_WECOM_WS_URL` | 可选 WeCom WebSocket endpoint override。 |
+| `UV_WECOM_USER_NAMES` | 可选 JSON 对象，把 AI Bot 回调中的 `userid` 映射为展示名，例如 `{"zhangsan":"张三"}`。只影响事件展示字段，不影响路由或授权。 |
+| `UV_WECOM_CONVERSATION_NAMES` | 可选 JSON 对象，把 AI Bot 回调中的群 `chatid` 映射为展示名，例如 `{"wrxxxx":"研发群"}`。只影响事件展示字段。 |
 | `UV_LARK_CONNECTOR_ID` | Lark connector ID，默认 `lark`。 |
 | `UV_LARK_APP_ID` | Lark app ID。 |
 | `UV_LARK_APP_SECRET` | Lark app secret。 |
@@ -34,6 +36,8 @@
 | `UV_MAIL_WEBHOOK_SECRET` | Mail inbound webhook secret。 |
 
 Provider credentials 是独占 deployment identity。Production、E2E、development 和临时 debug worker 不应共用同一套 provider credentials。
+
+Lark 入站事件会在确认回调后，使用现有应用凭据对发送人和群聊名称做短时、可失败的缓存查询。应用需要具备读取用户基本信息和群聊信息的 OpenAPI 权限；权限缺失或 API 不可用时，事件仍正常输出，只是不包含名称。企业微信 AI Bot 长连接回调及其 Bot secret 不提供通讯录或群聊名称查询能力，因此需要名称时使用上面的显式映射；未配置时保留 provider-native ID。
 
 通用 provider 变量中的 `<PROVIDER>` 替换为以下值之一：
 

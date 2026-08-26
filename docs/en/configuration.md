@@ -12,6 +12,8 @@ The standalone binary reads `UV_IM_*` variables.
 | `UV_WECOM_BOT_ID` | WeCom bot ID. |
 | `UV_WECOM_BOT_SECRET` | WeCom bot secret. |
 | `UV_WECOM_WS_URL` | Optional WeCom WebSocket endpoint override. |
+| `UV_WECOM_USER_NAMES` | Optional JSON object mapping AI Bot callback `userid` values to display names, for example `{"zhangsan":"Zhang San"}`. It never changes routing or authorization. |
+| `UV_WECOM_CONVERSATION_NAMES` | Optional JSON object mapping AI Bot group `chatid` values to display names, for example `{"wrxxxx":"Engineering"}`. It affects display metadata only. |
 | `UV_LARK_CONNECTOR_ID` | Lark connector ID. Defaults to `lark`. |
 | `UV_LARK_APP_ID` | Lark app ID. |
 | `UV_LARK_APP_SECRET` | Lark app secret. |
@@ -34,6 +36,8 @@ The standalone binary reads `UV_IM_*` variables.
 | `UV_MAIL_WEBHOOK_SECRET` | Mail inbound webhook secret. |
 
 Provider credentials are exclusive deployment identity. Production, E2E, development, and temporary debug workers must not share the same provider credential set.
+
+After acknowledging an inbound callback, Lark makes short, best-effort cached lookups for sender and group-chat names with the existing application credentials. The application needs OpenAPI permission to read basic user and chat information. Missing permission or an unavailable API never blocks the event; the names are simply omitted. The WeCom AI Bot callback and Bot secret provide IDs but no contact/chat-name lookup, so deployments that need names should use the explicit maps above; without them, provider-native IDs remain the fallback.
 
 For the generic provider variables, replace `<PROVIDER>` with one of:
 

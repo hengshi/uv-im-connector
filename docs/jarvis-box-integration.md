@@ -26,6 +26,7 @@ jarvis-box owns:
 2. jarvis-box reads `/v1/meta` at startup and verifies `service == "uv-im-connector"` plus a supported `protocol_version`.
 3. jarvis-box watches `/v1/events/ws`.
 4. Each normalized `message.create` event maps to a jarvis-box Target using `provider + connector + channel.id`.
+   Optional `channel.name`, `user.name`, and `user.display_name` are presentation snapshots only; jarvis-box must not use them for Target identity, ACL, dedupe, or reply routing.
 5. jarvis-box resolves resources through `internal_url`, then copies allowed files into the Run attachment directory.
 6. jarvis-box starts or continues a Task/Run using its existing runtime-agent model.
 7. jarvis-box sends final replies through `POST /v1/message.create`.
@@ -39,6 +40,7 @@ jarvis-box does not host, spawn, or auto-update `uv-im-connector`. A connector b
 
 - Direct conversation message creates a Run.
 - Group/channel mention creates a Run under the same Target model.
+- Optional sender/conversation display names survive event-log replay and appear in status without replacing provider-native IDs.
 - Startup fails clearly when `/v1/meta` reports a wrong service or unsupported protocol version.
 - File, image, audio, and video resources resolve through `internal_url`.
 - Reply uses `OutboundMessage.Referrer`.

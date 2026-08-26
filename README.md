@@ -213,6 +213,9 @@ export UV_IM_PROVIDERS=wecom
 export UV_WECOM_CONNECTOR_ID=main
 export UV_WECOM_BOT_ID=...
 export UV_WECOM_BOT_SECRET=...
+# Optional JSON maps when the AI Bot callback only exposes IDs.
+export UV_WECOM_USER_NAMES='{"zhangsan":"Zhang San"}'
+export UV_WECOM_CONVERSATION_NAMES='{"wrxxxx":"Engineering"}'
 
 # Lark / Feishu
 export UV_IM_PROVIDERS=lark
@@ -305,6 +308,7 @@ Important fields:
 - `connector`: the concrete configured account identity for that provider.
 - `channel.id`: the provider-native conversation ID.
 - `channel.type`: normalized conversation type, such as `direct`, `group`, `thread`, or `room`.
+- `channel.name`, `user.name`, and `user.display_name`: optional display metadata. IDs remain authoritative for routing, dedupe, and authorization. Lark resolves names best-effort through tenant OpenAPIs; WeCom AI Bot deployments can supply the optional ID-to-name maps because the callback credentials expose IDs but no directory lookup.
 - `addressed`: whether the message is addressed to the bot when the provider can tell.
 - `referrer`: provider information needed for replies or thread-aware outbound messages. Its `target` is the exact provider-native reply destination. When available, `parent_message_id` and `root_message_id` preserve the inbound reply ancestry separately from the current reply target in `message_id`.
 

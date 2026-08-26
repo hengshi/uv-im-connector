@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 )
@@ -18,5 +19,31 @@ func TestBuildProvidersRejectsPartialDingTalkStreamCredentials(t *testing.T) {
 	t.Setenv("UV_DINGTALK_CLIENT_SECRET", "")
 	if _, err := buildProviders("dingtalk", t.TempDir()); err == nil {
 		t.Fatal("buildProviders() accepted partial DingTalk Stream credentials")
+	}
+}
+
+func TestEnvNameMapParsesJSON(t *testing.T) {
+	t.Setenv("UV_TEST_NAMES", `{"u1":"张三"," u2 ":" 李四 "}`)
+	got, err := envNameMap("UV_TEST_NAMES")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"u1": "张三", "u2": "李四"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("envNameMap() = %#v, want %#v", got, want)
+	}
+}
+
+func TestEnvNameMapRejectsMalformedJSON(t *testing.T) {
+	t.Setenv("UV_TEST_NAMES", `{not-json}`)
+	if _, err := envNameMap("UV_TEST_NAMES"); err == nil {
+		t.Fatal("envNameMap() error = nil")
+	}
+}
+
+func TestEnvNameMapRejectsJSONNull(t *testing.T) {
+	t.Setenv("UV_TEST_NAMES", `null`)
+	if _, err := envNameMap("UV_TEST_NAMES"); err == nil {
+		t.Fatal("envNameMap() accepted JSON null")
 	}
 }

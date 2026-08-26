@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -94,12 +96,22 @@ func buildProviders(providerList string, resourceDir string) ([]uvim.Provider, e
 		case "memory":
 			providers = append(providers, memory.New("memory"))
 		case "wecom":
+			userNames, err := envNameMap("UV_WECOM_USER_NAMES")
+			if err != nil {
+				return nil, err
+			}
+			conversationNames, err := envNameMap("UV_WECOM_CONVERSATION_NAMES")
+			if err != nil {
+				return nil, err
+			}
 			provider, err := wecom.New(wecom.Config{
-				ConnectorID:   env("UV_WECOM_CONNECTOR_ID", "wecom"),
-				BotID:         os.Getenv("UV_WECOM_BOT_ID"),
-				Secret:        os.Getenv("UV_WECOM_BOT_SECRET"),
-				WSURL:         os.Getenv("UV_WECOM_WS_URL"),
-				ResourceStore: &uvim.ResourceStore{Dir: resourceDir},
+				ConnectorID:       env("UV_WECOM_CONNECTOR_ID", "wecom"),
+				BotID:             os.Getenv("UV_WECOM_BOT_ID"),
+				Secret:            os.Getenv("UV_WECOM_BOT_SECRET"),
+				UserNames:         userNames,
+				ConversationNames: conversationNames,
+				WSURL:             os.Getenv("UV_WECOM_WS_URL"),
+				ResourceStore:     &uvim.ResourceStore{Dir: resourceDir},
 			})
 			if err != nil {
 				return nil, err
@@ -368,4 +380,27 @@ func env(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envNameMap(key string) (map[string]string, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil, nil
+	}
+	values := map[string]string{}
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return nil, fmt.Errorf("%s must be a JSON object of ID-to-name strings: %w", key, err)
+	}
+	if values == nil {
+		return nil, fmt.Errorf("%s must be a JSON object of ID-to-name strings", key)
+	}
+	normalized := make(map[string]string, len(values))
+	for id, name := range values {
+		id = strings.TrimSpace(id)
+		name = strings.TrimSpace(name)
+		if id != "" && name != "" {
+			normalized[id] = name
+		}
+	}
+	return normalized, nil
 }
