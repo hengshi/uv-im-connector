@@ -72,6 +72,69 @@ func TestDecodePayloadTextMention(t *testing.T) {
 	}
 }
 
+func TestEnrichEventDisplayNamesUsesLarkAPIsAndCache(t *testing.T) {
+	var tokenRequests, chatRequests, userRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			tokenRequests++
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+		case "/open-apis/im/v1/chats/oc_chat":
+			chatRequests++
+			if req.Header.Get("Authorization") != "Bearer token" {
+				t.Errorf("authorization = %q", req.Header.Get("Authorization"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"name": "研发群"}})
+		case "/open-apis/contact/v3/users/ou_sender":
+			userRequests++
+			if req.URL.Query().Get("user_id_type") != "open_id" {
+				t.Errorf("user_id_type = %q", req.URL.Query().Get("user_id_type"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"user": map[string]any{"name": "张三"}}})
+		default:
+			t.Errorf("unexpected path %s", req.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		event := uvim.Event{Channel: uvim.Channel{ID: "oc_chat", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou_sender"}}
+		provider.enrichEventDisplayNames(context.Background(), &event)
+		if event.Channel.Name != "研发群" || event.User.DisplayName != "张三" {
+			t.Fatalf("event = %+v", event)
+		}
+	}
+	if tokenRequests != 1 || chatRequests != 1 || userRequests != 1 {
+		t.Fatalf("requests token=%d chat=%d user=%d", tokenRequests, chatRequests, userRequests)
+	}
+}
+
+func TestEnrichEventDisplayNamesKeepsEventWhenLarkLookupFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 999, "msg": "permission denied"})
+	}))
+	defer server.Close()
+
+	provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := uvim.Event{Channel: uvim.Channel{ID: "oc_chat", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou_sender"}}
+	provider.enrichEventDisplayNames(context.Background(), &event)
+	if event.Channel.ID != "oc_chat" || event.User.ID != "ou_sender" || event.Channel.Name != "" || event.User.DisplayName != "" {
+		t.Fatalf("event = %+v", event)
+	}
+}
+
 func TestDecodePayloadFileResource(t *testing.T) {
 	event := map[string]any{
 		"schema": "2.0",

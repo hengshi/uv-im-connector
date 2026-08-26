@@ -72,6 +72,50 @@ func TestDecodeMessageFile(t *testing.T) {
 	}
 }
 
+func TestDecodeMessageAddsConfiguredDisplayNames(t *testing.T) {
+	provider, err := New(Config{
+		BotID:             "bot",
+		Secret:            "secret",
+		UserNames:         map[string]string{"u1": "张三"},
+		ConversationNames: map[string]string{"chat-1": "研发群"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, ok := provider.decodeMessage(frame{Cmd: cmdCallback, Headers: headers{ReqID: "req-1"}, Body: map[string]any{
+		"msgid": "msg-1", "msgtype": "text", "chattype": "group", "chatid": "chat-1",
+		"from": map[string]any{"userid": "u1"}, "text": map[string]any{"content": "hello"},
+	}})
+	if !ok {
+		t.Fatal("decode ok = false")
+	}
+	if event.User.DisplayName != "张三" || event.Channel.Name != "研发群" {
+		t.Fatalf("event = %+v", event)
+	}
+}
+
+func TestDecodeMessageCallbackDisplayNamesOverrideConfiguredMaps(t *testing.T) {
+	provider, err := New(Config{
+		BotID:             "bot",
+		Secret:            "secret",
+		UserNames:         map[string]string{"u1": "旧用户名"},
+		ConversationNames: map[string]string{"chat-1": "旧群名"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, ok := provider.decodeMessage(frame{Cmd: cmdCallback, Headers: headers{ReqID: "req-1"}, Body: map[string]any{
+		"msgid": "msg-1", "msgtype": "text", "chattype": "group", "chatid": "chat-1", "chat_name": "新群名",
+		"from": map[string]any{"userid": "u1", "display_name": "新用户名"}, "text": map[string]any{"content": "hello"},
+	}})
+	if !ok {
+		t.Fatal("decode ok = false")
+	}
+	if event.User.DisplayName != "新用户名" || event.Channel.Name != "新群名" {
+		t.Fatalf("event = %+v", event)
+	}
+}
+
 func TestDecodeMessageIgnoresKeyOnlyAttachment(t *testing.T) {
 	provider, err := New(Config{BotID: "bot", Secret: "secret"})
 	if err != nil {

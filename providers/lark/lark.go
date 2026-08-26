@@ -28,6 +28,9 @@ const (
 	defaultFeishuURL   = "https://open.feishu.cn"
 	defaultLarkURL     = "https://open.larksuite.com"
 	defaultHTTPTimeout = 15 * time.Second
+	displayNameTimeout = 3 * time.Second
+	displayNameTTL     = 30 * time.Minute
+	displayNameMax     = 2048
 	maxImageBytes      = 10 * 1024 * 1024
 	maxFileBytes       = 30 * 1024 * 1024
 )
@@ -60,8 +63,16 @@ type Provider struct {
 	token    string
 	tokenExp time.Time
 
+	displayNameMu    sync.Mutex
+	displayNameCache map[string]displayNameEntry
+
 	stateMu sync.Mutex
 	state   string
+}
+
+type displayNameEntry struct {
+	name      string
+	expiresAt time.Time
 }
 
 type WSDialer interface {
@@ -122,7 +133,7 @@ func New(config Config) (*Provider, error) {
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
-	return &Provider{config: config, now: config.Now, state: "configured"}, nil
+	return &Provider{config: config, now: config.Now, displayNameCache: map[string]displayNameEntry{}, state: "configured"}, nil
 }
 
 func (p *Provider) ID() string          { return "lark" }
@@ -243,11 +254,143 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 		if !ok {
 			continue
 		}
+		p.enrichEventDisplayNames(ctx, &event)
 		p.setState("event")
 		if err := sink.Emit(ctx, event); err != nil {
 			return fmt.Errorf("emit event: %w", err)
 		}
 	}
+}
+
+func (p *Provider) enrichEventDisplayNames(ctx context.Context, event *uvim.Event) {
+	if event == nil {
+		return
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, displayNameTimeout)
+	defer cancel()
+	if event.Channel.Type == uvim.ChannelGroup && strings.TrimSpace(event.Channel.ID) != "" && strings.TrimSpace(event.Channel.Name) == "" {
+		name, err := p.cachedDisplayName(lookupCtx, "chat:"+event.Channel.ID, func(ctx context.Context) (string, error) {
+			return p.larkChatName(ctx, event.Channel.ID)
+		})
+		if err != nil {
+			p.config.Logger.Debug("lark chat display-name lookup failed", "err", err.Error())
+		} else {
+			event.Channel.Name = name
+		}
+	}
+	if strings.TrimSpace(event.User.ID) != "" && strings.TrimSpace(uvim.FirstNonEmpty(event.User.DisplayName, event.User.Name)) == "" {
+		name, err := p.cachedDisplayName(lookupCtx, "user:"+event.User.ID, func(ctx context.Context) (string, error) {
+			return p.larkUserName(ctx, event.User.ID)
+		})
+		if err != nil {
+			p.config.Logger.Debug("lark user display-name lookup failed", "err", err.Error())
+		} else {
+			event.User.DisplayName = name
+		}
+	}
+}
+
+func (p *Provider) cachedDisplayName(ctx context.Context, key string, lookup func(context.Context) (string, error)) (string, error) {
+	now := p.now()
+	p.displayNameMu.Lock()
+	entry, ok := p.displayNameCache[key]
+	if ok && now.Before(entry.expiresAt) {
+		p.displayNameMu.Unlock()
+		return entry.name, nil
+	}
+	if ok {
+		delete(p.displayNameCache, key)
+	}
+	p.displayNameMu.Unlock()
+
+	name, err := lookup(ctx)
+	name = strings.TrimSpace(name)
+	p.displayNameMu.Lock()
+	if len(p.displayNameCache) >= displayNameMax {
+		for cachedKey, cached := range p.displayNameCache {
+			if !now.Before(cached.expiresAt) {
+				delete(p.displayNameCache, cachedKey)
+			}
+		}
+	}
+	if len(p.displayNameCache) >= displayNameMax {
+		for cachedKey := range p.displayNameCache {
+			delete(p.displayNameCache, cachedKey)
+			break
+		}
+	}
+	p.displayNameCache[key] = displayNameEntry{name: name, expiresAt: now.Add(displayNameTTL)}
+	p.displayNameMu.Unlock()
+	return name, err
+}
+
+func (p *Provider) larkChatName(ctx context.Context, chatID string) (string, error) {
+	token, err := p.tenantAccessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL()+"/open-apis/im/v1/chats/"+url.PathEscape(chatID), nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	raw, err := p.doJSON(req, "lark chat display name")
+	if err != nil {
+		return "", err
+	}
+	var decoded struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			Name string `json:"name"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return "", fmt.Errorf("decode chat display name: %w", err)
+	}
+	if decoded.Code != 0 {
+		return "", fmt.Errorf("lark chat display name: code=%d msg=%q", decoded.Code, decoded.Msg)
+	}
+	return strings.TrimSpace(decoded.Data.Name), nil
+}
+
+func (p *Provider) larkUserName(ctx context.Context, userID string) (string, error) {
+	token, err := p.tenantAccessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	reqURL, err := url.Parse(p.baseURL() + "/open-apis/contact/v3/users/" + url.PathEscape(userID))
+	if err != nil {
+		return "", err
+	}
+	query := reqURL.Query()
+	query.Set("user_id_type", "open_id")
+	reqURL.RawQuery = query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	raw, err := p.doJSON(req, "lark user display name")
+	if err != nil {
+		return "", err
+	}
+	var decoded struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			User struct {
+				Name string `json:"name"`
+			} `json:"user"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return "", fmt.Errorf("decode user display name: %w", err)
+	}
+	if decoded.Code != 0 {
+		return "", fmt.Errorf("lark user display name: code=%d msg=%q", decoded.Code, decoded.Msg)
+	}
+	return strings.TrimSpace(decoded.Data.User.Name), nil
 }
 
 func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {

@@ -39,6 +39,8 @@ type Config struct {
 	ConnectorID       string
 	BotID             string
 	Secret            string
+	UserNames         map[string]string
+	ConversationNames map[string]string
 	WSURL             string
 	Dialer            WSDialer
 	HTTPClient        *http.Client
@@ -541,6 +543,8 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 	from := uvim.MapStringAny(body["from"])
 	userID := uvim.StringValue(from["userid"])
 	channelID := uvim.FirstNonEmpty(uvim.StringValue(body["chatid"]), userID)
+	userName := uvim.FirstNonEmpty(uvim.StringValue(from["display_name"]), uvim.StringValue(from["name"]), p.config.UserNames[userID])
+	channelName := uvim.FirstNonEmpty(uvim.StringValue(body["chat_name"]), uvim.StringValue(body["chatname"]), p.config.ConversationNames[channelID])
 	messageID := uvim.FirstNonEmpty(uvim.StringValue(body["msgid"]), in.Headers.ReqID)
 	now := p.now().UTC()
 	expiresAt := now.Add(10 * time.Minute)
@@ -555,8 +559,8 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 		Connector: p.ConnectorID(),
 		Time:      now,
 		Login:     uvim.Login{Platform: p.ID(), Connector: p.ConnectorID(), ID: p.config.BotID},
-		Channel:   uvim.Channel{ID: channelID, Type: channelType},
-		User:      uvim.User{ID: userID},
+		Channel:   uvim.Channel{ID: channelID, Type: channelType, Name: channelName},
+		User:      uvim.User{ID: userID, DisplayName: userName},
 		Message: uvim.Message{
 			ID:        messageID,
 			Type:      msgType,
