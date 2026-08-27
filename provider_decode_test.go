@@ -203,19 +203,24 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 
 func TestProviderDecodersNormalizeDirectMessages(t *testing.T) {
 	tests := []struct {
-		name   string
-		decode httpchannel.DecodeFunc
-		raw    string
+		name     string
+		decode   httpchannel.DecodeFunc
+		raw      string
+		wantName string
 	}{
-		{name: "dingtalk", decode: dingtalk.Decode, raw: `{"msgId":"m1","msgtype":"text","senderStaffId":"u1","conversationId":"c1","conversationType":"1","text":{"content":"hello"}}`},
-		{name: "discord", decode: discord.Decode, raw: `{"id":"m1","channel_id":"D1","content":"hello","author":{"id":"u1"}}`},
-		{name: "kook", decode: kook.Decode, raw: `{"d":{"msg_id":"m1","channel_type":"PERSON","target_id":"bot1","author_id":"u1","content":"hello","type":1}}`},
+		{name: "dingtalk", decode: dingtalk.Decode, raw: `{"msgId":"m1","msgtype":"text","senderStaffId":"u1","senderNick":"Ada","conversationId":"c1","conversationType":"1","text":{"content":"hello"}}`, wantName: "Ada"},
+		{name: "discord", decode: discord.Decode, raw: `{"id":"m1","channel_id":"D1","content":"hello","author":{"id":"u1","username":"Ada"}}`, wantName: "Ada"},
+		{name: "kook", decode: kook.Decode, raw: `{"d":{"msg_id":"m1","channel_type":"PERSON","target_id":"bot1","author_id":"u1","content":"hello","type":1,"extra":{"author":{"id":"u1","username":"ada","nickname":"Ada"}}}}`, wantName: "Ada"},
 		{name: "line", decode: line.Decode, raw: `{"events":[{"replyToken":"r1","source":{"type":"user","userId":"u1"},"message":{"id":"m1","type":"text","text":"hello"}}]}`},
-		{name: "onebot", decode: onebot.Decode, raw: `{"post_type":"message","message_type":"private","message_id":1,"user_id":2,"raw_message":"hello"}`},
-		{name: "qq", decode: qq.Decode, raw: `{"post_type":"message","message_type":"private","message_id":1,"user_id":2,"raw_message":"hello"}`},
-		{name: "qqguild", decode: qqguild.Decode, raw: `{"id":"m1","content":"hello","author":{"id":"u1"}}`},
+		{name: "mail", decode: mailprovider.Decode, raw: `{"id":"m1","from":"ada@example.test","from_name":"Ada","text":"hello"}`, wantName: "Ada"},
+		{name: "onebot", decode: onebot.Decode, raw: `{"post_type":"message","message_type":"private","message_id":1,"user_id":2,"raw_message":"hello","sender":{"nickname":"Ada"}}`, wantName: "Ada"},
+		{name: "qq", decode: qq.Decode, raw: `{"post_type":"message","message_type":"private","message_id":1,"user_id":2,"raw_message":"hello","sender":{"nickname":"Ada"}}`, wantName: "Ada"},
+		{name: "qqguild", decode: qqguild.Decode, raw: `{"id":"m1","content":"hello","author":{"id":"u1","username":"Ada"}}`, wantName: "Ada"},
 		{name: "slack", decode: slack.Decode, raw: `{"type":"event_callback","event":{"type":"message","user":"u1","channel":"D1","channel_type":"im","text":"hello","ts":"m1"}}`},
-		{name: "zulip", decode: zulip.Decode, raw: `{"id":1,"sender_id":2,"sender_email":"ada@example.test","content":"hello","type":"private"}`},
+		{name: "telegram", decode: telegram.Decode, raw: `{"update_id":99,"message":{"message_id":1,"text":"hello","chat":{"id":2,"type":"private"},"from":{"id":3,"first_name":"Ada"}}}`, wantName: "Ada"},
+		{name: "wechat-official", decode: wechatofficial.Decode, raw: `<xml><ToUserName>bot</ToUserName><FromUserName>u1</FromUserName><CreateTime>1</CreateTime><MsgType>text</MsgType><Content>hello</Content><MsgId>m1</MsgId></xml>`},
+		{name: "whatsapp", decode: whatsapp.Decode, raw: `{"entry":[{"changes":[{"value":{"contacts":[{"profile":{"name":"Ada"},"wa_id":"u1"}],"messages":[{"id":"m1","from":"u1","type":"text","text":{"body":"hello"}}]}}]}]}`, wantName: "Ada"},
+		{name: "zulip", decode: zulip.Decode, raw: `{"id":1,"sender_id":2,"sender_email":"ada@example.test","sender_full_name":"Ada","content":"hello","type":"private"}`, wantName: "Ada"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -226,8 +231,12 @@ func TestProviderDecodersNormalizeDirectMessages(t *testing.T) {
 			if !ok {
 				t.Fatal("decode ok = false")
 			}
+			event = event.Sanitized()
 			if event.Channel.Type != uvim.ChannelDirect || event.Channel.ID == "" || event.User.ID == "" {
 				t.Fatalf("event = %+v", event)
+			}
+			if event.User.Name != tt.wantName || event.Channel.Name != tt.wantName {
+				t.Fatalf("display names user=%q channel=%q, want %q", event.User.Name, event.Channel.Name, tt.wantName)
 			}
 			if event.Referrer.Target == nil || event.Referrer.Target.ID == "" || event.Referrer.Target.Kind == "" {
 				t.Fatalf("reply target missing: %+v", event.Referrer)

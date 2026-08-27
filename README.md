@@ -308,7 +308,7 @@ Important fields:
 - `connector`: the concrete configured account identity for that provider.
 - `channel.id`: the provider-native conversation ID.
 - `channel.type`: normalized conversation type, such as `direct`, `group`, `thread`, or `room`.
-- `channel.name`, `user.name`, and `user.display_name`: optional display metadata. IDs remain authoritative for routing, dedupe, and authorization. Lark resolves names best-effort through tenant OpenAPIs; WeCom AI Bot deployments can supply the optional ID-to-name maps because the callback credentials expose IDs but no directory lookup.
+- `channel.name`, `user.name`, and `user.display_name`: optional display metadata. For direct messages, a missing `channel.name` falls back to `user.display_name` and then `user.name`; explicit channel names and group channels are preserved. IDs remain authoritative for routing, dedupe, and authorization. Lark resolves names best-effort through tenant OpenAPIs; WeCom AI Bot deployments can supply the optional ID-to-name maps because the callback credentials expose IDs but no directory lookup.
 - `addressed`: whether the message is addressed to the bot when the provider can tell.
 - `referrer`: provider information needed for replies or thread-aware outbound messages. Its `target` is the exact provider-native reply destination. When available, `parent_message_id` and `root_message_id` preserve the inbound reply ancestry separately from the current reply target in `message_id`.
 
