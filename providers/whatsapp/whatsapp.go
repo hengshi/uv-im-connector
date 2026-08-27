@@ -324,6 +324,12 @@ func DecodeEvents(raw []byte, config httpchannel.Config) ([]uvim.Event, error) {
 			Changes []struct {
 				Value struct {
 					Messages []whatsappWebhookMessage `json:"messages"`
+					Contacts []struct {
+						WAID    string `json:"wa_id"`
+						Profile struct {
+							Name string `json:"name"`
+						} `json:"profile"`
+					} `json:"contacts"`
 				} `json:"value"`
 			} `json:"changes"`
 		} `json:"entry"`
@@ -334,11 +340,19 @@ func DecodeEvents(raw []byte, config httpchannel.Config) ([]uvim.Event, error) {
 	var events []uvim.Event
 	for _, entry := range env.Entry {
 		for _, change := range entry.Changes {
+			contactNames := make(map[string]string, len(change.Value.Contacts))
+			for _, contact := range change.Value.Contacts {
+				if waID, name := strings.TrimSpace(contact.WAID), strings.TrimSpace(contact.Profile.Name); waID != "" && name != "" {
+					contactNames[waID] = name
+				}
+			}
 			for _, msg := range change.Value.Messages {
 				if msg.ID == "" {
 					continue
 				}
-				events = append(events, eventFromWebhookMessage(msg, config))
+				event := eventFromWebhookMessage(msg, config)
+				event.User.Name = contactNames[strings.TrimSpace(msg.From)]
+				events = append(events, event)
 			}
 		}
 	}

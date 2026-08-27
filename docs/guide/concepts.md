@@ -51,6 +51,8 @@ Channel 是 provider 原生会话目标，归一化为：
 
 调用方的长期状态应该按 `provider + connector + channel.id` 路由，不要只用 `channel.id`。
 
+`channel.name`、`user.name` 和 `user.display_name` 是可选的展示快照。私聊事件缺少 `channel.name` 时，connector 会依次使用 `user.display_name`、`user.name` 补齐；已有会话名和群聊会话不会被覆盖。路由、去重和权限判断仍必须使用 provider 原生 ID。
+
 ## Addressed
 
 `addressed` 表示当 provider 能判断时，这条消息是否指向 bot。

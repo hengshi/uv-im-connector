@@ -109,6 +109,12 @@ func TestEnrichEventDisplayNamesUsesLarkAPIsAndCache(t *testing.T) {
 			t.Fatalf("event = %+v", event)
 		}
 	}
+	direct := uvim.Event{Channel: uvim.Channel{ID: "oc_direct", Type: uvim.ChannelDirect}, User: uvim.User{ID: "ou_sender"}}
+	provider.enrichEventDisplayNames(context.Background(), &direct)
+	direct = direct.Sanitized()
+	if direct.Channel.Name != "张三" || direct.User.DisplayName != "张三" {
+		t.Fatalf("direct event = %+v", direct)
+	}
 	if tokenRequests != 1 || chatRequests != 1 || userRequests != 1 {
 		t.Fatalf("requests token=%d chat=%d user=%d", tokenRequests, chatRequests, userRequests)
 	}

@@ -176,6 +176,13 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 			AuthorID    string `json:"author_id"`
 			Content     string `json:"content"`
 			Type        int    `json:"type"`
+			Extra       struct {
+				ChannelName string `json:"channel_name"`
+				Author      struct {
+					Username string `json:"username"`
+					Nickname string `json:"nickname"`
+				} `json:"author"`
+			} `json:"extra"`
 		} `json:"d"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -198,8 +205,8 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Type:      uvim.EventMessageCreate,
 		Provider:  "kook",
 		Connector: config.ConnectorID,
-		Channel:   uvim.Channel{ID: channelID, Type: channelType},
-		User:      uvim.User{ID: env.D.AuthorID},
+		Channel:   uvim.Channel{ID: channelID, Type: channelType, Name: env.D.Extra.ChannelName},
+		User:      uvim.User{ID: env.D.AuthorID, Name: firstNonEmpty(env.D.Extra.Author.Nickname, env.D.Extra.Author.Username)},
 		Message:   uvim.Message{ID: env.D.MsgID, Text: env.D.Content, Type: "message", Resources: refs},
 		Referrer:  uvim.Referrer{MessageID: env.D.MsgID, ChannelID: channelID, Target: &target},
 		Addressed: true,

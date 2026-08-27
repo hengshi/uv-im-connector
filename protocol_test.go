@@ -40,6 +40,42 @@ func TestSanitizedResourceDropsProviderSecrets(t *testing.T) {
 	}
 }
 
+func TestEventSanitizedFillsDirectChannelNameFromUser(t *testing.T) {
+	tests := []struct {
+		name  string
+		event Event
+		want  string
+	}{
+		{
+			name:  "display name",
+			event: Event{Channel: Channel{Type: ChannelDirect}, User: User{Name: "Alice", DisplayName: "Ada"}},
+			want:  "Ada",
+		},
+		{
+			name:  "name fallback",
+			event: Event{Channel: Channel{Type: ChannelDirect}, User: User{Name: "Alice"}},
+			want:  "Alice",
+		},
+		{
+			name:  "explicit channel name",
+			event: Event{Channel: Channel{Type: ChannelDirect, Name: "Support"}, User: User{Name: "Alice"}},
+			want:  "Support",
+		},
+		{
+			name:  "group remains unnamed",
+			event: Event{Channel: Channel{Type: ChannelGroup}, User: User{Name: "Alice"}},
+			want:  "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.event.Sanitized().Channel.Name; got != tt.want {
+				t.Fatalf("channel name = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEventDedupeKeyIncludesTypeAndStableMessageID(t *testing.T) {
 	create := Event{ID: "evt-1", Type: EventMessageCreate, Provider: "p", Connector: "c", Channel: Channel{ID: "room"}, Message: Message{ID: "m1"}}
 	retry := Event{ID: "evt-2", Type: EventMessageCreate, Provider: "p", Connector: "c", Channel: Channel{ID: "room"}, Message: Message{ID: "m1"}}

@@ -81,6 +81,9 @@ func (e Event) DedupeKey() string {
 }
 
 func (e Event) Sanitized() Event {
+	if e.Channel.Type == ChannelDirect && strings.TrimSpace(e.Channel.Name) == "" {
+		e.Channel.Name = FirstNonEmpty(e.User.DisplayName, e.User.Name)
+	}
 	e.Message = e.Message.Sanitized()
 	return e
 }

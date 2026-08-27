@@ -49,6 +49,10 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		GroupID     int64           `json:"group_id"`
 		Message     json.RawMessage `json:"message"`
 		RawMessage  string          `json:"raw_message"`
+		Sender      struct {
+			Nickname string `json:"nickname"`
+			Card     string `json:"card"`
+		} `json:"sender"`
 	}
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return uvim.Event{}, false, err
@@ -72,7 +76,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Provider:  "onebot",
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: channelID, Type: channelType},
-		User:      uvim.User{ID: fmt.Sprint(msg.UserID)},
+		User:      uvim.User{ID: fmt.Sprint(msg.UserID), Name: firstNonEmpty(msg.Sender.Card, msg.Sender.Nickname)},
 		Message:   uvim.Message{ID: messageID, Text: msg.RawMessage, Type: msg.MessageType, Resources: refs},
 		Referrer:  uvim.Referrer{MessageID: messageID, ChannelID: channelID, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
 		Addressed: true,
