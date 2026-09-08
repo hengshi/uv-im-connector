@@ -3,6 +3,8 @@ package uvim
 import (
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -48,6 +50,22 @@ func TestResourceStoreSaveOpenAndSanitize(t *testing.T) {
 	safe := ref.Sanitized()
 	if safe.URL != "" || safe.Secret != "" || safe.Private != nil {
 		t.Fatalf("sanitized = %+v", safe)
+	}
+}
+
+func TestResourceStoreOpensLegacyFlatFile(t *testing.T) {
+	store := &ResourceStore{Dir: t.TempDir()}
+	if err := os.WriteFile(filepath.Join(store.Dir, "r1-01-hello.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, ref, err := store.Open("internal://r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil || string(data) != "hello" || ref.ID != "r1" || ref.SizeBytes != 5 {
+		t.Fatalf("legacy resource: ref=%+v data=%q err=%v", ref, data, err)
 	}
 }
 

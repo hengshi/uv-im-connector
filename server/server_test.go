@@ -9,17 +9,112 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	uvim "github.com/hengshi/uv-im-connector"
 	"github.com/hengshi/uv-im-connector/client"
+	"github.com/hengshi/uv-im-connector/providers/lark"
 	"github.com/hengshi/uv-im-connector/providers/line"
 	"github.com/hengshi/uv-im-connector/providers/memory"
 	"github.com/hengshi/uv-im-connector/providers/slack"
+	"github.com/hengshi/uv-im-connector/providers/wecom"
 )
+
+func TestUploadValidLongFilename(t *testing.T) {
+	for _, length := range []int{234, 255} {
+		name := strings.Repeat("a", length-4) + ".txt"
+		t.Run(strconv.Itoa(length), func(t *testing.T) {
+			data := []byte("hello")
+			// Establish that the original name is legal on this filesystem.
+			if err := os.WriteFile(filepath.Join(t.TempDir(), name), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			hub := NewHub(nil, nil, &uvim.ResourceStore{Dir: dir})
+			api := httptest.NewServer(hub.Handler())
+			defer api.Close()
+			c := client.New(api.URL)
+			ref, err := c.Upload(context.Background(), uvim.ResourceRef{Name: name}, data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Reopen using a fresh store: lookup must not depend on in-memory metadata.
+			api.Close()
+			restarted := httptest.NewServer(NewHub(nil, nil, &uvim.ResourceStore{Dir: dir}).Handler())
+			defer restarted.Close()
+			c = client.New(restarted.URL)
+			resp, err := c.ResolveInternalURL(context.Background(), ref.InternalURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			got, err := io.ReadAll(resp.Body)
+			if err != nil || !bytes.Equal(got, data) || ref.Name != name || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/plain") {
+				t.Fatalf("round trip: name=%q body=%q type=%q err=%v", ref.Name, got, resp.Header.Get("Content-Type"), err)
+			}
+		})
+	}
+}
+
+func TestWebSocketHandshakeCancellation(t *testing.T) {
+	for _, entry := range []string{"wecom", "lark", "client"} {
+		t.Run(entry, func(t *testing.T) {
+			started, release := make(chan struct{}), make(chan struct{})
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/callback/ws/endpoint" {
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"URL": "ws://" + r.Host + "/blocked?service_id=1"}})
+					return
+				}
+				close(started)
+				<-release // Deliberately never complete the upgrade until cleanup.
+				http.Error(w, "closed", http.StatusServiceUnavailable)
+			}))
+			defer api.Close()
+			defer close(release)
+			ctx, cancel := context.WithCancel(context.Background()) // No deadline.
+			defer cancel()
+			var run func(context.Context) error
+			if entry == "client" {
+				run = func(ctx context.Context) error { return client.New(api.URL).WatchEvents(ctx, 0, nil) }
+			} else {
+				var p uvim.Provider
+				var err error
+				if entry == "wecom" {
+					p, err = wecom.New(wecom.Config{BotID: "bot", Secret: "secret", WSURL: strings.Replace(api.URL, "http", "ws", 1)})
+				} else {
+					p, err = lark.New(lark.Config{AppID: "app", AppSecret: "secret", CallbackBaseURL: api.URL})
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				run = NewHub(uvim.NewProviderRegistry(p), nil, nil).RunProviders
+			}
+			done := make(chan error, 1)
+			go func() { done <- run(ctx) }()
+			select {
+			case <-started:
+			case err := <-done:
+				t.Fatalf("returned before handshake: %v", err)
+			case <-time.After(2 * time.Second):
+				t.Fatal("handshake did not start")
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancel result: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("cancellation did not interrupt pending upgrade")
+			}
+		})
+	}
+}
 
 func TestUploadBeyondLegacyResourceSizeLimit(t *testing.T) {
 	store := &uvim.ResourceStore{Dir: t.TempDir()}
