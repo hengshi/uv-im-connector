@@ -37,7 +37,7 @@ The standalone binary reads `UV_IM_*` variables.
 
 Provider credentials are exclusive deployment identity. Production, E2E, development, and temporary debug workers must not share the same provider credential set.
 
-After acknowledging an inbound callback, Lark makes short, best-effort cached lookups for sender and group-chat names with the existing application credentials. The application needs OpenAPI permission to read basic user and chat information. Missing permission or an unavailable API never blocks the event; the names are simply omitted. The WeCom AI Bot callback and Bot secret provide IDs but no contact/chat-name lookup, so deployments that need names should use the explicit maps above; without them, provider-native IDs remain the fallback.
+After acknowledging an inbound callback, Lark makes best-effort cached lookups for sender and group-chat names with the existing application credentials. The application needs OpenAPI permission to read basic user and chat information. Permission or API errors omit names. Lookups have no default timeout; an unresponsive request needs caller-context cancellation or an explicitly configured HTTPClient timeout. The WeCom AI Bot callback and Bot secret provide IDs but no contact/chat-name lookup, so deployments that need names should use the explicit maps above; without them, provider-native IDs remain the fallback.
 
 For the generic provider variables, replace `<PROVIDER>` with one of:
 
@@ -48,3 +48,5 @@ DINGTALK DISCORD KOOK LINE MATRIX ONEBOT QQ QQGUILD SLACK TELEGRAM WECHAT_OFFICI
 When `UV_IM_PROVIDERS` is empty, the binary auto-loads only providers with detected credentials or webhook configuration. `memory` is never auto-loaded in production mode.
 
 DingTalk supports two ingress modes. A complete `UV_DINGTALK_CLIENT_ID` and `UV_DINGTALK_CLIENT_SECRET` pair enables Stream mode; when both are absent, the existing webhook mode remains available and validates ingress with `UV_DINGTALK_WEBHOOK_SECRET`. Supplying only one Stream credential fails startup instead of silently falling back. Both modes reply through the session webhook carried by the inbound message. `UV_DINGTALK_TOKEN` is only used for proactive messages to a configured group robot.
+
+Connector-created HTTP clients have no total request timeout. WeCom/Lark WebSocket handshake, read/write/ACK timeouts and Lark chunk expiry are disabled by default; positive Go configuration values and caller-supplied clients remain explicit opt-ins. Heartbeat/ping scheduling and display-name cache eviction do not reject messages or attachments. Provide a cancellable context when embedding the connector.

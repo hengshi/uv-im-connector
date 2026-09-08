@@ -21,7 +21,7 @@ type Client struct {
 	Token      string
 }
 
-// HTTPError preserves the bounded error response contract returned by the
+// HTTPError preserves the error response contract returned by the
 // connector service. Failure is nil for older services and non-provider APIs.
 type HTTPError struct {
 	StatusCode int
@@ -89,7 +89,7 @@ func (c *Client) WatchEventsWithConnect(ctx context.Context, after int64, onConn
 	if c.Token != "" {
 		header.Set("Authorization", "Bearer "+c.Token)
 	}
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, u, header)
+	conn, _, err := (&websocket.Dialer{Proxy: http.ProxyFromEnvironment}).DialContext(ctx, u, header)
 	if err != nil {
 		return err
 	}
@@ -190,13 +190,10 @@ func structuredHTTPError(statusCode int, body io.Reader) error {
 		Detail  string            `json:"detail"`
 		Failure *uvim.SendFailure `json:"failure"`
 	}
-	if err := json.NewDecoder(io.LimitReader(body, 64<<10)).Decode(&response); err != nil {
+	if err := json.NewDecoder(body).Decode(&response); err != nil {
 		return &HTTPError{StatusCode: statusCode}
 	}
 	detail := strings.Join(strings.Fields(response.Detail), " ")
-	if runes := []rune(detail); len(runes) > 512 {
-		detail = string(runes[:512])
-	}
 	code := strings.TrimSpace(response.Error)
 	if response.Failure != nil {
 		failure := response.Failure.Sanitized()

@@ -78,7 +78,7 @@ caller application
 | Discord | 支持 | 支持 | `file`、`image`、`audio`、`video` | 资源随消息直接 multipart 上传，由平台校验大小。 |
 | KOOK | 支持 | 支持 | `file`、`image`、`audio`、`video` | 先上传 asset，再发送图片消息或附件卡片。 |
 | LINE | 支持 | 不支持 | — | LINE 出站媒体要求 provider 可访问的 HTTPS 内容 URL；uv-im-connector 当前不提供公网 media origin。 |
-| Mail | 支持 | 支持 | `file`、`image`、`audio`、`video` | 作为 MIME 附件发送，每条消息最多 10 个；大小由邮件服务器校验。 |
+| Mail | 支持 | 支持 | `file`、`image`、`audio`、`video` | 作为 MIME 附件发送；大小和数量由邮件服务器校验。 |
 | Matrix | 支持 | 支持 | `file`、`image`、`audio`、`video` | 先上传 content repository，再以 `mxc://` room message 发送。 |
 | OneBot | 支持 | 不支持 | — | 不同兼容 endpoint 的文件 / CQ 上传行为尚未归一化。 |
 | QQ | 支持 | 不支持 | — | 与 OneBot-style QQ adapter 的限制相同。 |

@@ -63,12 +63,6 @@ func SafeSegment(value string) string {
 	if value == "" {
 		return "unknown"
 	}
-	if len(value) > 96 {
-		value = strings.TrimRight(value[:96], ".-_")
-	}
-	if value == "" {
-		return "unknown"
-	}
 	return value
 }
 
@@ -97,9 +91,6 @@ func ResourceUploadName(index int, ref ResourceRef, contentType string) string {
 	base := SafeSegment(strings.TrimSuffix(raw, filepath.Ext(raw)))
 	ext = strings.TrimPrefix(ext, ".")
 	ext = unsafeSegmentPattern.ReplaceAllString(ext, "")
-	if len(ext) > 16 {
-		ext = ext[:16]
-	}
 	if ext == "" {
 		return base
 	}
@@ -126,20 +117,14 @@ func NowUTC() time.Time {
 	return time.Now().UTC()
 }
 
-func TrimOutboundText(text string, maxBytes int) string {
-	text = strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
-	if maxBytes <= 0 || len(text) <= maxBytes {
-		return text
+func NormalizeOutboundText(text string) string {
+	return strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+}
+
+// OptionalDeadline leaves transport I/O unbounded unless the caller configures a timeout.
+func OptionalDeadline(now time.Time, timeout time.Duration) time.Time {
+	if timeout > 0 {
+		return now.Add(timeout)
 	}
-	out := make([]rune, 0, len(text))
-	total := 0
-	for _, r := range text {
-		size := len(string(r))
-		if total+size > maxBytes {
-			break
-		}
-		out = append(out, r)
-		total += size
-	}
-	return string(out)
+	return time.Time{}
 }

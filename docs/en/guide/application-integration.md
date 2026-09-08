@@ -97,7 +97,7 @@ When a send fails, `POST /v1/message.create` keeps the compatible HTTP `502` and
 | `delivery_state=unknown` | Do not replay automatically because delivery may have happened |
 | `retryable=false` | Do not retry; expose the structured reason and an actionable configuration/target repair path |
 
-Stable `category` values are `invalid-request`, `authentication`, `permission`, `target-unavailable`, `rate-limited`, `provider-unavailable`, `timeout`, `transport`, `provider-rejected`, `payload-too-large`, and `unknown`. `provider_code` and `request_id` contain only bounded machine values. Provider response bodies, arbitrary error text, and credentials never enter `failure`. Older clients can continue reading only the outer fields; new clients should persist `failure` in their delivery/writeback artifact.
+Stable `category` values are `invalid-request`, `authentication`, `permission`, `target-unavailable`, `rate-limited`, `provider-unavailable`, `timeout`, `transport`, `provider-rejected`, `payload-too-large`, and `unknown`. `provider_code` and `request_id` contain only machine-like codes/IDs. Provider response bodies, arbitrary error text, and credentials never enter `failure`. Older clients can continue reading only the outer fields; new clients should persist `failure` in their delivery/writeback artifact.
 
 Callers should not call provider-native send APIs directly. Provider-specific send behavior belongs in provider adapters.
 
@@ -125,3 +125,5 @@ The connector sends backlog events after that sequence before streaming fresh ev
 - bounded retry, escalation, and task lifecycle policy driven by normalized `failure`.
 
 Those responsibilities belong to the caller application.
+
+A send accepts text and multiple resources without a connector-imposed count limit. Discord, Mail, and Zulip combine them in one native message; the other upload-capable adapters send text first, then each resource in order (Slack also keeps its single-file caption form). Ordered sends return all IDs in `message_ids` and the last ID in `message_id`. On partial failure, `failure.delivered_count` and `failure.delivered_message_ids` identify completed messages; `retryable=false` and `delivery_state=unknown` prohibit replaying the whole sequence. The failed part may have an ambiguous outcome.

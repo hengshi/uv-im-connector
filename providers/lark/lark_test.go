@@ -9,12 +9,152 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
 
+	"github.com/gorilla/websocket"
 	uvim "github.com/hengshi/uv-im-connector"
 	"github.com/hengshi/uv-im-connector/conformance"
+	"github.com/hengshi/uv-im-connector/server"
 )
+
+func TestPostDownloadDoesNotBlockFollowingACKOrDisconnectDrain(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	ackDone := make(chan error, 1)
+	var api *httptest.Server
+	api = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/callback/ws/endpoint":
+			json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"URL": strings.Replace(api.URL, "http:", "ws:", 1) + "/ws?service_id=1"}})
+		case "/ws":
+			conn, err := (&websocket.Upgrader{}).Upgrade(w, req, nil)
+			if err != nil {
+				ackDone <- err
+				return
+			}
+			defer conn.Close()
+			for i, content := range []string{`{"content":[[{"tag":"img","image_key":"image-1"}]]}`, `{"text":"next"}`} {
+				if i == 1 {
+					<-started
+				}
+				kind := []string{"post", "text"}[i]
+				raw, _ := json.Marshal(map[string]any{"header": map[string]any{"event_type": "im.message.receive_v1"}, "event": map[string]any{"message": map[string]any{
+					"message_id": kind, "chat_id": "chat", "chat_type": "group", "message_type": kind, "content": content,
+					"mentions": []any{map[string]any{"key": "@bot", "id": map[string]any{"open_id": "bot"}}},
+				}}})
+				out := &wsFrame{Method: frameMethodData, Headers: []frameHeader{{Key: frameHeaderMessageID, Value: kind}}, Payload: raw}
+				if err := conn.WriteMessage(websocket.BinaryMessage, out.marshal()); err != nil {
+					ackDone <- err
+					return
+				}
+				conn.SetReadDeadline(time.Now().Add(time.Second))
+				_, raw, err = conn.ReadMessage()
+				if err != nil {
+					ackDone <- err
+					return
+				}
+				ack, err := unmarshalFrame(raw)
+				if err != nil || ack.headerValue(frameHeaderMessageID) != kind {
+					ackDone <- errors.New("incorrect ACK")
+					return
+				}
+			}
+			ackDone <- nil
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+		case "/open-apis/im/v1/chats/chat":
+			json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"name": "group"}})
+		case "/open-apis/im/v1/messages/post/resources/image-1":
+			close(started)
+			select {
+			case <-release:
+				w.Write([]byte("image bytes"))
+			case <-req.Context().Done():
+			}
+		default:
+			t.Errorf("unexpected path %s", req.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer api.Close()
+	defer close(release)
+	store := &uvim.ResourceStore{Dir: t.TempDir()}
+	provider, err := New(Config{AppID: "app", AppSecret: "secret", BotOpenID: "bot", BaseURL: api.URL, CallbackBaseURL: api.URL, ResourceStore: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log, err := uvim.NewEventLog(t.TempDir() + "/events.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := server.NewHub(uvim.NewProviderRegistry(provider), log, store)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- provider.Run(ctx, hub) }()
+	if err := <-ackDone; err != nil {
+		t.Fatalf("ACK blocked by download: %v", err)
+	}
+	release <- struct{}{}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("TCP disconnect error missing")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not drain")
+	}
+	events, err := log.ReadAfter(t.Context(), 0)
+	if err != nil || len(events) != 2 || events[0].Message.ID != "post" || events[1].Message.ID != "text" {
+		t.Fatalf("events=%+v err=%v", events, err)
+	}
+	ref := events[0].Message.Resources[0]
+	file, _, err := store.Open(ref.InternalURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil || string(data) != "image bytes" || ref.Error != "" {
+		t.Fatalf("resource=%+v data=%q err=%v", ref, data, err)
+	}
+}
+
+func TestChunkAssemblerWithoutCountOrDefaultExpiry(t *testing.T) {
+	now := time.Now()
+	assembler := newChunkAssembler(0, func() time.Time { return now })
+	// A declaration alone must not allocate an array proportional to sum.
+	assembler.admit("sparse", int(^uint(0)>>1), 0, []byte("x"))
+	for seq := 256; seq >= 0; seq-- {
+		if seq == 0 {
+			now = now.Add(time.Hour)
+		}
+		data, complete := assembler.admit("message", 257, seq, []byte{byte(seq)})
+		if seq != 0 && complete {
+			t.Fatal("completed before all chunks arrived")
+		}
+		if seq == 0 {
+			if !complete || len(data) != 257 {
+				t.Fatalf("complete=%v length=%d", complete, len(data))
+			}
+			for i, b := range data {
+				if b != byte(i) {
+					t.Fatalf("chunk %d = %d", i, b)
+				}
+			}
+		}
+	}
+	assembler.admit("empty", 2, 0, nil)
+	assembler.admit("empty", 2, 0, nil)
+	if _, complete := assembler.admit("empty", 3, 2, nil); complete {
+		t.Fatal("accepted inconsistent sum")
+	}
+	if _, complete := assembler.admit("empty", 2, 1, nil); !complete {
+		t.Fatal("empty chunks never completed")
+	}
+}
 
 func TestDecodePayloadPostResources(t *testing.T) {
 	for _, chatType := range []string{"p2p", "group"} {

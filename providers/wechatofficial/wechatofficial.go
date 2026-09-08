@@ -37,17 +37,18 @@ func New(config Config) (*httpchannel.Provider, error) {
 		baseURL = "https://api.weixin.qq.com"
 	}
 	return httpchannel.New(httpchannel.Config{
-		ProviderID:        "wechat-official",
-		ConnectorID:       firstNonEmpty(config.ConnectorID, "wechat-official"),
-		BaseURL:           baseURL,
-		Token:             config.Token,
-		WebhookSecret:     config.WebhookSecret,
-		ResourceStore:     config.ResourceStore,
-		HTTPClient:        config.HTTPClient,
-		Decode:            Decode,
-		PrepareSend:       prepareSend,
-		Send:              Send,
-		ParseSendResponse: ParseSendResponse,
+		ProviderID:             "wechat-official",
+		ConnectorID:            firstNonEmpty(config.ConnectorID, "wechat-official"),
+		BaseURL:                baseURL,
+		Token:                  config.Token,
+		WebhookSecret:          config.WebhookSecret,
+		ResourceStore:          config.ResourceStore,
+		HTTPClient:             config.HTTPClient,
+		Decode:                 Decode,
+		PrepareSend:            prepareSend,
+		SingleResourceMessages: true,
+		Send:                   Send,
+		ParseSendResponse:      ParseSendResponse,
 		Capabilities: uvim.Capabilities{
 			Inbound:         true,
 			Outbound:        true,
@@ -69,12 +70,6 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	if len(msg.Resources) == 0 {
 		return msg, nil
 	}
-	if len(msg.Resources) != 1 {
-		return msg, fmt.Errorf("wechat-official send: one resource per message is supported")
-	}
-	if strings.TrimSpace(msg.Text) != "" || len(msg.Elements) > 0 {
-		return msg, fmt.Errorf("wechat-official send: text, elements, and resources must be sent separately")
-	}
 	ref := msg.Resources[0]
 	mediaType, err := wechatMediaRoute(ref.Kind)
 	if err != nil {
@@ -94,9 +89,6 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	}
 	if closeErr != nil {
 		return msg, uvim.NewProviderSendError("wechat-official resource close failed", closeErr)
-	}
-	if len(data) == 0 {
-		return msg, fmt.Errorf("wechat-official upload: empty resources are not supported")
 	}
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	var body bytes.Buffer

@@ -359,7 +359,7 @@ func TestWeComUploadChunkCountBoundaries(t *testing.T) {
 		want int
 		ok   bool
 	}{
-		{size: 0, ok: false},
+		{size: 0, want: 0, ok: true},
 		{size: 1, want: 1, ok: true},
 		{size: uploadChunkSize, want: 1, ok: true},
 		{size: uploadChunkSize + 1, want: 2, ok: true},
@@ -474,33 +474,34 @@ func TestSendResourceProactivelyUsesTarget(t *testing.T) {
 	}
 }
 
-func TestUploadResourceRejectsEmptyBeforeWriting(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		data []byte
-	}{
-		{name: "empty"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			store := &uvim.ResourceStore{Dir: t.TempDir()}
-			ref, err := store.Save(context.Background(), bytes.NewReader(test.data), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "large.bin"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			provider, err := New(Config{BotID: "bot", Secret: "secret", ResourceStore: store})
-			if err != nil {
-				t.Fatal(err)
-			}
-			conn := &sendTestConn{}
-			activateSendTestConn(provider, conn)
-			_, err = provider.Send(context.Background(), uvim.OutboundMessage{ChannelID: "chat", Resources: []uvim.ResourceRef{ref}})
-			if err == nil {
-				t.Fatal("Send() error = nil")
-			}
-			if conn.sent.Cmd != "" {
-				t.Fatalf("unexpected frame = %+v", conn.sent)
-			}
-		})
+func TestUploadEmptyResourceDefersToWeCom(t *testing.T) {
+	store := &uvim.ResourceStore{Dir: t.TempDir()}
+	ref, err := store.Save(t.Context(), bytes.NewReader(nil), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "empty.bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := New(Config{BotID: "bot", Secret: "secret", ResourceStore: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := false
+	conn := &sendTestConn{onWrite: func(raw []byte) {
+		var sent frame
+		if err := json.Unmarshal(raw, &sent); err != nil {
+			t.Fatal(err)
+		}
+		if sent.Cmd != cmdUploadInit || sent.Body["total_size"] != float64(0) || sent.Body["total_chunks"] != float64(0) {
+			t.Fatalf("frame = %+v", sent)
+		}
+		seen = true
+		code := 400
+		provider.resolvePending(sent.Headers.ReqID, frame{Headers: sent.Headers, ErrCode: &code})
+	}}
+	activateSendTestConn(provider, conn)
+	_, err = provider.Send(t.Context(), uvim.OutboundMessage{ChannelID: "chat", Resources: []uvim.ResourceRef{ref}})
+	failure, ok := uvim.ProviderSendFailure(err)
+	if !seen || !ok || failure.ProviderCode != "400" {
+		t.Fatalf("seen=%v failure=%+v err=%v", seen, failure, err)
 	}
 }
 

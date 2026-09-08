@@ -23,14 +23,12 @@ import (
 )
 
 const (
-	RegionFeishu       = "feishu"
-	RegionLark         = "lark"
-	defaultFeishuURL   = "https://open.feishu.cn"
-	defaultLarkURL     = "https://open.larksuite.com"
-	defaultHTTPTimeout = 15 * time.Second
-	displayNameTimeout = 3 * time.Second
-	displayNameTTL     = 30 * time.Minute
-	displayNameMax     = 2048
+	RegionFeishu     = "feishu"
+	RegionLark       = "lark"
+	defaultFeishuURL = "https://open.feishu.cn"
+	defaultLarkURL   = "https://open.larksuite.com"
+	displayNameTTL   = 30 * time.Minute
+	displayNameMax   = 2048
 )
 
 type Config struct {
@@ -92,7 +90,7 @@ type GorillaDialer struct {
 func (g GorillaDialer) DialContext(ctx context.Context, urlStr string, requestHeader http.Header) (WSConn, *http.Response, error) {
 	dialer := g.Dialer
 	if dialer == nil {
-		dialer = websocket.DefaultDialer
+		dialer = &websocket.Dialer{Proxy: http.ProxyFromEnvironment}
 	}
 	return dialer.DialContext(ctx, urlStr, requestHeader)
 }
@@ -108,22 +106,13 @@ func New(config Config) (*Provider, error) {
 		config.Region = RegionFeishu
 	}
 	if config.HTTPClient == nil {
-		config.HTTPClient = &http.Client{Timeout: defaultHTTPTimeout}
+		config.HTTPClient = &http.Client{}
 	}
 	if config.Dialer == nil {
-		config.Dialer = GorillaDialer{Dialer: &websocket.Dialer{HandshakeTimeout: 15 * time.Second}}
+		config.Dialer = GorillaDialer{Dialer: &websocket.Dialer{}}
 	}
 	if config.PingInterval <= 0 {
 		config.PingInterval = 2 * time.Minute
-	}
-	if config.ReadDeadline <= 0 {
-		config.ReadDeadline = 6 * time.Minute
-	}
-	if config.WriteTimeout <= 0 {
-		config.WriteTimeout = 10 * time.Second
-	}
-	if config.ChunkTTL <= 0 {
-		config.ChunkTTL = 5 * time.Second
 	}
 	if config.Now == nil {
 		config.Now = time.Now
@@ -175,22 +164,101 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 	defer conn.Close()
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	stopClose := context.AfterFunc(runCtx, func() { _ = conn.Close() })
+	defer stopClose()
 	var writeMu sync.Mutex
 	pingInterval := endpoint.PingInterval
 	if pingInterval <= 0 {
 		pingInterval = p.config.PingInterval
 	}
+	transportCtx, stopTransport := context.WithCancel(runCtx)
+	defer stopTransport()
 	pingDone := make(chan struct{})
-	go p.pingLoop(runCtx, conn, &writeMu, endpoint.ServiceID, pingInterval, pingDone)
+	go p.pingLoop(transportCtx, conn, &writeMu, endpoint.ServiceID, pingInterval, pingDone)
+	incoming, events := make(chan uvim.Event), make(chan uvim.Event)
+	readErr, emitErr := make(chan error, 1), make(chan error, 1)
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func(incoming chan<- uvim.Event, readErr chan<- error) {
+		defer workers.Done()
+		readErr <- p.readEvents(transportCtx, conn, &writeMu, endpoint.ServiceID, incoming)
+	}(incoming, readErr)
+	go func(events <-chan uvim.Event) {
+		defer workers.Done()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case event, ok := <-events:
+				if !ok {
+					emitErr <- nil
+					return
+				}
+				if runCtx.Err() != nil {
+					return
+				}
+				p.enrichEventDisplayNames(runCtx, &event)
+				if err := sink.Emit(runCtx, event); err != nil {
+					emitErr <- err
+					return
+				}
+			}
+		}
+	}(events)
 	defer func() {
 		cancel()
+		_ = conn.Close()
+		workers.Wait()
 		<-pingDone
 	}()
-	assembler := newChunkAssembler(p.config.ChunkTTL, p.config.Now)
 	p.setState("connected")
-
+	var queued []uvim.Event
+	var connectionErr error
 	for {
-		if err := conn.SetReadDeadline(p.now().Add(p.config.ReadDeadline)); err != nil {
+		if readErr == nil && len(queued) == 0 && events != nil {
+			close(events)
+			events = nil
+		}
+		var ready chan uvim.Event
+		var next uvim.Event
+		if len(queued) > 0 {
+			ready, next = events, queued[0]
+		}
+		select {
+		case <-runCtx.Done():
+			return nil
+		case err := <-readErr:
+			connectionErr = err
+			if err != nil {
+				p.setState("error")
+			}
+			readErr, incoming = nil, nil
+			stopTransport()
+			_ = conn.Close()
+		case err := <-emitErr:
+			if ctx.Err() != nil {
+				return nil
+			}
+			if err != nil {
+				return errors.Join(connectionErr, fmt.Errorf("emit event: %w", err))
+			}
+			return connectionErr
+		case event := <-incoming:
+			p.setState("event")
+			queued = append(queued, event)
+		case ready <- next:
+			queued[0] = uvim.Event{}
+			queued = queued[1:]
+		}
+	}
+}
+
+// readEvents acknowledges frames without waiting for display-name lookups or
+// attachment downloads. Run retains received events until serial delivery ends.
+func (p *Provider) readEvents(ctx context.Context, conn WSConn, writeMu *sync.Mutex, serviceID int32, events chan<- uvim.Event) error {
+	assembler := newChunkAssembler(p.config.ChunkTTL, p.config.Now)
+	for {
+		if err := conn.SetReadDeadline(uvim.OptionalDeadline(p.now(), p.config.ReadDeadline)); err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -218,7 +286,7 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 		}
 		if inbound.Method == frameMethodControl {
 			if inbound.headerValue(frameHeaderTypeKey) == frameHeaderTypePing {
-				if err := p.writeFrame(&writeMu, conn, newPongFrame(endpoint.ServiceID)); err != nil {
+				if err := p.writeFrame(writeMu, conn, newPongFrame(serviceID)); err != nil {
 					return fmt.Errorf("write pong: %w", err)
 				}
 			}
@@ -241,21 +309,21 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 		})
 		if decodeErr != nil {
 			p.config.Logger.Warn("lark payload decode failed", "err", decodeErr.Error(), "payload_len", len(payload))
-			if err := p.writeFrame(&writeMu, conn, newAckFrame(inbound, true)); err != nil {
+			if err := p.writeFrame(writeMu, conn, newAckFrame(inbound, true)); err != nil {
 				return fmt.Errorf("write ack: %w", err)
 			}
 			continue
 		}
-		if err := p.writeFrame(&writeMu, conn, newAckFrame(inbound, true)); err != nil {
+		if err := p.writeFrame(writeMu, conn, newAckFrame(inbound, true)); err != nil {
 			return fmt.Errorf("write ack: %w", err)
 		}
 		if !ok {
 			continue
 		}
-		p.enrichEventDisplayNames(ctx, &event)
-		p.setState("event")
-		if err := sink.Emit(ctx, event); err != nil {
-			return fmt.Errorf("emit event: %w", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case events <- event:
 		}
 	}
 }
@@ -264,10 +332,8 @@ func (p *Provider) enrichEventDisplayNames(ctx context.Context, event *uvim.Even
 	if event == nil {
 		return
 	}
-	lookupCtx, cancel := context.WithTimeout(ctx, displayNameTimeout)
-	defer cancel()
 	if event.Channel.Type == uvim.ChannelGroup && strings.TrimSpace(event.Channel.ID) != "" && strings.TrimSpace(event.Channel.Name) == "" {
-		name, err := p.cachedDisplayName(lookupCtx, "chat:"+event.Channel.ID, func(ctx context.Context) (string, error) {
+		name, err := p.cachedDisplayName(ctx, "chat:"+event.Channel.ID, func(ctx context.Context) (string, error) {
 			return p.larkChatName(ctx, event.Channel.ID)
 		})
 		if err != nil {
@@ -277,7 +343,7 @@ func (p *Provider) enrichEventDisplayNames(ctx context.Context, event *uvim.Even
 		}
 	}
 	if strings.TrimSpace(event.User.ID) != "" && strings.TrimSpace(uvim.FirstNonEmpty(event.User.DisplayName, event.User.Name)) == "" {
-		name, err := p.cachedDisplayName(lookupCtx, "user:"+event.User.ID, func(ctx context.Context) (string, error) {
+		name, err := p.cachedDisplayName(ctx, "user:"+event.User.ID, func(ctx context.Context) (string, error) {
 			return p.larkUserName(ctx, event.User.ID)
 		})
 		if err != nil {
@@ -404,18 +470,15 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	if err := uvim.ValidateOutboundResources(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("lark send: %w", err)
 	}
-	if len(msg.Resources) > 1 {
-		return uvim.SendResult{}, fmt.Errorf("lark send: one resource per message is supported")
-	}
 	if hasNonTextElements(msg.Elements) {
 		return uvim.SendResult{}, fmt.Errorf("lark send: rich elements are not supported")
 	}
-	text := uvim.TrimOutboundText(msg.Text, 20000)
+	text := uvim.NormalizeOutboundText(msg.Text)
 	if text == "" && len(msg.Elements) > 0 {
-		text = uvim.TrimOutboundText(textFromElements(msg.Elements), 20000)
+		text = uvim.NormalizeOutboundText(textFromElements(msg.Elements))
 	}
-	if text != "" && len(msg.Resources) > 0 {
-		return uvim.SendResult{}, fmt.Errorf("lark send: text and resources must be sent separately")
+	if len(msg.Resources) > 1 || (text != "" && len(msg.Resources) > 0) {
+		return uvim.SendResourceSequence(ctx, msg, p.Send)
 	}
 	if text == "" && len(msg.Resources) == 0 {
 		return uvim.SendResult{}, fmt.Errorf("lark send: text or resource is required")
@@ -512,9 +575,6 @@ func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (ki
 	}
 	if closeErr != nil {
 		return "", nil, uvim.NewProviderSendError("lark resource close failed", closeErr)
-	}
-	if len(data) == 0 {
-		return "", nil, fmt.Errorf("lark upload: empty resources are not supported")
 	}
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	if strings.EqualFold(strings.TrimSpace(ref.Kind), uvim.ElementImage) && larkNativeImageMIME(ref.MIME) {
@@ -729,7 +789,7 @@ func (p *Provider) writeFrame(mu *sync.Mutex, conn WSConn, frame *wsFrame) error
 	raw := frame.marshal()
 	mu.Lock()
 	defer mu.Unlock()
-	if err := conn.SetWriteDeadline(p.now().Add(p.config.WriteTimeout)); err != nil {
+	if err := conn.SetWriteDeadline(uvim.OptionalDeadline(p.now(), p.config.WriteTimeout)); err != nil {
 		return err
 	}
 	return conn.WriteMessage(websocket.BinaryMessage, raw)
@@ -840,11 +900,4 @@ func textFromElements(elements []uvim.Element) string {
 		}
 	}
 	return strings.Join(parts, "\n")
-}
-
-func truncate(value string, max int) string {
-	if max <= 0 || len(value) <= max {
-		return value
-	}
-	return value[:max] + "...(truncated)"
 }

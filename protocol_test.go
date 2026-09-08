@@ -348,7 +348,7 @@ func TestProviderHTTPFailureParsesHTTPDateRetryAfterDeterministically(t *testing
 		want  int
 	}{
 		{name: "remaining seconds", delay: 17 * time.Second, want: 17},
-		{name: "bounded", delay: 2 * time.Hour, want: 3600},
+		{name: "full provider delay", delay: 2 * time.Hour, want: 7200},
 		{name: "elapsed", delay: -time.Second, want: 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -366,7 +366,7 @@ func TestProviderHTTPFailureCapsOverflowingDeltaSeconds(t *testing.T) {
 	failure := providerHTTPFailureAt(http.StatusTooManyRequests, http.Header{
 		"Retry-After": []string{"999999999999999999999999999999999999"},
 	}, nil, time.Time{})
-	if failure.RetryAfterSeconds != 3600 {
+	if failure.RetryAfterSeconds != int(^uint(0)>>1) {
 		t.Fatalf("failure = %+v", failure)
 	}
 }

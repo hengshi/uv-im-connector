@@ -20,10 +20,6 @@ import (
 	"github.com/hengshi/uv-im-connector/providers/httpchannel"
 )
 
-const (
-	maxOutboundAttachmentCount = 10
-)
-
 type SendMailFunc func(string, smtp.Auth, string, []string, []byte) error
 
 type Config struct {
@@ -163,9 +159,6 @@ func (p *Provider) outboundAttachments(refs []uvim.ResourceRef) (attachments []o
 	if p.config.ResourceStore == nil {
 		return nil, fmt.Errorf("mail upload: resource store is not configured")
 	}
-	if len(refs) > maxOutboundAttachmentCount {
-		return nil, fmt.Errorf("mail upload: %d resources exceed maximum %d", len(refs), maxOutboundAttachmentCount)
-	}
 	attachments = make([]outboundMailAttachment, 0, len(refs))
 	for index, ref := range refs {
 		if !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
@@ -182,9 +175,6 @@ func (p *Provider) outboundAttachments(refs []uvim.ResourceRef) (attachments []o
 		}
 		if closeErr != nil {
 			return nil, uvim.NewProviderSendError("mail resource close failed", closeErr)
-		}
-		if len(data) == 0 {
-			return nil, fmt.Errorf("mail upload: empty resources are not supported")
 		}
 		name := uvim.ResourceUploadName(index, ref, ref.MIME)
 		mimeType := strings.TrimSpace(ref.MIME)
