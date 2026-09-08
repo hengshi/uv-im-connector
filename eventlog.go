@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -104,21 +105,26 @@ func (l *EventLog) ReadAfter(ctx context.Context, sequence int64) ([]Event, erro
 	}
 	defer file.Close()
 	var out []Event
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), 100*1024*1024)
-	for scanner.Scan() {
+	reader := bufio.NewReader(file)
+	for {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 		}
+		raw, readErr := reader.ReadBytes('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return nil, readErr
+		}
+		if len(raw) == 0 && errors.Is(readErr, io.EOF) {
+			return out, nil
+		}
 		var event Event
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+		if err := json.Unmarshal(raw, &event); err != nil {
 			return nil, err
 		}
 		if event.Sequence > sequence {
 			out = append(out, event)
 		}
 	}
-	return out, scanner.Err()
 }

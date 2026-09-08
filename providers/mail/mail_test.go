@@ -42,12 +42,15 @@ func TestSendIncludesInternalResourcesAsMIMEAttachments(t *testing.T) {
 	_, err = provider.Send(context.Background(), uvim.OutboundMessage{
 		Target:    &uvim.OutboundTarget{ID: "user@example.com", Kind: uvim.TargetUser},
 		Text:      "done",
-		Resources: []uvim.ResourceRef{ref},
+		Resources: []uvim.ResourceRef{ref, ref, ref, ref, ref, ref, ref, ref, ref, ref, ref},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	message := string(raw)
+	if got := strings.Count(message, `filename="report.txt"`); got != 11 {
+		t.Fatalf("attachments = %d", got)
+	}
 	for _, want := range []string{"Content-Type: multipart/mixed", `filename="report.txt"`, "Content-Transfer-Encoding: base64", "cmVwb3J0"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("message missing %q:\n%s", want, message)

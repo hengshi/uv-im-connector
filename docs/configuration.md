@@ -37,7 +37,7 @@
 
 Provider credentials 是独占 deployment identity。Production、E2E、development 和临时 debug worker 不应共用同一套 provider credentials。
 
-Lark 入站事件会在确认回调后，使用现有应用凭据对发送人和群聊名称做短时、可失败的缓存查询。应用需要具备读取用户基本信息和群聊信息的 OpenAPI 权限；权限缺失或 API 不可用时，事件仍正常输出，只是不包含名称。企业微信 AI Bot 长连接回调及其 Bot secret 不提供通讯录或群聊名称查询能力，因此需要名称时使用上面的显式映射；未配置时保留 provider-native ID。
+Lark 入站事件会在确认回调后，使用现有应用凭据对发送人和群聊名称做可失败的缓存查询。应用需要具备读取用户基本信息和群聊信息的 OpenAPI 权限；权限缺失或 API 返回错误时，事件省略名称；查询没有默认超时，无响应的请求需由调用方 context 或显式 HTTPClient 超时取消。企业微信 AI Bot 长连接回调及其 Bot secret 不提供通讯录或群聊名称查询能力，因此需要名称时使用上面的显式映射；未配置时保留 provider-native ID。
 
 通用 provider 变量中的 `<PROVIDER>` 替换为以下值之一：
 
@@ -48,3 +48,5 @@ DINGTALK DISCORD KOOK LINE MATRIX ONEBOT QQ QQGUILD SLACK TELEGRAM WECHAT_OFFICI
 `UV_IM_PROVIDERS` 为空时，二进制只会自动加载检测到 credentials 或 webhook 配置的 provider。`memory` 不会在生产模式下自动加载。
 
 DingTalk 有两种入站模式。配置完整的 `UV_DINGTALK_CLIENT_ID` 和 `UV_DINGTALK_CLIENT_SECRET` 时使用 Stream 模式；两者都不配置时保留原有 webhook 模式，并由 `UV_DINGTALK_WEBHOOK_SECRET` 验证入站请求。只配置其中一个会直接启动失败，不能静默降级。两种模式的回复都复用入站消息携带的 session webhook；`UV_DINGTALK_TOKEN` 仅用于已配置群机器人的主动群消息。
+
+connector 创建的 HTTP client 不设置请求总超时。企微/飞书 WebSocket 握手、读写/ACK 超时以及飞书分片过期默认关闭；Go 调用方显式传入的正值配置和自定义 client 仍生效。心跳/ping 周期和展示名缓存淘汰不会拒绝消息或附件。嵌入使用时应传入可取消的 context。

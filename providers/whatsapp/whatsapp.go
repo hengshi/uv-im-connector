@@ -67,7 +67,7 @@ func New(config Config) (*Provider, error) {
 	}
 	config.BaseURL = baseURL
 	if config.HTTPClient == nil {
-		config.HTTPClient = &http.Client{Timeout: 30 * time.Second}
+		config.HTTPClient = &http.Client{}
 	}
 	return &Provider{base: base, config: config}, nil
 }
@@ -95,11 +95,8 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	if err := uvim.ValidateOutboundResources(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("whatsapp send: %w", err)
 	}
-	if len(msg.Resources) != 1 {
-		return uvim.SendResult{}, fmt.Errorf("whatsapp send: one resource per message is supported")
-	}
-	if strings.TrimSpace(msg.Text) != "" || len(msg.Elements) > 0 {
-		return uvim.SendResult{}, fmt.Errorf("whatsapp send: text, elements, and resources must be sent separately")
+	if len(msg.Resources) > 1 || strings.TrimSpace(msg.Text) != "" || len(msg.Elements) > 0 {
+		return uvim.SendResourceSequence(ctx, msg, p.Send)
 	}
 	return p.sendResource(ctx, msg, msg.Resources[0])
 }
@@ -182,9 +179,6 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	}
 	if closeErr != nil {
 		return uvim.SendResult{}, uvim.NewProviderSendError("whatsapp resource close failed", closeErr)
-	}
-	if len(data) == 0 {
-		return uvim.SendResult{}, fmt.Errorf("whatsapp upload: empty resources are not supported")
 	}
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	var uploadBody bytes.Buffer

@@ -380,10 +380,11 @@ func ValidateOutboundResources(m OutboundMessage, capabilities Capabilities) err
 }
 
 type SendResult struct {
-	Provider  string    `json:"provider"`
-	Connector string    `json:"connector,omitempty"`
-	MessageID string    `json:"message_id,omitempty"`
-	Time      time.Time `json:"time"`
+	Provider   string    `json:"provider"`
+	Connector  string    `json:"connector,omitempty"`
+	MessageID  string    `json:"message_id,omitempty"`
+	Time       time.Time `json:"time"`
+	MessageIDs []string  `json:"message_ids,omitempty"`
 }
 
 const (
@@ -409,16 +410,18 @@ const (
 // human-readable compatibility field; callers should drive retry and lifecycle
 // policy from this structure instead of parsing provider text.
 type SendFailure struct {
-	Category          string `json:"category"`
-	Retryable         bool   `json:"retryable"`
-	DeliveryState     string `json:"delivery_state"`
-	HTTPStatus        int    `json:"http_status,omitempty"`
-	ProviderCode      string `json:"provider_code,omitempty"`
-	RetryAfterSeconds int    `json:"retry_after_seconds,omitempty"`
-	RequestID         string `json:"request_id,omitempty"`
+	Category            string   `json:"category"`
+	Retryable           bool     `json:"retryable"`
+	DeliveryState       string   `json:"delivery_state"`
+	HTTPStatus          int      `json:"http_status,omitempty"`
+	ProviderCode        string   `json:"provider_code,omitempty"`
+	RetryAfterSeconds   int      `json:"retry_after_seconds,omitempty"`
+	RequestID           string   `json:"request_id,omitempty"`
+	DeliveredCount      int      `json:"delivered_count,omitempty"`
+	DeliveredMessageIDs []string `json:"delivered_message_ids,omitempty"`
 }
 
-// Sanitized returns a bounded failure suitable for persistence and policy.
+// Sanitized returns a failure suitable for persistence and policy.
 func (failure SendFailure) Sanitized() SendFailure {
 	return normalizeSendFailure(failure)
 }
@@ -438,7 +441,7 @@ func (e *providerSendError) Error() string {
 
 func (e *providerSendError) Unwrap() error { return e.err }
 
-// NewProviderSendError marks a bounded provider failure reason as safe to
+// NewProviderSendError marks a provider failure reason as safe to
 // return to an authenticated API caller while preserving the internal error.
 func NewProviderSendError(detail string, err error) error {
 	failure, ok := ProviderSendFailure(err)
@@ -452,14 +455,14 @@ func NewProviderSendError(detail string, err error) error {
 // public detail while preserving the original internal error.
 func NewProviderSendFailure(failure SendFailure, detail string, err error) error {
 	return &providerSendError{
-		detail:  TrimOutboundText(detail, 1024),
+		detail:  NormalizeOutboundText(detail),
 		failure: normalizeSendFailure(failure),
 		err:     err,
 	}
 }
 
 // NewProviderResponseError marks a syntactically successful provider response
-// whose business result rejected the message. Only bounded machine-like codes
+// whose business result rejected the message. Only machine-like codes
 // are extracted from raw; provider messages and response bodies are not copied.
 func NewProviderResponseError(raw []byte, _ string, err error) error {
 	return NewProviderResponseErrorWithCode(raw, "", err)
@@ -481,7 +484,7 @@ func NewProviderResponseErrorWithCode(raw []byte, providerCode string, err error
 }
 
 // NewProviderHTTPError marks a non-2xx provider response. HTTP status, retry
-// metadata, request ID, and a bounded provider code are safe decision facts;
+// metadata, request ID, and a provider code are safe decision facts;
 // the raw response body remains private.
 func NewProviderHTTPError(status int, header http.Header, raw []byte, detail string, err error) error {
 	return NewProviderSendFailure(ProviderHTTPFailure(status, header, raw), detail, err)
@@ -560,20 +563,19 @@ func providerHTTPFailureAt(status int, header http.Header, raw []byte, now time.
 
 func retryAfterSeconds(value string, now time.Time) int {
 	value = strings.TrimSpace(value)
-	if seconds, err := strconv.ParseUint(value, 10, 64); err == nil {
-		return int(min(seconds, 3600))
-	} else if errors.Is(err, strconv.ErrRange) {
-		return 3600
+	if seconds, err := strconv.ParseInt(value, 10, 0); err == nil || errors.Is(err, strconv.ErrRange) {
+		return max(0, int(seconds))
 	}
 	retryAt, err := http.ParseTime(value)
 	if err != nil || !retryAt.After(now) {
 		return 0
 	}
 	delay := retryAt.Sub(now)
-	if delay >= time.Hour {
-		return 3600
+	seconds := int(delay / time.Second)
+	if delay%time.Second != 0 {
+		seconds++
 	}
-	return int((delay + time.Second - 1) / time.Second)
+	return seconds
 }
 
 func providerResponseFailure(raw []byte) SendFailure {
@@ -607,7 +609,7 @@ func providerFailureCode(payload any) string {
 
 func safeProviderMachineValue(value string) string {
 	value = strings.TrimSpace(value)
-	if value == "" || len(value) > 128 {
+	if value == "" {
 		return ""
 	}
 	for _, r := range value {
@@ -639,8 +641,6 @@ func normalizeSendFailure(failure SendFailure) SendFailure {
 	}
 	if failure.RetryAfterSeconds < 0 {
 		failure.RetryAfterSeconds = 0
-	} else if failure.RetryAfterSeconds > 3600 {
-		failure.RetryAfterSeconds = 3600
 	}
 	return failure
 }
@@ -690,7 +690,7 @@ func (e *providerSendLogError) Error() string {
 
 func (e *providerSendLogError) Unwrap() error { return e.err }
 
-// NewProviderSendLogError marks a bounded provider diagnostic as safe for
+// NewProviderSendLogError marks a provider diagnostic as safe for
 // private service logs only while preserving the internal error.
 func NewProviderSendLogError(detail string, err error) error {
 	return &providerSendLogError{detail: providerSendErrorLogText(detail), err: err}
@@ -710,7 +710,7 @@ func NewProviderSendOperationError(operation string, err error) error {
 	var logErr *providerSendLogError
 	if !errors.As(err, &logErr) || logErr.detail == "" {
 		detail := strings.TrimSpace(operation)
-		if cause, known := providerSendErrorLogDetail(err, 0); known {
+		if cause, known := providerSendErrorLogDetail(err); known {
 			if detail != "" {
 				detail += ": " + cause
 			} else {
@@ -727,21 +727,18 @@ func NewProviderSendOperationError(operation string, err error) error {
 
 // ProviderSendErrorLogDetail returns a credential-safe diagnostic for private
 // service logs. Adapter-marked details are already safe; known transport errors
-// retain bounded structured causes without copying arbitrary error strings.
+// retain structured causes without copying arbitrary error strings.
 func ProviderSendErrorLogDetail(err error) string {
-	detail, ok := providerSendErrorLogDetail(err, 0)
+	detail, ok := providerSendErrorLogDetail(err)
 	if !ok {
 		return "unmarked provider error"
 	}
 	return providerSendErrorLogText(detail)
 }
 
-func providerSendErrorLogDetail(err error, depth int) (string, bool) {
+func providerSendErrorLogDetail(err error) (string, bool) {
 	if err == nil {
 		return "", false
-	}
-	if depth >= 8 {
-		return "provider error chain truncated", true
 	}
 	var logErr *providerSendLogError
 	if errors.As(err, &logErr) && logErr.detail != "" {
@@ -756,7 +753,7 @@ func providerSendErrorLogDetail(err error, depth int) (string, bool) {
 		if parsed, parseErr := url.Parse(urlErr.URL); parseErr == nil && parsed.Scheme != "" && parsed.Host != "" {
 			endpoint = parsed.Scheme + "://" + parsed.Host
 		}
-		cause, known := providerSendErrorLogDetail(urlErr.Err, depth+1)
+		cause, known := providerSendErrorLogDetail(urlErr.Err)
 		if !known {
 			cause = "transport failure"
 		}
@@ -764,7 +761,7 @@ func providerSendErrorLogDetail(err error, depth int) (string, bool) {
 	}
 	var netErr *net.OpError
 	if errors.As(err, &netErr) {
-		cause, known := providerSendErrorLogDetail(netErr.Err, depth+1)
+		cause, known := providerSendErrorLogDetail(netErr.Err)
 		if !known {
 			cause = "network failure"
 		}
@@ -772,7 +769,7 @@ func providerSendErrorLogDetail(err error, depth int) (string, bool) {
 	}
 	var syscallErr *os.SyscallError
 	if errors.As(err, &syscallErr) {
-		cause, known := providerSendErrorLogDetail(syscallErr.Err, depth+1)
+		cause, known := providerSendErrorLogDetail(syscallErr.Err)
 		if !known {
 			cause = "system call failed"
 		}
@@ -923,7 +920,7 @@ func providerErrnoLogDetail(err error) string {
 }
 
 func providerSendErrorLogText(detail string) string {
-	return TrimOutboundText(strings.Join(strings.Fields(detail), " "), 1024)
+	return strings.Join(strings.Fields(detail), " ")
 }
 
 type Health struct {

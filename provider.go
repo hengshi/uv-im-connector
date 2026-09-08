@@ -2,6 +2,7 @@ package uvim
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -28,6 +29,71 @@ type Provider interface {
 	Send(context.Context, OutboundMessage) (SendResult, error)
 	Download(context.Context, ResourceDownloadRequest) (ResourceRef, error)
 	Health(context.Context) Health
+}
+
+// SendResourceSequence sends text followed by each resource through a provider's
+// single-message path. Successful parts are never replayed after a later failure.
+func SendResourceSequence(ctx context.Context, msg OutboundMessage, send func(context.Context, OutboundMessage) (SendResult, error)) (SendResult, error) {
+	var textParts []string
+	var collectText func([]Element) error
+	collectText = func(elements []Element) error {
+		for _, element := range elements {
+			if (element.Type != "" && element.Type != ElementText) || element.Resource != nil {
+				return fmt.Errorf("send: rich elements are not supported")
+			}
+			if element.Type == ElementText && strings.TrimSpace(element.Text) != "" {
+				textParts = append(textParts, element.Text)
+			}
+			if err := collectText(element.Children); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := collectText(msg.Elements); err != nil {
+		return SendResult{}, err
+	}
+	if strings.TrimSpace(msg.Text) == "" {
+		msg.Text = strings.Join(textParts, "\n")
+	}
+	var parts []OutboundMessage
+	if strings.TrimSpace(msg.Text) != "" {
+		part := msg
+		part.Resources, part.Elements = nil, nil
+		parts = append(parts, part)
+	}
+	for _, ref := range msg.Resources {
+		part := msg
+		part.Text, part.Elements = "", nil
+		part.Resources = []ResourceRef{ref}
+		parts = append(parts, part)
+	}
+	var result SendResult
+	var ids []string
+	for i, part := range parts {
+		// Matrix uses ID as its transaction key; every part needs a distinct,
+		// stable key when the caller supplies an idempotency ID.
+		if len(parts) > 1 && msg.ID != "" {
+			part.ID = fmt.Sprintf("%s-part-%d", msg.ID, i+1)
+		}
+		next, err := send(ctx, part)
+		if err != nil {
+			if i == 0 {
+				return result, err
+			}
+			failure, ok := ProviderSendFailure(err)
+			if !ok {
+				failure = classifyProviderSendFailure(err)
+			}
+			failure.DeliveryState, failure.Retryable = DeliveryUnknown, false
+			failure.DeliveredCount, failure.DeliveredMessageIDs = i, append([]string(nil), ids...)
+			return result, NewProviderSendFailure(failure, fmt.Sprintf("send stopped after %d of %d messages; do not retry the whole sequence", i, len(parts)), err)
+		}
+		ids = append(ids, next.MessageID)
+		result = next
+		result.MessageIDs = ids
+	}
+	return result, nil
 }
 
 type WebhookProvider interface {

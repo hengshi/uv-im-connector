@@ -157,14 +157,19 @@ func TestDiscordSendUploadsInternalResource(t *testing.T) {
 		if payload["content"] != "caption" {
 			t.Fatalf("payload = %+v", payload)
 		}
-		file, header, err := req.FormFile("files[0]")
-		if err != nil {
-			t.Fatal(err)
+		if len(payload["attachments"].([]any)) != 2 {
+			t.Fatalf("attachments = %+v", payload)
 		}
-		defer file.Close()
-		data, _ := io.ReadAll(file)
-		if header.Filename != "report.txt" || string(data) != "report" {
-			t.Fatalf("filename=%q data=%q", header.Filename, data)
+		for _, field := range []string{"files[0]", "files[1]"} {
+			file, header, err := req.FormFile(field)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			data, _ := io.ReadAll(file)
+			if header.Filename != "report.txt" || string(data) != "report" {
+				t.Fatalf("filename=%q data=%q", header.Filename, data)
+			}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": "m1"})
 	}))
@@ -173,7 +178,7 @@ func TestDiscordSendUploadsInternalResource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := provider.Send(context.Background(), uvim.OutboundMessage{ChannelID: "c1", Text: "caption", Resources: []uvim.ResourceRef{ref}}); err != nil {
+	if _, err := provider.Send(context.Background(), uvim.OutboundMessage{ChannelID: "c1", Text: "caption", Resources: []uvim.ResourceRef{ref, ref}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -297,14 +302,15 @@ func TestMatrixSendUploadsInternalResource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var uploadSeen, sendSeen bool
+	var uploads int
+	var transactions []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if got := req.Header.Get("Authorization"); got != "Bearer token" {
 			t.Fatalf("authorization = %q", got)
 		}
 		switch {
 		case req.Method == http.MethodPost && req.URL.Path == "/_matrix/media/v3/upload":
-			uploadSeen = true
+			uploads++
 			if req.URL.Query().Get("filename") != "report.txt" || req.Header.Get("Content-Type") != "text/plain" {
 				t.Fatalf("upload request = %s %s content-type=%q", req.URL.Path, req.URL.RawQuery, req.Header.Get("Content-Type"))
 			}
@@ -314,7 +320,7 @@ func TestMatrixSendUploadsInternalResource(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"content_uri": "mxc://example.org/media1"})
 		case req.Method == http.MethodPut && strings.Contains(req.URL.Path, "/send/m.room.message/"):
-			sendSeen = true
+			transactions = append(transactions, req.URL.Path[strings.LastIndex(req.URL.Path, "/")+1:])
 			if !strings.Contains(req.URL.Path, "rooms/!room:example.org/") {
 				t.Fatalf("send path = %q", req.URL.Path)
 			}
@@ -330,7 +336,7 @@ func TestMatrixSendUploadsInternalResource(t *testing.T) {
 			if reply["event_id"] != "$original" {
 				t.Fatalf("reply relation = %+v", relation)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"event_id": "$sent"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"event_id": req.URL.Path[strings.LastIndex(req.URL.Path, "/")+1:]})
 		default:
 			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
 		}
@@ -343,14 +349,14 @@ func TestMatrixSendUploadsInternalResource(t *testing.T) {
 	result, err := provider.Send(context.Background(), uvim.OutboundMessage{
 		ID:        "txn1",
 		ChannelID: "!room:example.org",
-		Resources: []uvim.ResourceRef{ref},
+		Resources: []uvim.ResourceRef{ref, ref},
 		Referrer:  uvim.Referrer{MessageID: "$original"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !uploadSeen || !sendSeen || result.MessageID != "$sent" {
-		t.Fatalf("upload=%v send=%v result=%+v", uploadSeen, sendSeen, result)
+	if uploads != 2 || strings.Join(transactions, ",") != "txn1-part-1,txn1-part-2" || strings.Join(result.MessageIDs, ",") != "txn1-part-1,txn1-part-2" {
+		t.Fatalf("uploads=%v transactions=%v result=%+v", uploads, transactions, result)
 	}
 }
 
@@ -598,7 +604,7 @@ func TestZulipSendUploadsInternalResource(t *testing.T) {
 			if err := req.ParseForm(); err != nil {
 				t.Fatal(err)
 			}
-			if req.FormValue("type") != "stream" || req.FormValue("to") != "engineering" || !strings.Contains(req.FormValue("content"), "[report.txt](/user_uploads/report)") {
+			if req.FormValue("type") != "stream" || req.FormValue("to") != "engineering" || strings.Count(req.FormValue("content"), "[report.txt](/user_uploads/report)") != 2 {
 				t.Fatalf("message form = %v", req.Form)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"result": "success", "id": 42})
@@ -611,7 +617,7 @@ func TestZulipSendUploadsInternalResource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := provider.Send(context.Background(), uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "engineering", Kind: uvim.TargetGroup}, Resources: []uvim.ResourceRef{ref}})
+	result, err := provider.Send(context.Background(), uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "engineering", Kind: uvim.TargetGroup}, Resources: []uvim.ResourceRef{ref, ref}})
 	if err != nil {
 		t.Fatal(err)
 	}

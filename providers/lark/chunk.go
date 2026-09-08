@@ -6,11 +6,6 @@ import (
 	"time"
 )
 
-const (
-	maxChunkSum            = 256
-	maxAssembledChunkBytes = 100 * 1024 * 1024
-)
-
 type chunkAssembler struct {
 	ttl time.Duration
 	now func() time.Time
@@ -20,16 +15,12 @@ type chunkAssembler struct {
 }
 
 type chunkEntry struct {
-	chunks   [][]byte
-	received int
-	size     int
+	chunks   map[int][]byte
+	sum      int
 	deadline time.Time
 }
 
 func newChunkAssembler(ttl time.Duration, now func() time.Time) *chunkAssembler {
-	if ttl <= 0 {
-		ttl = 5 * time.Second
-	}
 	if now == nil {
 		now = time.Now
 	}
@@ -37,7 +28,7 @@ func newChunkAssembler(ttl time.Duration, now func() time.Time) *chunkAssembler 
 }
 
 func (a *chunkAssembler) admit(messageID string, sum, seq int, payload []byte) ([]byte, bool) {
-	if messageID == "" || sum <= 0 || sum > maxChunkSum || seq < 0 || seq >= sum || len(payload) > maxAssembledChunkBytes {
+	if messageID == "" || sum <= 0 || seq < 0 || seq >= sum {
 		return nil, false
 	}
 	a.mu.Lock()
@@ -45,23 +36,17 @@ func (a *chunkAssembler) admit(messageID string, sum, seq int, payload []byte) (
 	a.gcExpiredLocked()
 	entry, ok := a.buf[messageID]
 	if !ok {
-		entry = &chunkEntry{chunks: make([][]byte, sum), deadline: a.now().Add(a.ttl)}
+		entry = &chunkEntry{chunks: make(map[int][]byte), sum: sum}
 		a.buf[messageID] = entry
 	}
-	if entry.chunks[seq] == nil {
-		entry.received++
-		entry.size += len(payload)
-	} else {
-		entry.size -= len(entry.chunks[seq])
-		entry.size += len(payload)
-	}
-	if entry.size > maxAssembledChunkBytes {
-		delete(a.buf, messageID)
+	if entry.sum != sum {
 		return nil, false
 	}
 	entry.chunks[seq] = append([]byte(nil), payload...)
-	entry.deadline = a.now().Add(a.ttl)
-	if entry.received < len(entry.chunks) {
+	if a.ttl > 0 {
+		entry.deadline = a.now().Add(a.ttl)
+	}
+	if len(entry.chunks) < entry.sum {
 		return nil, false
 	}
 	total := 0
@@ -69,8 +54,8 @@ func (a *chunkAssembler) admit(messageID string, sum, seq int, payload []byte) (
 		total += len(chunk)
 	}
 	out := make([]byte, 0, total)
-	for _, chunk := range entry.chunks {
-		out = append(out, chunk...)
+	for seq := 0; seq < entry.sum; seq++ {
+		out = append(out, entry.chunks[seq]...)
 	}
 	delete(a.buf, messageID)
 	return out, true
@@ -79,7 +64,7 @@ func (a *chunkAssembler) admit(messageID string, sum, seq int, payload []byte) (
 func (a *chunkAssembler) gcExpiredLocked() {
 	now := a.now()
 	for id, entry := range a.buf {
-		if now.After(entry.deadline) {
+		if !entry.deadline.IsZero() && now.After(entry.deadline) {
 			delete(a.buf, id)
 		}
 	}

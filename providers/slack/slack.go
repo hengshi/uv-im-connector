@@ -67,7 +67,7 @@ func New(config Config) (*Provider, error) {
 	}
 	config.BaseURL = baseURL
 	if config.HTTPClient == nil {
-		config.HTTPClient = &http.Client{Timeout: 30 * time.Second}
+		config.HTTPClient = &http.Client{}
 	}
 	return &Provider{base: base, config: config}, nil
 }
@@ -99,11 +99,8 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	if err := uvim.ValidateOutboundResources(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("slack send: %w", err)
 	}
-	if len(msg.Resources) != 1 {
-		return uvim.SendResult{}, fmt.Errorf("slack send: one resource per message is supported")
-	}
-	if len(msg.Elements) > 0 {
-		return uvim.SendResult{}, fmt.Errorf("slack send: rich elements and resources must be sent separately")
+	if len(msg.Resources) > 1 || len(msg.Elements) > 0 {
+		return uvim.SendResourceSequence(ctx, msg, p.Send)
 	}
 	return p.sendResource(ctx, msg, msg.Resources[0])
 }
@@ -126,9 +123,6 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	}
 	if closeErr != nil {
 		return uvim.SendResult{}, uvim.NewProviderSendError("slack resource close failed", closeErr)
-	}
-	if len(data) == 0 {
-		return uvim.SendResult{}, fmt.Errorf("slack upload: empty resources are not supported")
 	}
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	channelID, err := p.resourceChannelID(ctx, msg.ResolvedTarget())

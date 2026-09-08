@@ -185,7 +185,7 @@ The resource matrix is separate from text/conversation support. "Inbound" means 
 | Discord | Yes | Yes | `file`, `image`, `audio`, `video` | Direct multipart message upload; the provider validates attachment size. |
 | KOOK | Yes | Yes | `file`, `image`, `audio`, `video` | Asset upload followed by an image or attachment-card message. |
 | LINE | Yes | No | — | LINE outbound media requires a provider-reachable HTTPS content URL; uv-im-connector has no public media origin. |
-| Mail | Yes | Yes | `file`, `image`, `audio`, `video` | Sent as MIME attachments, up to 10 per message; the mail server validates size. |
+| Mail | Yes | Yes | `file`, `image`, `audio`, `video` | Sent as MIME attachments; the mail server validates size and count. |
 | Matrix | Yes | Yes | `file`, `image`, `audio`, `video` | Content-repository upload followed by an `mxc://` room message. |
 | OneBot | Yes | No | — | Compatible-endpoint file/CQ upload behavior is not yet normalized. |
 | QQ | Yes | No | — | Same OneBot-style limitation as the QQ adapter. |
@@ -387,7 +387,7 @@ GET /v1/internal/<id>
 
 The Go client also exposes `ResolveInternalURL`.
 
-For outbound attachments, callers must first inspect the selected provider and connector in `GET /v1/meta`, require `upload_resource` plus the desired `resource_kinds`, call `POST /v1/upload.create`, and send the exact returned `ResourceRef`. The standalone WeCom, Lark / Feishu, Discord, KOOK, Telegram, Matrix, Slack, WhatsApp, Zulip, and Mail providers share the HTTP upload store and support `file`, `image`, `audio`, and `video`; WeChat Official Account shares the same store but only supports image, audio, and video. The provider matrix above records their different limits and delivery shapes. Callers should send multiple attachments and final text as separate ordered messages unless the exact provider contract explicitly supports a combined payload.
+For outbound attachments, callers must first inspect the selected provider and connector in `GET /v1/meta`, require `upload_resource` plus the desired `resource_kinds`, call `POST /v1/upload.create`, and send the exact returned `ResourceRef`. The standalone WeCom, Lark / Feishu, Discord, KOOK, Telegram, Matrix, Slack, WhatsApp, Zulip, and Mail providers share the HTTP upload store and support `file`, `image`, `audio`, and `video`; WeChat Official Account shares the same store but only supports image, audio, and video. A send accepts text and multiple resources without a connector-imposed count limit. Discord, Mail, and Zulip combine them in one native message; the other upload-capable adapters send text first, then each resource in order (Slack also keeps its single-file caption form). Ordered sends return all IDs in `message_ids` and the last ID in `message_id`. On partial failure, `failure.delivered_count` and `failure.delivered_message_ids` identify completed messages; `retryable=false` and `delivery_state=unknown` prohibit replaying the whole sequence. The failed part may have an ambiguous outcome.
 
 ## Go Client
 

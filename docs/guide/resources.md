@@ -73,7 +73,7 @@ POST /v1/resource.download
 
 standalone binary 中，WeCom、Lark / Feishu、Discord、KOOK、Telegram、Matrix、Slack、WhatsApp、Zulip、WeChat Official Account 和 Mail 与 HTTP upload endpoint 使用同一个 resource store，并真正声明 `upload_resource=true`。完整逐 provider 清单见 [Provider 能力矩阵](/architecture.html#provider-能力矩阵)。
 
-- WeCom：每条消息接受一个 resource，且不能与 text 混发；WebSocket 上传每片 512 KiB，总大小和分片数量由平台校验。
+- WeCom：WebSocket 上传每片 512 KiB，总大小和分片数量由平台校验。
 - Lark / Feishu：支持格式的图片始终使用图片 API，不按大小转为文件；其他资源走文件上传，由平台校验大小。
 - Discord：资源随消息直接 multipart 上传，由平台校验大小。
 - KOOK：先上传 asset，再发送图片消息或附件卡片。
@@ -83,8 +83,10 @@ standalone binary 中，WeCom、Lark / Feishu、Discord、KOOK、Telegram、Matr
 - WhatsApp：Cloud API media upload 后再引用 media ID 发送消息。
 - Zulip：simple user upload 后发送 Markdown 附件链接。
 - WeChat Official Account：临时素材上传后通过客服消息发送；不支持任意文件。
-- Mail：作为 MIME 附件发送，每条消息最多 10 个；大小由邮件服务器校验。
+- Mail：作为 MIME 附件发送；大小和数量由邮件服务器校验。
 
-其余 provider 当前只能接收 / 下载资源，不能从 `internal://` 直接发送；矩阵逐项记录了缺失的 provider-native 上传环节。多个附件及最终文本是否可混发取决于 provider；provider-neutral 调用方可以按顺序拆成一资源一消息，再发送最终文本。
+其余 provider 当前只能接收 / 下载资源，不能从 `internal://` 直接发送；矩阵逐项记录了缺失的 provider-native 上传环节。一次发送可同时提交 text 和多个 resources，connector 不设附件数量上限。Discord、Mail、Zulip 将它们合并为一条平台消息；其他支持上传的适配器先发送文本，再按顺序发送各附件（Slack 单附件仍可携带说明文字）。顺序发送的结果通过 `message_ids` 返回全部 ID，`message_id` 为最后一条 ID。中途失败时，`failure.delivered_count` 和 `failure.delivered_message_ids` 标明已完成部分，`retryable=false`、`delivery_state=unknown` 表示不能重放整批；失败的那一条仍可能已送达。
 
 Provider 不支持某种 outbound resource 时，应该返回显式错误，而不是静默丢弃内容。
+
+connector 不对资源、webhook 请求体、飞书事件拼装、事件日志记录或平台响应读取设置字节数/条数上限。空资源交由平台校验；文本、安全文件名片段和错误元数据不按长度截断。鉴权、路径/请求头安全、支持的消息格式和原生协议校验仍然有效。内存、文件系统、标准库传输、代理和平台自身的约束仍是外部边界。

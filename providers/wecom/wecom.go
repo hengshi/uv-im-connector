@@ -104,7 +104,7 @@ type GorillaDialer struct {
 func (g GorillaDialer) DialContext(ctx context.Context, urlStr string, requestHeader http.Header) (WSConn, *http.Response, error) {
 	dialer := g.Dialer
 	if dialer == nil {
-		dialer = websocket.DefaultDialer
+		dialer = &websocket.Dialer{Proxy: http.ProxyFromEnvironment}
 	}
 	return dialer.DialContext(ctx, urlStr, requestHeader)
 }
@@ -120,22 +120,13 @@ func New(config Config) (*Provider, error) {
 		config.WSURL = defaultWSURL
 	}
 	if config.Dialer == nil {
-		config.Dialer = GorillaDialer{Dialer: &websocket.Dialer{HandshakeTimeout: 15 * time.Second}}
+		config.Dialer = GorillaDialer{Dialer: &websocket.Dialer{}}
 	}
 	if config.HTTPClient == nil {
-		config.HTTPClient = &http.Client{Timeout: 15 * time.Second}
+		config.HTTPClient = &http.Client{}
 	}
 	if config.HeartbeatInterval <= 0 {
 		config.HeartbeatInterval = 30 * time.Second
-	}
-	if config.ReadDeadline <= 0 {
-		config.ReadDeadline = 2 * time.Minute
-	}
-	if config.WriteTimeout <= 0 {
-		config.WriteTimeout = 10 * time.Second
-	}
-	if config.AckTimeout <= 0 {
-		config.AckTimeout = 8 * time.Second
 	}
 	if config.Now == nil {
 		config.Now = time.Now
@@ -182,6 +173,8 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer conn.Close()
+	stopClose := context.AfterFunc(runCtx, func() { _ = conn.Close() })
+	defer stopClose()
 	var writeMu sync.Mutex
 
 	authReqID := p.reqID(cmdSubscribe)
@@ -323,7 +316,7 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 
 func (p *Provider) readFrames(ctx context.Context, conn WSConn, frames chan<- frame) error {
 	for {
-		if err := conn.SetReadDeadline(p.now().Add(p.config.ReadDeadline)); err != nil {
+		if err := conn.SetReadDeadline(uvim.OptionalDeadline(p.now(), p.config.ReadDeadline)); err != nil {
 			return fmt.Errorf("set read deadline: %w", err)
 		}
 		msgType, raw, err := conn.ReadMessage()
@@ -359,19 +352,16 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	if err := uvim.ValidateOutboundResources(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("wecom send: %w", err)
 	}
-	if len(msg.Resources) > 1 {
-		return uvim.SendResult{}, fmt.Errorf("wecom send: one resource per message is supported")
-	}
 	if hasNonTextElements(msg.Elements) {
 		sendErr := fmt.Errorf("wecom send: rich elements are not supported")
 		return uvim.SendResult{}, uvim.NewProviderSendLogError("wecom send: rich elements are not supported", sendErr)
 	}
-	text := uvim.TrimOutboundText(msg.Text, 20000)
+	text := uvim.NormalizeOutboundText(msg.Text)
 	if text == "" && len(msg.Elements) > 0 {
-		text = uvim.TrimOutboundText(textFromElements(msg.Elements), 20000)
+		text = uvim.NormalizeOutboundText(textFromElements(msg.Elements))
 	}
-	if text != "" && len(msg.Resources) > 0 {
-		return uvim.SendResult{}, fmt.Errorf("wecom send: text and resources must be sent separately")
+	if len(msg.Resources) > 1 || (text != "" && len(msg.Resources) > 0) {
+		return uvim.SendResourceSequence(ctx, msg, p.Send)
 	}
 	if text == "" && len(msg.Resources) == 0 {
 		return uvim.SendResult{}, fmt.Errorf("wecom send: text or resource is required")
@@ -453,9 +443,6 @@ func (p *Provider) uploadResource(ctx context.Context, conn WSConn, writeMu *syn
 	if closeErr != nil {
 		return uploadedMedia{}, uvim.NewProviderSendError("wecom resource close failed", closeErr)
 	}
-	if len(data) == 0 {
-		return uploadedMedia{}, fmt.Errorf("wecom upload: empty resources are not supported")
-	}
 	totalChunks, err := wecomUploadChunkCount(len(data))
 	if err != nil {
 		return uploadedMedia{}, err
@@ -518,8 +505,11 @@ func (p *Provider) uploadResource(ctx context.Context, conn WSConn, writeMu *syn
 }
 
 func wecomUploadChunkCount(size int) (int, error) {
-	if size <= 0 {
-		return 0, fmt.Errorf("wecom upload: empty resources are not supported")
+	if size < 0 {
+		return 0, fmt.Errorf("wecom upload: negative resource size")
+	}
+	if size == 0 {
+		return 0, nil
 	}
 	return 1 + (size-1)/uploadChunkSize, nil
 }
@@ -735,7 +725,7 @@ func elementsFromTextAndResources(text string, refs []uvim.ResourceRef) []uvim.E
 }
 
 func (p *Provider) waitAuth(ctx context.Context, conn WSConn, reqID string) error {
-	deadline := p.now().Add(p.config.AckTimeout)
+	deadline := uvim.OptionalDeadline(p.now(), p.config.AckTimeout)
 	for {
 		if err := conn.SetReadDeadline(deadline); err != nil {
 			return err
@@ -743,7 +733,7 @@ func (p *Provider) waitAuth(ctx context.Context, conn WSConn, reqID string) erro
 		msgType, raw, err := conn.ReadMessage()
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil
+				return ctx.Err()
 			}
 			return fmt.Errorf("auth read: %w", err)
 		}
@@ -774,9 +764,7 @@ func (p *Provider) heartbeat(ctx context.Context, conn WSConn, writeMu *sync.Mut
 			return
 		case <-ticker.C:
 			reqID := p.reqID(cmdHeartbeat)
-			hctx, cancel := context.WithTimeout(ctx, p.config.AckTimeout)
-			err := p.sendWithAck(hctx, conn, writeMu, reqID, frame{Cmd: cmdHeartbeat, Headers: headers{ReqID: reqID}})
-			cancel()
+			err := p.sendWithAck(ctx, conn, writeMu, reqID, frame{Cmd: cmdHeartbeat, Headers: headers{ReqID: reqID}})
 			if err != nil {
 				if ctx.Err() == nil {
 					p.config.Logger.Warn("wecom heartbeat failed", "err", err.Error())
@@ -794,11 +782,21 @@ func (p *Provider) sendWithAck(ctx context.Context, conn WSConn, writeMu *sync.M
 }
 
 func (p *Provider) requestWithAck(ctx context.Context, conn WSConn, writeMu *sync.Mutex, reqID string, out frame) (frame, error) {
-	ctx, cancel := context.WithTimeout(ctx, p.config.AckTimeout)
-	defer cancel()
+	if p.config.AckTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.config.AckTimeout)
+		defer cancel()
+	}
+	if err := ctx.Err(); err != nil {
+		return frame{}, err
+	}
 	ch := p.registerPending(reqID)
 	defer p.unregisterPending(reqID)
-	if err := p.writeFrame(conn, writeMu, out); err != nil {
+	// An unbounded socket write still has to honor the caller's cancellation.
+	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	err := p.writeFrame(conn, writeMu, out)
+	stopClose()
+	if err != nil {
 		return frame{}, err
 	}
 	select {
@@ -824,7 +822,7 @@ func (p *Provider) writeFrame(conn WSConn, writeMu *sync.Mutex, out frame) error
 	}
 	writeMu.Lock()
 	defer writeMu.Unlock()
-	if err := conn.SetWriteDeadline(p.now().Add(p.config.WriteTimeout)); err != nil {
+	if err := conn.SetWriteDeadline(uvim.OptionalDeadline(p.now(), p.config.WriteTimeout)); err != nil {
 		return err
 	}
 	return conn.WriteMessage(websocket.TextMessage, raw)

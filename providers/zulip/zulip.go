@@ -63,93 +63,88 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	if len(msg.Resources) == 0 {
 		return msg, nil
 	}
-	if len(msg.Resources) != 1 {
-		return msg, fmt.Errorf("zulip send: one resource per message is supported")
-	}
-	ref := msg.Resources[0]
-	if config.ResourceStore == nil || !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
-		return msg, fmt.Errorf("zulip upload: internal resource is required")
-	}
-	file, _, err := config.ResourceStore.Open(ref.InternalURL)
-	if err != nil {
-		return msg, uvim.NewProviderSendError("zulip resource is unavailable", err)
-	}
-	data, readErr := io.ReadAll(file)
-	closeErr := file.Close()
-	if readErr != nil {
-		return msg, uvim.NewProviderSendError("zulip resource read failed", readErr)
-	}
-	if closeErr != nil {
-		return msg, uvim.NewProviderSendError("zulip resource close failed", closeErr)
-	}
-	if len(data) == 0 {
-		return msg, fmt.Errorf("zulip upload: empty resources are not supported")
-	}
-	name := uvim.ResourceUploadName(0, ref, ref.MIME)
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="filename"; filename=%q`, name))
-	if strings.TrimSpace(ref.MIME) != "" {
-		header.Set("Content-Type", ref.MIME)
-	}
-	part, err := writer.CreatePart(header)
-	if err != nil {
-		return msg, err
-	}
-	if _, err := part.Write(data); err != nil {
-		return msg, err
-	}
-	if err := writer.Close(); err != nil {
-		return msg, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(config.BaseURL, "/")+"/api/v1/user_uploads", &body)
-	if err != nil {
-		return msg, err
-	}
-	if token := strings.TrimSpace(config.Token); token != "" {
-		req.Header.Set("Authorization", httpchannel.Authorization(token))
-	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	client := config.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return msg, err
-	}
-	defer resp.Body.Close()
-	raw, err := httpchannel.ReadSendResponse(resp, "zulip upload")
-	if err != nil {
-		return msg, err
-	}
-	var decoded struct {
-		Result   string `json:"result"`
-		Message  string `json:"msg"`
-		URL      string `json:"url"`
-		URI      string `json:"uri"`
-		Filename string `json:"filename"`
-	}
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return msg, fmt.Errorf("zulip upload: decode response: %w", err)
-	}
-	if decoded.Result != "success" {
-		businessErr := fmt.Errorf("zulip upload: result=%q msg=%q", decoded.Result, decoded.Message)
-		return msg, uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
-	}
-	uploadURL := firstNonEmpty(decoded.URL, decoded.URI)
-	if uploadURL == "" {
-		missingErr := fmt.Errorf("zulip upload: response missing url")
-		return msg, uvim.NewProviderSendLogError("zulip upload: URL missing", missingErr)
-	}
-	displayName := firstNonEmpty(decoded.Filename, name)
-	displayName = strings.NewReplacer("[", "", "]", "").Replace(displayName)
-	link := "[" + displayName + "](" + uploadURL + ")"
-	if strings.TrimSpace(msg.Text) == "" {
-		msg.Text = link
-	} else {
-		msg.Text = strings.TrimSpace(msg.Text) + "\n\n" + link
+	for index, ref := range msg.Resources {
+		if config.ResourceStore == nil || !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
+			return msg, fmt.Errorf("zulip upload: internal resource is required")
+		}
+		file, _, err := config.ResourceStore.Open(ref.InternalURL)
+		if err != nil {
+			return msg, uvim.NewProviderSendError("zulip resource is unavailable", err)
+		}
+		data, readErr := io.ReadAll(file)
+		closeErr := file.Close()
+		if readErr != nil {
+			return msg, uvim.NewProviderSendError("zulip resource read failed", readErr)
+		}
+		if closeErr != nil {
+			return msg, uvim.NewProviderSendError("zulip resource close failed", closeErr)
+		}
+		name := uvim.ResourceUploadName(index, ref, ref.MIME)
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		header := make(textproto.MIMEHeader)
+		header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="filename"; filename=%q`, name))
+		if strings.TrimSpace(ref.MIME) != "" {
+			header.Set("Content-Type", ref.MIME)
+		}
+		part, err := writer.CreatePart(header)
+		if err != nil {
+			return msg, err
+		}
+		if _, err := part.Write(data); err != nil {
+			return msg, err
+		}
+		if err := writer.Close(); err != nil {
+			return msg, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(config.BaseURL, "/")+"/api/v1/user_uploads", &body)
+		if err != nil {
+			return msg, err
+		}
+		if token := strings.TrimSpace(config.Token); token != "" {
+			req.Header.Set("Authorization", httpchannel.Authorization(token))
+		}
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		client := config.HTTPClient
+		if client == nil {
+			client = http.DefaultClient
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return msg, err
+		}
+		raw, err := httpchannel.ReadSendResponse(resp, "zulip upload")
+		resp.Body.Close()
+		if err != nil {
+			return msg, err
+		}
+		var decoded struct {
+			Result   string `json:"result"`
+			Message  string `json:"msg"`
+			URL      string `json:"url"`
+			URI      string `json:"uri"`
+			Filename string `json:"filename"`
+		}
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return msg, fmt.Errorf("zulip upload: decode response: %w", err)
+		}
+		if decoded.Result != "success" {
+			businessErr := fmt.Errorf("zulip upload: result=%q msg=%q", decoded.Result, decoded.Message)
+			return msg, uvim.NewProviderResponseError(raw, businessErr.Error(), businessErr)
+		}
+		uploadURL := firstNonEmpty(decoded.URL, decoded.URI)
+		if uploadURL == "" {
+			missingErr := fmt.Errorf("zulip upload: response missing url")
+			return msg, uvim.NewProviderSendLogError("zulip upload: URL missing", missingErr)
+		}
+		displayName := firstNonEmpty(decoded.Filename, name)
+		displayName = strings.NewReplacer("[", "", "]", "").Replace(displayName)
+		link := "[" + displayName + "](" + uploadURL + ")"
+		if strings.TrimSpace(msg.Text) == "" {
+			msg.Text = link
+		} else {
+			msg.Text = strings.TrimSpace(msg.Text) + "\n\n" + link
+		}
 	}
 	msg.Resources = nil
 	return msg, nil

@@ -78,7 +78,7 @@ The resource matrix is separate from text/conversation support. "Inbound" means 
 | Discord | Yes | Yes | `file`, `image`, `audio`, `video` | Direct multipart message upload; the provider validates attachment size. |
 | KOOK | Yes | Yes | `file`, `image`, `audio`, `video` | Asset upload followed by an image or attachment-card message. |
 | LINE | Yes | No | — | LINE outbound media requires a provider-reachable HTTPS content URL; uv-im-connector has no public media origin. |
-| Mail | Yes | Yes | `file`, `image`, `audio`, `video` | Sent as MIME attachments, up to 10 per message; the mail server validates size. |
+| Mail | Yes | Yes | `file`, `image`, `audio`, `video` | Sent as MIME attachments; the mail server validates size and count. |
 | Matrix | Yes | Yes | `file`, `image`, `audio`, `video` | Content-repository upload followed by an `mxc://` room message. |
 | OneBot | Yes | No | — | Compatible-endpoint file/CQ upload behavior is not yet normalized. |
 | QQ | Yes | No | — | Same OneBot-style limitation as the QQ adapter. |

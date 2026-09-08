@@ -36,17 +36,18 @@ func New(config Config) (*httpchannel.Provider, error) {
 		baseURL = "https://www.kookapp.cn"
 	}
 	return httpchannel.New(httpchannel.Config{
-		ProviderID:        "kook",
-		ConnectorID:       firstNonEmpty(config.ConnectorID, "kook"),
-		BaseURL:           baseURL,
-		Token:             config.Token,
-		WebhookSecret:     config.WebhookSecret,
-		ResourceStore:     config.ResourceStore,
-		HTTPClient:        config.HTTPClient,
-		Decode:            Decode,
-		PrepareSend:       prepareSend,
-		Send:              Send,
-		ParseSendResponse: ParseSendResponse,
+		ProviderID:             "kook",
+		ConnectorID:            firstNonEmpty(config.ConnectorID, "kook"),
+		BaseURL:                baseURL,
+		Token:                  config.Token,
+		WebhookSecret:          config.WebhookSecret,
+		ResourceStore:          config.ResourceStore,
+		HTTPClient:             config.HTTPClient,
+		Decode:                 Decode,
+		PrepareSend:            prepareSend,
+		SingleResourceMessages: true,
+		Send:                   Send,
+		ParseSendResponse:      ParseSendResponse,
 		Capabilities: uvim.Capabilities{
 			Inbound:         true,
 			Outbound:        true,
@@ -70,12 +71,6 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	if len(msg.Resources) == 0 {
 		return msg, nil
 	}
-	if len(msg.Resources) != 1 {
-		return msg, fmt.Errorf("kook send: one resource per message is supported")
-	}
-	if strings.TrimSpace(msg.Text) != "" || len(msg.Elements) > 0 {
-		return msg, fmt.Errorf("kook send: text, elements, and resources must be sent separately")
-	}
 	ref := msg.Resources[0]
 	if config.ResourceStore == nil || !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
 		return msg, fmt.Errorf("kook upload: internal resource is required")
@@ -91,9 +86,6 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	}
 	if closeErr != nil {
 		return msg, uvim.NewProviderSendError("kook resource close failed", closeErr)
-	}
-	if len(data) == 0 {
-		return msg, fmt.Errorf("kook upload: empty resources are not supported")
 	}
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	var body bytes.Buffer

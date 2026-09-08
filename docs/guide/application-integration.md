@@ -97,7 +97,7 @@ Server 主动发送没有入站 `referrer`，必须显式传 `target`，并先�
 | `delivery_state=unknown` | 不自动重放；重复发送风险高于自动恢复收益 |
 | `retryable=false` | 不重试，直接展示结构化原因和可执行的配置/目标修复入口 |
 
-`category` 的稳定值包括 `invalid-request`、`authentication`、`permission`、`target-unavailable`、`rate-limited`、`provider-unavailable`、`timeout`、`transport`、`provider-rejected`、`payload-too-large` 和 `unknown`。`provider_code` 与 `request_id` 只保留限长的机器值；provider response body、任意错误文本和凭证不会进入 `failure`。旧 client 可以继续只读取外层字段，新 client 应把 `failure` 持久化到自己的 delivery/writeback artifact。
+`category` 的稳定值包括 `invalid-request`、`authentication`、`permission`、`target-unavailable`、`rate-limited`、`provider-unavailable`、`timeout`、`transport`、`provider-rejected`、`payload-too-large` 和 `unknown`。`provider_code` 与 `request_id` 只保留机器代码/标识；provider response body、任意错误文本和凭证不会进入 `failure`。旧 client 可以继续只读取外层字段，新 client 应把 `failure` 持久化到自己的 delivery/writeback artifact。
 
 调用方不应该直接调用 provider-native send API。Provider 特有发送逻辑属于 provider adapter。
 
@@ -125,3 +125,5 @@ Connector 会先发送该 sequence 之后的 backlog，再继续推送新事件�
 - 基于 normalized `failure` 的有界重试、升级和任务生命周期策略。
 
 这些职责属于调用方应用。
+
+一次发送可同时提交 text 和多个 resources，connector 不设附件数量上限。Discord、Mail、Zulip 将它们合并为一条平台消息；其他支持上传的适配器先发送文本，再按顺序发送各附件（Slack 单附件仍可携带说明文字）。顺序发送的结果通过 `message_ids` 返回全部 ID，`message_id` 为最后一条 ID。中途失败时，`failure.delivered_count` 和 `failure.delivered_message_ids` 标明已完成部分，`retryable=false`、`delivery_state=unknown` 表示不能重放整批；失败的那一条仍可能已送达。

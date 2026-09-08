@@ -130,30 +130,29 @@ func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Requ
 		body["message_reference"] = map[string]string{"message_id": msg.Referrer.MessageID}
 	}
 	if len(msg.Resources) > 0 {
-		if len(msg.Resources) != 1 {
-			return httpchannel.Request{}, fmt.Errorf("discord send: one resource per message is supported")
+		var attachments []map[string]any
+		var files []httpchannel.MultipartFile
+		for index, ref := range msg.Resources {
+			if config.ResourceStore == nil || !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
+				return httpchannel.Request{}, fmt.Errorf("discord upload: internal resource is required")
+			}
+			file, _, err := config.ResourceStore.Open(ref.InternalURL)
+			if err != nil {
+				return httpchannel.Request{}, uvim.NewProviderSendError("discord resource is unavailable", err)
+			}
+			data, readErr := io.ReadAll(file)
+			closeErr := file.Close()
+			if readErr != nil {
+				return httpchannel.Request{}, uvim.NewProviderSendError("discord resource read failed", readErr)
+			}
+			if closeErr != nil {
+				return httpchannel.Request{}, uvim.NewProviderSendError("discord resource close failed", closeErr)
+			}
+			name := uvim.ResourceUploadName(index, ref, ref.MIME)
+			attachments = append(attachments, map[string]any{"id": index, "filename": name})
+			files = append(files, httpchannel.MultipartFile{Field: fmt.Sprintf("files[%d]", index), Name: name, MIME: ref.MIME, Data: data})
 		}
-		ref := msg.Resources[0]
-		if config.ResourceStore == nil || !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
-			return httpchannel.Request{}, fmt.Errorf("discord upload: internal resource is required")
-		}
-		file, _, err := config.ResourceStore.Open(ref.InternalURL)
-		if err != nil {
-			return httpchannel.Request{}, uvim.NewProviderSendError("discord resource is unavailable", err)
-		}
-		data, readErr := io.ReadAll(file)
-		closeErr := file.Close()
-		if readErr != nil {
-			return httpchannel.Request{}, uvim.NewProviderSendError("discord resource read failed", readErr)
-		}
-		if closeErr != nil {
-			return httpchannel.Request{}, uvim.NewProviderSendError("discord resource close failed", closeErr)
-		}
-		if len(data) == 0 {
-			return httpchannel.Request{}, fmt.Errorf("discord upload: empty resources are not supported")
-		}
-		name := uvim.ResourceUploadName(0, ref, ref.MIME)
-		body["attachments"] = []map[string]any{{"id": 0, "filename": name}}
+		body["attachments"] = attachments
 		payload, err := json.Marshal(body)
 		if err != nil {
 			return httpchannel.Request{}, err
@@ -163,7 +162,7 @@ func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Requ
 			Header: header,
 			Multipart: &httpchannel.MultipartBody{
 				Fields: map[string]string{"payload_json": string(payload)},
-				Files:  []httpchannel.MultipartFile{{Field: "files[0]", Name: name, MIME: ref.MIME, Data: data}},
+				Files:  files,
 			},
 		}, nil
 	}

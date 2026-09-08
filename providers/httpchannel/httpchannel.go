@@ -62,6 +62,9 @@ type Config struct {
 	PrepareSend       PrepareSendFunc
 	Send              SendFunc
 	ParseSendResponse ParseSendResponseFunc
+	// SingleResourceMessages selects ordered delivery for native APIs that encode
+	// one media item per message; it does not limit resources per Send call.
+	SingleResourceMessages bool
 }
 
 type Provider struct {
@@ -77,7 +80,7 @@ func New(config Config) (*Provider, error) {
 		config.ConnectorID = config.ProviderID
 	}
 	if config.HTTPClient == nil {
-		config.HTTPClient = &http.Client{Timeout: 15 * time.Second}
+		config.HTTPClient = &http.Client{}
 	}
 	if config.Now == nil {
 		config.Now = time.Now
@@ -137,6 +140,9 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	if strings.TrimSpace(msg.Text) == "" && len(msg.Resources) == 0 {
 		return uvim.SendResult{}, fmt.Errorf("%s send: text or resource is required", p.ID())
 	}
+	if p.config.SingleResourceMessages && (len(msg.Resources) > 1 || (len(msg.Resources) > 0 && strings.TrimSpace(msg.Text) != "")) {
+		return uvim.SendResourceSequence(ctx, msg, p.Send)
+	}
 	if p.config.PrepareSend != nil {
 		prepared, err := p.config.PrepareSend(ctx, msg, p.config)
 		if err != nil {
@@ -178,7 +184,7 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		raw, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
 			detail := fmt.Sprintf("%s send: http %d", p.ID(), resp.StatusCode)
 			return uvim.SendResult{}, uvim.NewProviderHTTPError(resp.StatusCode, resp.Header, nil, detail, fmt.Errorf("%s: read response: %w", detail, readErr))
@@ -416,7 +422,7 @@ func readSendResponse(resp *http.Response, operation, publicOperation string, pu
 		publicOperation = operation
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		raw, _ := io.ReadAll(resp.Body)
 		logDetail := fmt.Sprintf("%s: http %d", operation, resp.StatusCode)
 		err := errors.New(logDetail)
 		if publicStatus {
@@ -425,7 +431,7 @@ func readSendResponse(resp *http.Response, operation, publicOperation string, pu
 		}
 		return nil, uvim.NewProviderSendLogError(logDetail, uvim.NewProviderHTTPError(resp.StatusCode, resp.Header, raw, "", err))
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, uvim.NewProviderSendOperationError(operation+": read response", err)
 	}
@@ -434,9 +440,6 @@ func readSendResponse(resp *http.Response, operation, publicOperation string, pu
 
 func sendHTTPError(provider string, status int, raw []byte) error {
 	detail := strings.TrimSpace(string(raw))
-	if len(detail) > 512 {
-		detail = detail[:512]
-	}
 	if detail == "" {
 		return fmt.Errorf("%s send: http %d", provider, status)
 	}
