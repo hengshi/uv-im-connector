@@ -49,12 +49,15 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 	if dir == "" {
 		return ref, fmt.Errorf("resource store dir is required")
 	}
+	id := FirstNonEmpty(ref.ID, NewID("res"))
+	ref.ID = id
+	// Keep the ID in a separate component so it cannot make a legal filename
+	// too long. Hashing the ID also keeps that component independent of its size.
+	dir = filepath.Join(dir, resourceDirectory(id))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return ref, err
 	}
-	id := FirstNonEmpty(ref.ID, NewID("res"))
-	ref.ID = id
-	name := SafeSegment(id) + "-" + ResourceFileName(0, ref, ref.MIME)
+	name := ResourceUploadName(0, ref, ref.MIME)
 	path := filepath.Join(dir, name)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -85,7 +88,18 @@ func (s *ResourceStore) Open(internalURL string) (*os.File, ResourceRef, error) 
 	if id == "" {
 		return nil, ResourceRef{}, fmt.Errorf("invalid internal resource url")
 	}
-	entries, err := os.ReadDir(s.Dir)
+	dir := filepath.Join(s.Dir, resourceDirectory(id))
+	entries, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, ResourceRef{}, err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			return openResourceFile(filepath.Join(dir, entry.Name()), id)
+		}
+	}
+	// Resources saved before the per-ID directory layout remain readable.
+	entries, err = os.ReadDir(s.Dir)
 	if err != nil {
 		return nil, ResourceRef{}, err
 	}
@@ -94,14 +108,26 @@ func (s *ResourceStore) Open(internalURL string) (*os.File, ResourceRef, error) 
 			continue
 		}
 		if strings.HasPrefix(entry.Name(), SafeSegment(id)+"-") {
-			path := filepath.Join(s.Dir, entry.Name())
-			file, err := os.Open(path)
-			if err != nil {
-				return nil, ResourceRef{}, err
-			}
-			info, _ := entry.Info()
-			return file, ResourceRef{ID: id, InternalURL: "internal://" + id, Name: entry.Name(), SizeBytes: info.Size()}, nil
+			return openResourceFile(filepath.Join(s.Dir, entry.Name()), id)
 		}
 	}
 	return nil, ResourceRef{}, os.ErrNotExist
+}
+
+func resourceDirectory(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return "res-" + hex.EncodeToString(sum[:])
+}
+
+func openResourceFile(path, id string) (*os.File, ResourceRef, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, ResourceRef{}, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, ResourceRef{}, err
+	}
+	return file, ResourceRef{ID: id, InternalURL: "internal://" + id, Name: info.Name(), SizeBytes: info.Size()}, nil
 }

@@ -92,7 +92,7 @@ func (g GorillaDialer) DialContext(ctx context.Context, urlStr string, requestHe
 	if dialer == nil {
 		dialer = &websocket.Dialer{Proxy: http.ProxyFromEnvironment}
 	}
-	return dialer.DialContext(ctx, urlStr, requestHeader)
+	return uvim.DialWebSocket(ctx, dialer, urlStr, requestHeader)
 }
 
 func New(config Config) (*Provider, error) {

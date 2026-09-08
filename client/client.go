@@ -89,7 +89,7 @@ func (c *Client) WatchEventsWithConnect(ctx context.Context, after int64, onConn
 	if c.Token != "" {
 		header.Set("Authorization", "Bearer "+c.Token)
 	}
-	conn, _, err := (&websocket.Dialer{Proxy: http.ProxyFromEnvironment}).DialContext(ctx, u, header)
+	conn, _, err := uvim.DialWebSocket(ctx, &websocket.Dialer{Proxy: http.ProxyFromEnvironment}, u, header)
 	if err != nil {
 		return err
 	}
