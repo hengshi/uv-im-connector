@@ -74,7 +74,7 @@ POST /v1/resource.download
 standalone binary 中，WeCom、Lark / Feishu、Discord、KOOK、Telegram、Matrix、Slack、WhatsApp、Zulip、WeChat Official Account 和 Mail 与 HTTP upload endpoint 使用同一个 resource store，并真正声明 `upload_resource=true`。完整逐 provider 清单见 [Provider 能力矩阵](/architecture.html#provider-能力矩阵)。
 
 - WeCom：每条消息接受一个 resource，且不能与 text 混发；WebSocket 上传每片 512 KiB，总大小和分片数量由平台校验。
-- Lark / Feishu：支持的图片不超过 10 MiB 时使用图片 API；较大图片和其他资源走文件上传，由平台校验大小。
+- Lark / Feishu：支持格式的图片始终使用图片 API，不按大小转为文件；其他资源走文件上传，由平台校验大小。
 - Discord：资源随消息直接 multipart 上传，由平台校验大小。
 - KOOK：先上传 asset，再发送图片消息或附件卡片。
 - Telegram：Bot API multipart 上传；不符合原生格式时降级为 document。
