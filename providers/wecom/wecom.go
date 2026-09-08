@@ -205,38 +205,84 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 
 	heartbeatDone := make(chan struct{})
 	go p.heartbeat(runCtx, conn, &writeMu, heartbeatDone)
+	frames := make(chan frame)
+	events := make(chan uvim.Event)
+	readErr := make(chan error, 1)
+	emitErr := make(chan error, 1)
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() {
+		defer workers.Done()
+		readErr <- p.readFrames(runCtx, conn, frames)
+	}()
+	go func(events <-chan uvim.Event) {
+		defer workers.Done()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case event, ok := <-events:
+				if !ok {
+					emitErr <- nil
+					return
+				}
+				if runCtx.Err() != nil {
+					return
+				}
+				if err := sink.Emit(runCtx, event); err != nil {
+					emitErr <- err
+					return
+				}
+			}
+		}
+	}(events)
 	defer func() {
 		cancel()
+		_ = conn.Close()
+		workers.Wait()
 		<-heartbeatDone
 		p.failAllPending("connection closed")
 	}()
 
+	// Queue only event metadata and emit serially to preserve arrival order.
+	// Waiting on the sink (including attachment downloads) must never stop ACK
+	// dispatch, even when more callbacks arrive while an event is being emitted.
+	var queued []uvim.Event
 	for {
-		if err := conn.SetReadDeadline(p.now().Add(p.config.ReadDeadline)); err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			p.setState("error")
-			return fmt.Errorf("set read deadline: %w", err)
+		if readErr == nil && len(queued) == 0 && events != nil {
+			// A normal peer close must not discard callbacks already received.
+			close(events)
+			events = nil
 		}
-		msgType, raw, err := conn.ReadMessage()
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-				return nil
-			}
-			p.setState("error")
-			return fmt.Errorf("read message: %w", err)
-		}
-		if msgType != websocket.TextMessage && msgType != websocket.BinaryMessage {
-			continue
+		var ready chan uvim.Event
+		var next uvim.Event
+		if len(queued) > 0 {
+			ready, next = events, queued[0]
 		}
 		var inbound frame
-		if err := json.Unmarshal(raw, &inbound); err != nil {
-			p.config.Logger.Warn("wecom frame decode failed", "err", err.Error(), "raw_len", len(raw))
+		select {
+		case <-runCtx.Done():
+			return nil
+		case err := <-readErr:
+			if ctx.Err() != nil {
+				return nil
+			}
+			if err == nil {
+				readErr, frames = nil, nil
+				continue
+			}
+			p.setState("error")
+			return err
+		case err := <-emitErr:
+			if ctx.Err() != nil || err == nil {
+				return nil
+			}
+			return fmt.Errorf("emit event: %w", err)
+		case ready <- next:
+			queued[0] = uvim.Event{}
+			queued = queued[1:]
 			continue
+		case inbound = <-frames:
 		}
 		if inbound.Cmd == "" {
 			p.resolvePending(inbound.Headers.ReqID, inbound)
@@ -257,8 +303,34 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 			continue
 		}
 		p.setState("event")
-		if err := sink.Emit(ctx, event); err != nil {
-			return fmt.Errorf("emit event: %w", err)
+		queued = append(queued, event)
+	}
+}
+
+func (p *Provider) readFrames(ctx context.Context, conn WSConn, frames chan<- frame) error {
+	for {
+		if err := conn.SetReadDeadline(p.now().Add(p.config.ReadDeadline)); err != nil {
+			return fmt.Errorf("set read deadline: %w", err)
+		}
+		msgType, raw, err := conn.ReadMessage()
+		if err != nil {
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				return nil
+			}
+			return fmt.Errorf("read message: %w", err)
+		}
+		if msgType != websocket.TextMessage && msgType != websocket.BinaryMessage {
+			continue
+		}
+		var inbound frame
+		if err := json.Unmarshal(raw, &inbound); err != nil {
+			p.config.Logger.Warn("wecom frame decode failed", "err", err.Error(), "raw_len", len(raw))
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case frames <- inbound:
 		}
 	}
 }
