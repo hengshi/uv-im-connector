@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,10 +25,17 @@ import (
 )
 
 func TestUploadValidLongFilename(t *testing.T) {
-	for _, length := range []int{234, 255} {
-		name := strings.Repeat("a", length-4) + ".txt"
-		t.Run(strconv.Itoa(length), func(t *testing.T) {
-			data := []byte("hello")
+	for _, tc := range []struct {
+		label, name, mime, content, contentType string
+	}{
+		{"234-txt", strings.Repeat("a", 230) + ".txt", "", "hello", "text/plain"},
+		{"255-txt", strings.Repeat("a", 251) + ".txt", "", "hello", "text/plain"},
+		{"255-noext-plain", strings.Repeat("a", 255), "text/plain", "hello", "text/plain"},
+		{"short-noext-json", "document", "application/json", `{}`, "application/json"},
+		{"255-noext-json", strings.Repeat("a", 255), "application/json", `{}`, "application/json"},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			name, data := tc.name, []byte(tc.content)
 			// Establish that the original name is legal on this filesystem.
 			if err := os.WriteFile(filepath.Join(t.TempDir(), name), data, 0o600); err != nil {
 				t.Fatal(err)
@@ -39,7 +45,7 @@ func TestUploadValidLongFilename(t *testing.T) {
 			api := httptest.NewServer(hub.Handler())
 			defer api.Close()
 			c := client.New(api.URL)
-			ref, err := c.Upload(context.Background(), uvim.ResourceRef{Name: name}, data)
+			ref, err := c.Upload(context.Background(), uvim.ResourceRef{Name: name, MIME: tc.mime}, data)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -54,7 +60,7 @@ func TestUploadValidLongFilename(t *testing.T) {
 			}
 			defer resp.Body.Close()
 			got, err := io.ReadAll(resp.Body)
-			if err != nil || !bytes.Equal(got, data) || ref.Name != name || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/plain") {
+			if err != nil || !bytes.Equal(got, data) || ref.Name != name || ref.MIME != tc.mime || !strings.HasPrefix(resp.Header.Get("Content-Type"), tc.contentType) {
 				t.Fatalf("round trip: name=%q body=%q type=%q err=%v", ref.Name, got, resp.Header.Get("Content-Type"), err)
 			}
 		})
