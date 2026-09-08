@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -203,18 +204,20 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 	defer p.clearActive(conn)
 	p.setState("connected")
 
+	transportCtx, stopTransport := context.WithCancel(runCtx)
+	defer stopTransport()
 	heartbeatDone := make(chan struct{})
-	go p.heartbeat(runCtx, conn, &writeMu, heartbeatDone)
+	go p.heartbeat(transportCtx, conn, &writeMu, heartbeatDone)
 	frames := make(chan frame)
 	events := make(chan uvim.Event)
 	readErr := make(chan error, 1)
 	emitErr := make(chan error, 1)
 	var workers sync.WaitGroup
 	workers.Add(2)
-	go func() {
+	go func(frames chan<- frame, readErr chan<- error) {
 		defer workers.Done()
-		readErr <- p.readFrames(runCtx, conn, frames)
-	}()
+		readErr <- p.readFrames(transportCtx, conn, frames)
+	}(frames, readErr)
 	go func(events <-chan uvim.Event) {
 		defer workers.Done()
 		for {
@@ -248,9 +251,18 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 	// Waiting on the sink (including attachment downloads) must never stop ACK
 	// dispatch, even when more callbacks arrive while an event is being emitted.
 	var queued []uvim.Event
+	var connectionErr error
+	finishReading := func(err error) {
+		connectionErr = err
+		readErr, frames = nil, nil
+		stopTransport()
+		_ = conn.Close()
+		p.failAllPending("connection closed")
+	}
 	for {
 		if readErr == nil && len(queued) == 0 && events != nil {
-			// A normal peer close must not discard callbacks already received.
+			// Transport loss does not cancel independent downloads or discard
+			// received callbacks. Drain them before returning the connection error.
 			close(events)
 			events = nil
 		}
@@ -267,17 +279,19 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			if err == nil {
-				readErr, frames = nil, nil
-				continue
+			if err != nil {
+				p.setState("error")
 			}
-			p.setState("error")
-			return err
+			finishReading(err)
+			continue
 		case err := <-emitErr:
-			if ctx.Err() != nil || err == nil {
+			if ctx.Err() != nil {
 				return nil
 			}
-			return fmt.Errorf("emit event: %w", err)
+			if err != nil {
+				return errors.Join(connectionErr, fmt.Errorf("emit event: %w", err))
+			}
+			return connectionErr
 		case ready <- next:
 			queued[0] = uvim.Event{}
 			queued = queued[1:]
@@ -291,7 +305,7 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 		if inbound.Cmd == cmdEventCallback {
 			if eventType := uvim.StringValue(uvim.MapStringAny(inbound.Body["event"])["eventtype"]); eventType == "disconnected_event" {
 				p.setState("disconnected")
-				return fmt.Errorf("wecom disconnected_event: another connector is active")
+				finishReading(fmt.Errorf("wecom disconnected_event: another connector is active"))
 			}
 			continue
 		}
@@ -764,7 +778,9 @@ func (p *Provider) heartbeat(ctx context.Context, conn WSConn, writeMu *sync.Mut
 			err := p.sendWithAck(hctx, conn, writeMu, reqID, frame{Cmd: cmdHeartbeat, Headers: headers{ReqID: reqID}})
 			cancel()
 			if err != nil {
-				p.config.Logger.Warn("wecom heartbeat failed", "err", err.Error())
+				if ctx.Err() == nil {
+					p.config.Logger.Warn("wecom heartbeat failed", "err", err.Error())
+				}
 				_ = conn.Close()
 				return
 			}

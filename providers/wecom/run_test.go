@@ -154,24 +154,66 @@ waiting:
 }
 
 func TestRunPropagatesSinkError(t *testing.T) {
-	wsURL, _, _ := newRunTestServer(t, []frame{runTestMessage(0)}, true)
-	provider, err := New(Config{BotID: "bot", Secret: "secret", WSURL: wsURL})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := errors.New("event persistence failed")
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-	defer cancel()
-	err = provider.Run(ctx, uvim.EventSinkFunc(func(context.Context, uvim.Event) error { return want }))
-	if !errors.Is(err, want) || !strings.Contains(err.Error(), "emit event") {
-		t.Fatalf("Run error = %v, want sink error", err)
+	for _, disconnected := range []bool{false, true} {
+		t.Run(fmt.Sprintf("disconnected=%t", disconnected), func(t *testing.T) {
+			wsURL, _, peers := newRunTestServer(t, []frame{runTestMessage(0)}, true)
+			provider, err := New(Config{BotID: "bot", Secret: "secret", WSURL: wsURL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := errors.New("event persistence failed")
+			started, release := make(chan struct{}), make(chan struct{})
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			runDone := make(chan error, 1)
+			go func() {
+				runDone <- provider.Run(ctx, uvim.EventSinkFunc(func(ctx context.Context, _ uvim.Event) error {
+					close(started)
+					select {
+					case <-release:
+						return want
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}))
+			}()
+			select {
+			case <-started:
+			case <-ctx.Done():
+				t.Fatal("sink did not start")
+			}
+			if disconnected {
+				select {
+				case peer := <-peers:
+					_ = peer.Close()
+				case <-ctx.Done():
+					t.Fatal("callback was not sent")
+				}
+				select {
+				case err := <-runDone:
+					t.Fatalf("Run returned before sink finished: %v", err)
+				case <-time.After(100 * time.Millisecond):
+				}
+			}
+			close(release)
+			err = <-runDone
+			if !errors.Is(err, want) || !strings.Contains(err.Error(), "emit event") {
+				t.Fatalf("Run error = %v, want sink error", err)
+			}
+			if disconnected {
+				var closeErr *websocket.CloseError
+				if !errors.As(err, &closeErr) || closeErr.Code != websocket.CloseAbnormalClosure {
+					t.Fatalf("Run lost connection error while reporting sink failure: %v", err)
+				}
+			}
+		})
 	}
 }
 
 func TestRunCancelsInFlightSink(t *testing.T) {
-	for _, trigger := range []string{"caller cancellation", "missing heartbeat ACK"} {
+	for _, trigger := range []string{"caller cancellation", "caller cancellation after TCP close"} {
 		t.Run(trigger, func(t *testing.T) {
-			wsURL, _, _ := newRunTestServer(t, []frame{runTestMessage(0), runTestMessage(1)}, trigger != "missing heartbeat ACK")
+			wsURL, _, peers := newRunTestServer(t, []frame{runTestMessage(0), runTestMessage(1)}, true)
 			provider, err := New(Config{
 				BotID: "bot", Secret: "secret", WSURL: wsURL,
 				HeartbeatInterval: 25 * time.Millisecond, AckTimeout: 200 * time.Millisecond,
@@ -197,12 +239,23 @@ func TestRunCancelsInFlightSink(t *testing.T) {
 			case <-time.After(3 * time.Second):
 				t.Fatal("sink did not start")
 			}
-			if trigger == "caller cancellation" {
-				cancel()
+			if trigger == "caller cancellation after TCP close" {
+				select {
+				case peer := <-peers:
+					_ = peer.Close()
+				case <-time.After(3 * time.Second):
+					t.Fatal("callbacks were not sent")
+				}
+				select {
+				case err := <-runDone:
+					t.Fatalf("connection loss canceled the sink: %v", err)
+				case <-time.After(100 * time.Millisecond):
+				}
 			}
+			cancel()
 			select {
 			case err := <-runDone:
-				if (trigger == "caller cancellation") != (err == nil) {
+				if err != nil {
 					t.Fatalf("Run error = %v for %s", err, trigger)
 				}
 			case <-time.After(3 * time.Second):
@@ -281,6 +334,131 @@ func TestRunDrainsEventsOnNormalClose(t *testing.T) {
 			}
 		default:
 			t.Fatalf("event %d was lost on normal close", i)
+		}
+	}
+}
+
+func TestRunPreservesReceivedEventsOnDisconnect(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	plain := []byte("attachment survives a lost WebSocket")
+	padding := 32 - len(plain)%32
+	encrypted := append(bytes.Clone(plain), bytes.Repeat([]byte{byte(padding)}, padding)...)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher.NewCBCEncrypter(block, key[:aes.BlockSize]).CryptBlocks(encrypted, encrypted)
+	for _, trigger := range []string{"TCP close", "heartbeat timeout", "disconnected event", "read timeout"} {
+		for _, quoted := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/quoted=%t", trigger, quoted), func(t *testing.T) {
+				started := make(chan struct{})
+				media := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					close(started)
+					select {
+					case <-time.After(300 * time.Millisecond):
+						_, _ = w.Write(encrypted)
+					case <-r.Context().Done():
+					}
+				}))
+				defer media.Close()
+				callbacks := []frame{runTestMessage(0), runTestMessage(1), runTestMessage(2)}
+				attachment := map[string]any{
+					"msgtype": "file", "file": map[string]any{
+						"url": media.URL, "aeskey": base64.StdEncoding.EncodeToString(key), "file_name": "report.bin",
+					},
+				}
+				if quoted {
+					callbacks[0].Body["quote"] = attachment
+				} else {
+					callbacks[0].Body["msgtype"] = "file"
+					callbacks[0].Body["file"] = attachment["file"]
+					delete(callbacks[0].Body, "text")
+				}
+				wsURL, _, peers := newRunTestServer(t, callbacks, trigger != "heartbeat timeout")
+				store := &uvim.ResourceStore{Dir: t.TempDir()}
+				config := Config{BotID: "bot", Secret: "secret", WSURL: wsURL, ResourceStore: store}
+				if trigger == "heartbeat timeout" {
+					config.HeartbeatInterval, config.AckTimeout = 25*time.Millisecond, 100*time.Millisecond
+				}
+				if trigger == "read timeout" {
+					config.ReadDeadline = 100 * time.Millisecond
+				}
+				provider, err := New(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				log, err := uvim.NewEventLog(t.TempDir() + "/events.jsonl")
+				if err != nil {
+					t.Fatal(err)
+				}
+				hub := server.NewHub(uvim.NewProviderRegistry(provider), log, store)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				runDone := make(chan error, 1)
+				go func() { runDone <- provider.Run(ctx, hub) }()
+				select {
+				case <-started:
+				case <-time.After(3 * time.Second):
+					t.Fatal("attachment download did not start")
+				}
+				var peer *websocket.Conn
+				select {
+				case peer = <-peers:
+				case <-time.After(3 * time.Second):
+					t.Fatal("callbacks were not sent")
+				}
+				switch trigger {
+				case "TCP close":
+					if err := peer.Close(); err != nil {
+						t.Fatal(err)
+					}
+				case "disconnected event":
+					if err := peer.WriteJSON(frame{Cmd: cmdEventCallback, Body: map[string]any{
+						"event": map[string]any{"eventtype": "disconnected_event"},
+					}}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				select {
+				case err := <-runDone:
+					if err == nil || ctx.Err() != nil {
+						t.Fatalf("connection error lost or caller canceled: Run=%v caller=%v", err, ctx.Err())
+					}
+					if trigger == "disconnected event" && !strings.Contains(err.Error(), "disconnected_event") {
+						t.Fatalf("disconnect cause lost: %v", err)
+					}
+					if trigger == "TCP close" {
+						var closeErr *websocket.CloseError
+						if !errors.As(err, &closeErr) || closeErr.Code != websocket.CloseAbnormalClosure {
+							t.Fatalf("TCP close cause lost: %v", err)
+						}
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("Run did not finish after disconnect")
+				}
+				events, err := log.ReadAfter(ctx, 0)
+				if err != nil || len(events) != 3 {
+					t.Fatalf("persisted events=%+v err=%v; received callbacks were lost", events, err)
+				}
+				for i, event := range events {
+					if event.Message.ID != fmt.Sprintf("message-%d", i) {
+						t.Fatalf("event %d = %s; order changed", i, event.Message.ID)
+					}
+				}
+				refs := events[0].Message.Resources
+				if len(refs) != 1 || refs[0].InternalURL == "" || refs[0].Error != "" || refs[0].URL != "" || refs[0].Secret != "" {
+					t.Fatalf("attachment canceled by connection loss: %+v", refs)
+				}
+				file, _, err := store.Open(refs[0].InternalURL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer file.Close()
+				got, err := io.ReadAll(file)
+				if err != nil || !bytes.Equal(got, plain) {
+					t.Fatalf("attachment=%q err=%v", got, err)
+				}
+			})
 		}
 	}
 }
