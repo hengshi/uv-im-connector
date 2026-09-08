@@ -18,11 +18,6 @@ import (
 	"github.com/hengshi/uv-im-connector/providers/httpchannel"
 )
 
-const (
-	maxPhotoBytes = 10 * 1024 * 1024
-	maxMediaBytes = 50 * 1024 * 1024
-)
-
 type Config struct {
 	ConnectorID   string
 	BaseURL       string
@@ -172,7 +167,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	if err != nil {
 		return uvim.SendResult{}, uvim.NewProviderSendError("telegram resource is unavailable", err)
 	}
-	data, readErr := io.ReadAll(io.LimitReader(file, maxMediaBytes+1))
+	data, readErr := io.ReadAll(file)
 	closeErr := file.Close()
 	if readErr != nil {
 		return uvim.SendResult{}, uvim.NewProviderSendError("telegram resource read failed", readErr)
@@ -183,10 +178,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	if len(data) == 0 {
 		return uvim.SendResult{}, fmt.Errorf("telegram upload: empty resources are not supported")
 	}
-	method, field, limit := telegramMediaRoute(ref)
-	if len(data) > limit {
-		return uvim.SendResult{}, fmt.Errorf("telegram upload: resource exceeds %d bytes", limit)
-	}
+	method, field := telegramMediaRoute(ref)
 	target := msg.ResolvedTarget()
 	if target.ID == "" {
 		return uvim.SendResult{}, fmt.Errorf("telegram send: target chat id is required")
@@ -240,23 +232,23 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: messageID, Time: time.Now().UTC()}, nil
 }
 
-func telegramMediaRoute(ref uvim.ResourceRef) (method, field string, limit int) {
+func telegramMediaRoute(ref uvim.ResourceRef) (method, field string) {
 	mimeType := strings.ToLower(strings.TrimSpace(ref.MIME))
 	switch strings.ToLower(strings.TrimSpace(ref.Kind)) {
 	case uvim.ElementImage:
 		if mimeType == "image/jpeg" || mimeType == "image/png" || mimeType == "image/webp" {
-			return "sendPhoto", "photo", maxPhotoBytes
+			return "sendPhoto", "photo"
 		}
 	case uvim.ElementAudio:
 		if mimeType == "audio/mpeg" || mimeType == "audio/mp4" || mimeType == "audio/x-m4a" {
-			return "sendAudio", "audio", maxMediaBytes
+			return "sendAudio", "audio"
 		}
 	case uvim.ElementVideo:
 		if mimeType == "video/mp4" {
-			return "sendVideo", "video", maxMediaBytes
+			return "sendVideo", "video"
 		}
 	}
-	return "sendDocument", "document", maxMediaBytes
+	return "sendDocument", "document"
 }
 
 func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {

@@ -179,22 +179,22 @@ The resource matrix is separate from text/conversation support. "Inbound" means 
 
 | Provider | Inbound resources | Outbound internal resources | Accepted outbound kinds | Adapter/platform limit |
 | --- | --- | --- | --- | --- |
-| WeCom | Yes | Yes | `file`, `image`, `audio`, `video` | AI Bot WebSocket upload; 512 KiB × 100 chunks, about 50 MiB per resource. |
-| Lark / Feishu | Yes | Yes | `file`, `image`, `audio`, `video` | Images use the image API up to 10 MiB; other resources are delivered as file attachments up to 30 MiB. |
+| WeCom | Yes | Yes | `file`, `image`, `audio`, `video` | AI Bot WebSocket upload in 512 KiB chunks; the provider validates total size and chunk count. |
+| Lark / Feishu | Yes | Yes | `file`, `image`, `audio`, `video` | Supported images up to 10 MiB use the image API; larger images and other resources use file upload. The provider validates size. |
 | DingTalk | Yes | No | — | Current robot/session-webhook adapter has no internal-byte upload path. |
-| Discord | Yes | Yes | `file`, `image`, `audio`, `video` | Direct multipart message upload; default platform limit is 10 MiB per attachment. |
-| KOOK | Yes | Yes | `file`, `image`, `audio`, `video` | Asset upload followed by an image or attachment-card message; adapter cap is 100 MiB and platform policy may be lower. |
+| Discord | Yes | Yes | `file`, `image`, `audio`, `video` | Direct multipart message upload; the provider validates attachment size. |
+| KOOK | Yes | Yes | `file`, `image`, `audio`, `video` | Asset upload followed by an image or attachment-card message. |
 | LINE | Yes | No | — | LINE outbound media requires a provider-reachable HTTPS content URL; uv-im-connector has no public media origin. |
-| Mail | Yes | Yes | `file`, `image`, `audio`, `video` | Sent as MIME attachments; adapter total is 25 MiB and 10 attachments per message. |
-| Matrix | Yes | Yes | `file`, `image`, `audio`, `video` | Content-repository upload followed by an `mxc://` room message; adapter cap is 100 MiB and the homeserver may enforce a lower limit. |
+| Mail | Yes | Yes | `file`, `image`, `audio`, `video` | Sent as MIME attachments, up to 10 per message; the mail server validates size. |
+| Matrix | Yes | Yes | `file`, `image`, `audio`, `video` | Content-repository upload followed by an `mxc://` room message. |
 | OneBot | Yes | No | — | Compatible-endpoint file/CQ upload behavior is not yet normalized. |
 | QQ | Yes | No | — | Same OneBot-style limitation as the QQ adapter. |
 | QQ Guild | Yes | No | — | Official rich-media upload handshake is not implemented. |
-| Slack | Yes | Yes | `file`, `image`, `audio`, `video` | External upload URL + raw upload + completion flow; adapter cap is 100 MiB and workspace policy may be lower. |
-| Telegram | Yes | Yes | `file`, `image`, `audio`, `video` | Multipart Bot API upload; photos up to 10 MiB, other files up to 50 MiB; unsupported native formats fall back to documents. |
-| WeChat Official Account | Yes | Yes (media only) | `image`, `audio`, `video` | Temporary-media upload plus customer-service send; no arbitrary file message. Images/video 10 MiB, voice 2 MiB. |
-| WhatsApp | Yes | Yes | `file`, `image`, `audio`, `video` | Cloud API media upload then message send; images 5 MiB, audio/video 16 MiB, documents 100 MiB. |
-| Zulip | Yes | Yes | `file`, `image`, `audio`, `video` | Simple user upload followed by a Markdown attachment link; adapter cap is 25 MiB and server policy may be lower. |
+| Slack | Yes | Yes | `file`, `image`, `audio`, `video` | External upload URL, raw upload, then completion and channel share. |
+| Telegram | Yes | Yes | `file`, `image`, `audio`, `video` | Multipart Bot API upload; unsupported native formats fall back to documents. |
+| WeChat Official Account | Yes | Yes (media only) | `image`, `audio`, `video` | Temporary-media upload plus customer-service send; no arbitrary file message. |
+| WhatsApp | Yes | Yes | `file`, `image`, `audio`, `video` | Cloud API media upload followed by a message referencing the media ID. |
+| Zulip | Yes | Yes | `file`, `image`, `audio`, `video` | Simple user upload followed by a Markdown attachment link. |
 
 Provider-specific settings are documented in [docs/configuration.md](docs/configuration.md). The important naming rule is:
 
@@ -358,6 +358,10 @@ Provider adapters map the normalized outbound request into the provider-native A
 When a send fails, `POST /v1/message.create` keeps the compatible HTTP `502` and `error: "provider_send_failed"` fields and returns a normalized `failure` with `category`, `retryable`, `delivery_state`, and optional upstream `http_status`, `provider_code`, `retry_after_seconds`, and `request_id`. The outer 502 is the connector API result, not proof that the provider returned 502. Callers must drive retry and lifecycle policy from `failure`, never by parsing `detail` or logs. Raw provider response bodies and arbitrary transport text are not exposed because they can contain credentials.
 
 ## Resources
+
+The connector imposes no additional attachment size limits on storage, downloads, HTTP uploads, or outbound sends. Size policy is enforced by the IM provider or mail server.
+
+Group and direct attachments share the same download path. WeCom includes quoted attachments, and Lark includes images and videos in rich-text posts; see [Resources](docs/guide/resources.md).
 
 Inbound files, images, audio, and video are normalized as sanitized `ResourceRef` values:
 

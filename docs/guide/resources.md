@@ -2,6 +2,10 @@
 
 入站文件、图片、音频和视频会被标准化为 `ResourceRef`。
 
+Connector 不对附件大小设置额外上限：入站下载、本地存储、HTTP 上传和出站发送均不按字节数拦截，大小限制由 IM 平台或邮件服务器执行。
+
+群聊和私聊使用相同的附件下载链路，资源会在事件持久化前下载。企业微信会提取消息本身以及 `quote` 中的文件、图片和视频，支持引用群文件后 @ 机器人；飞书会提取图文消息中的图片和视频。企业微信 AI Bot 回调标记为 `addressed=true`，飞书群消息仍按是否 @ 机器人设置该字段。Connector 只能处理平台实际投递的消息；文件内容识别由调用方应用负责。
+
 ## 公开形态
 
 ```json
@@ -69,17 +73,17 @@ POST /v1/resource.download
 
 standalone binary 中，WeCom、Lark / Feishu、Discord、KOOK、Telegram、Matrix、Slack、WhatsApp、Zulip、WeChat Official Account 和 Mail 与 HTTP upload endpoint 使用同一个 resource store，并真正声明 `upload_resource=true`。完整逐 provider 清单见 [Provider 能力矩阵](/architecture.html#provider-能力矩阵)。
 
-- WeCom：每条 outbound message 只接受一个 resource，且 resource 不能与 text 混发；单资源最多 100 个 512 KiB 原始分片，约 50 MiB。
-- Lark / Feishu：原生图片上限 10 MiB；其他 kind 作为文件附件交付，上限 30 MiB。
-- Discord：资源随消息直接 multipart 上传，默认单附件上限 10 MiB。
-- KOOK：先上传 asset，再发送图片消息或附件卡片；adapter 上限 100 MiB，平台策略可能更低。
-- Telegram：原生图片上限 10 MiB，其他文件上限 50 MiB；不符合原生 audio/video/image 格式的内容降级为 document。
-- Matrix：先上传 content repository，再用 `mxc://` URI 发送 room message；adapter 上限 100 MiB，homeserver 可能配置更低上限。
-- Slack：先申请 external upload URL、上传原始字节，再 complete 并分享到 channel；adapter 上限 100 MiB，workspace 策略可能更低。
-- WhatsApp：先上传 Cloud API media，再引用 media ID 发消息；图片 5 MiB，音频 / 视频 16 MiB，文档 100 MiB。
-- Zulip：simple user upload 后发送 Markdown 附件链接；adapter 上限 25 MiB，server 策略可能更低。
-- WeChat Official Account：仅支持图片、语音和视频临时素材，不支持任意文件；图片 / 视频 10 MiB，语音 2 MiB。
-- Mail：支持同一封邮件带 text 和多个 MIME 附件，最多 10 个、合计 25 MiB。
+- WeCom：每条消息接受一个 resource，且不能与 text 混发；WebSocket 上传每片 512 KiB，总大小和分片数量由平台校验。
+- Lark / Feishu：支持的图片不超过 10 MiB 时使用图片 API；较大图片和其他资源走文件上传，由平台校验大小。
+- Discord：资源随消息直接 multipart 上传，由平台校验大小。
+- KOOK：先上传 asset，再发送图片消息或附件卡片。
+- Telegram：Bot API multipart 上传；不符合原生格式时降级为 document。
+- Matrix：先上传 content repository，再以 `mxc://` room message 发送。
+- Slack：申请 external upload URL、上传原始字节，再 complete 并分享到 channel。
+- WhatsApp：Cloud API media upload 后再引用 media ID 发送消息。
+- Zulip：simple user upload 后发送 Markdown 附件链接。
+- WeChat Official Account：临时素材上传后通过客服消息发送；不支持任意文件。
+- Mail：作为 MIME 附件发送，每条消息最多 10 个；大小由邮件服务器校验。
 
 其余 provider 当前只能接收 / 下载资源，不能从 `internal://` 直接发送；矩阵逐项记录了缺失的 provider-native 上传环节。多个附件及最终文本是否可混发取决于 provider；provider-neutral 调用方可以按顺序拆成一资源一消息，再发送最终文本。
 

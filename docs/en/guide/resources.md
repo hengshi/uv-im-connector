@@ -2,6 +2,10 @@
 
 Inbound files, images, audio, and video are normalized into `ResourceRef` values.
 
+The connector imposes no additional attachment size limit on inbound downloads, local storage, HTTP uploads, or outbound delivery. The IM provider or mail server enforces its size policy.
+
+Group and direct attachments use the same download path, before event persistence. WeCom extracts files, images, and videos from the message and its `quote`, including a group-file quote sent with an @mention of the bot. Lark extracts images and videos from rich-text posts. WeCom AI Bot callbacks have `addressed=true`; Lark group messages still derive that flag from bot mentions. The connector can only process events delivered by the platform; caller applications perform content recognition.
+
 ## Public Shape
 
 ```json
@@ -69,17 +73,17 @@ Before sending, inspect the exact provider and connector in `GET /v1/meta`, requ
 
 In the standalone binary, WeCom, Lark / Feishu, Discord, KOOK, Telegram, Matrix, Slack, WhatsApp, Zulip, WeChat Official Account, and Mail share the HTTP upload resource store and declare `upload_resource=true`. See the [provider capability matrix](/en/architecture.html#provider-capability-matrix) for every provider.
 
-- WeCom: one resource per outbound message with no mixed text; up to 100 raw 512 KiB chunks, about 50 MiB.
-- Lark / Feishu: native images up to 10 MiB; other kinds are delivered as file attachments up to 30 MiB.
-- Discord: direct multipart upload with a default 10 MiB attachment limit.
-- KOOK: asset upload followed by an image or attachment-card message; adapter cap 100 MiB, with a possibly lower platform policy.
-- Telegram: native photos up to 10 MiB and other files up to 50 MiB; unsupported native media formats fall back to documents.
-- Matrix: content-repository upload followed by an `mxc://` room message; adapter cap 100 MiB, with a possibly lower homeserver limit.
-- Slack: external upload URL, raw byte upload, then completion and channel share; adapter cap 100 MiB, with a possibly lower workspace policy.
-- WhatsApp: Cloud API media upload followed by a message referencing the media ID; images 5 MiB, audio/video 16 MiB, documents 100 MiB.
-- Zulip: simple user upload followed by a Markdown attachment link; adapter cap 25 MiB, with a possibly lower server policy.
-- WeChat Official Account: temporary image, voice, and video media only, with no arbitrary file message; images/video 10 MiB, voice 2 MiB.
-- Mail: text and up to 10 MIME attachments in one message, with a 25 MiB raw attachment total.
+- WeCom: one resource per message with no mixed text; WebSocket upload uses 512 KiB chunks, and the provider validates total size and chunk count.
+- Lark / Feishu: Supported images up to 10 MiB use the image API; larger images and other resources use file upload. The provider validates size.
+- Discord: Direct multipart message upload; the provider validates attachment size.
+- KOOK: Asset upload followed by an image or attachment-card message.
+- Telegram: Multipart Bot API upload; unsupported native formats fall back to documents.
+- Matrix: Content-repository upload followed by an `mxc://` room message.
+- Slack: External upload URL, raw upload, then completion and channel share.
+- WhatsApp: Cloud API media upload followed by a message referencing the media ID.
+- Zulip: Simple user upload followed by a Markdown attachment link.
+- WeChat Official Account: Temporary-media upload plus customer-service send; no arbitrary file message.
+- Mail: Sent as MIME attachments, up to 10 per message; the mail server validates size.
 
 The remaining providers can currently receive and download resources but cannot send bytes from `internal://`; the matrix names the missing provider-native upload flow for each one. Whether text and multiple attachments can be combined is provider-specific. A provider-neutral caller can send one resource per message in order, followed by final text.
 

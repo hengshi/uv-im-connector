@@ -32,7 +32,6 @@ const (
 	cmdUploadFinish  = "aibot_upload_media_finish"
 	mediaVoice       = "voice"
 	uploadChunkSize  = 512 * 1024
-	uploadMaxChunks  = 100
 )
 
 type Config struct {
@@ -360,7 +359,7 @@ func (p *Provider) uploadResource(ctx context.Context, conn WSConn, writeMu *syn
 	if err != nil {
 		return uploadedMedia{}, uvim.NewProviderSendError("wecom resource is unavailable", err)
 	}
-	data, readErr := io.ReadAll(io.LimitReader(file, int64(uploadChunkSize*uploadMaxChunks)+1))
+	data, readErr := io.ReadAll(file)
 	closeErr := file.Close()
 	if readErr != nil {
 		return uploadedMedia{}, uvim.NewProviderSendError("wecom resource read failed", readErr)
@@ -436,11 +435,7 @@ func wecomUploadChunkCount(size int) (int, error) {
 	if size <= 0 {
 		return 0, fmt.Errorf("wecom upload: empty resources are not supported")
 	}
-	chunks := (size + uploadChunkSize - 1) / uploadChunkSize
-	if chunks > uploadMaxChunks {
-		return 0, fmt.Errorf("wecom upload: resource exceeds %d bytes", uploadChunkSize*uploadMaxChunks)
-	}
-	return chunks, nil
+	return 1 + (size-1)/uploadChunkSize, nil
 }
 
 func (p *Provider) sendMedia(ctx context.Context, conn WSConn, writeMu *sync.Mutex, msg uvim.OutboundMessage, media uploadedMedia) (result uvim.SendResult, err error) {
@@ -505,21 +500,13 @@ func (p *Provider) Download(ctx context.Context, req uvim.ResourceDownloadReques
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return ref, fmt.Errorf("http %d", resp.StatusCode)
 	}
-	maxBytes := p.maxResourceBytes()
-	var buf bytes.Buffer
-	n, err := buf.ReadFrom(io.LimitReader(resp.Body, maxBytes+33))
+	encrypted, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return ref, err
 	}
-	if n > maxBytes+32 {
-		return ref, fmt.Errorf("resource exceeds max size %d bytes", maxBytes)
-	}
-	plain, err := DecryptAttachment(buf.Bytes(), ref.Secret)
+	plain, err := DecryptAttachment(encrypted, ref.Secret)
 	if err != nil {
 		return ref, err
-	}
-	if int64(len(plain)) > maxBytes {
-		return ref, fmt.Errorf("resource exceeds max size %d bytes", maxBytes)
 	}
 	return store.Save(ctx, bytes.NewReader(plain), ref)
 }
@@ -532,6 +519,9 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 	msgType := uvim.StringValue(body["msgtype"])
 	text := p.messageText(body, msgType)
 	resources := p.messageResources(body, msgType)
+	if quote := uvim.MapStringAny(body["quote"]); len(quote) > 0 {
+		resources = append(resources, p.messageResources(quote, uvim.StringValue(quote["msgtype"]))...)
+	}
 	if strings.TrimSpace(text) == "" && len(resources) == 0 {
 		return uvim.Event{}, false
 	}
@@ -568,8 +558,9 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 			Elements:  elementsFromTextAndResources(text, resources),
 			Resources: resources,
 		},
-		Referrer:  uvim.Referrer{MessageID: messageID, ChannelID: channelID, ReplyToken: in.Headers.ReqID, ExpiresAt: &expiresAt, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
-		Addressed: channelType != uvim.ChannelGroup,
+		Referrer: uvim.Referrer{MessageID: messageID, ChannelID: channelID, ReplyToken: in.Headers.ReqID, ExpiresAt: &expiresAt, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
+		// AI Bot callbacks are interactions delivered to this bot, including group @mentions.
+		Addressed: true,
 	}, true
 }
 
@@ -918,16 +909,8 @@ func (p *Provider) store(dir string) *uvim.ResourceStore {
 	store := &uvim.ResourceStore{Dir: dir, HTTPClient: p.config.HTTPClient}
 	if store.Dir == "" && p.config.ResourceStore != nil {
 		store.Dir = p.config.ResourceStore.Dir
-		store.MaxBytes = p.config.ResourceStore.MaxBytes
 	}
 	return store
-}
-
-func (p *Provider) maxResourceBytes() int64 {
-	if p.config.ResourceStore != nil && p.config.ResourceStore.MaxBytes > 0 {
-		return p.config.ResourceStore.MaxBytes
-	}
-	return uvim.DefaultResourceMaxBytes
 }
 
 func hasNonTextElements(elements []uvim.Element) bool {

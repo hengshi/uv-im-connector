@@ -3,12 +3,17 @@ package wecom
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"syscall"
@@ -16,8 +21,94 @@ import (
 	"time"
 
 	uvim "github.com/hengshi/uv-im-connector"
+	"github.com/hengshi/uv-im-connector/client"
 	"github.com/hengshi/uv-im-connector/conformance"
+	"github.com/hengshi/uv-im-connector/server"
 )
+
+func TestInboundAttachmentsReachCaller(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	plain := []byte("attachment content")
+	padding := 32 - len(plain)%32
+	encrypted := append(bytes.Clone(plain), bytes.Repeat([]byte{byte(padding)}, padding)...)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher.NewCBCEncrypter(block, key[:aes.BlockSize]).CryptBlocks(encrypted, encrypted)
+	media := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(encrypted)
+	}))
+	defer media.Close()
+	for _, chatType := range []string{"single", "group"} {
+		for _, kind := range []string{"file", "image", "video", "mixed"} {
+			for _, quoted := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/quoted=%t", chatType, kind, quoted), func(t *testing.T) {
+					payload := map[string]any{"url": media.URL, "aeskey": base64.StdEncoding.EncodeToString(key), "file_name": "report.bin"}
+					content := map[string]any{"msgtype": kind, kind: payload}
+					wantKind := kind
+					if kind == "mixed" {
+						wantKind = "image"
+						content["mixed"] = map[string]any{"msg_item": []any{
+							map[string]any{"msgtype": "text", "text": map[string]any{"content": "analyze this"}},
+							map[string]any{"msgtype": "image", "image": payload},
+						}}
+					}
+					body := content
+					if quoted {
+						body = map[string]any{"msgtype": "text", "text": map[string]any{"content": "analyze this"}, "quote": content}
+					}
+					body["msgid"], body["chattype"], body["chatid"] = "message-1", chatType, "chat-1"
+					body["from"] = map[string]any{"userid": "user-1"}
+					store := &uvim.ResourceStore{Dir: t.TempDir()}
+					provider, err := New(Config{BotID: "bot", Secret: "secret", ResourceStore: store, HTTPClient: media.Client()})
+					if err != nil {
+						t.Fatal(err)
+					}
+					event, ok := provider.decodeMessage(frame{Cmd: cmdCallback, Headers: headers{ReqID: "request-1"}, Body: body})
+					if !ok || !event.Addressed || len(event.Message.Resources) != 1 {
+						t.Fatalf("decoded ok=%t addressed=%t resources=%d", ok, event.Addressed, len(event.Message.Resources))
+					}
+					wantChannel, wantTarget := uvim.ChannelDirect, uvim.TargetUser
+					if chatType == "group" {
+						wantChannel, wantTarget = uvim.ChannelGroup, uvim.TargetGroup
+					}
+					if event.Channel.Type != wantChannel || event.Referrer.Target.Kind != wantTarget || event.Referrer.Target.ID != "chat-1" {
+						t.Fatalf("channel=%+v target=%+v", event.Channel, event.Referrer.Target)
+					}
+					log, err := uvim.NewEventLog(t.TempDir() + "/events.jsonl")
+					if err != nil {
+						t.Fatal(err)
+					}
+					hub := server.NewHub(uvim.NewProviderRegistry(provider), log, store)
+					if err := hub.Emit(context.Background(), event); err != nil {
+						t.Fatal(err)
+					}
+					api := httptest.NewServer(hub.Handler())
+					defer api.Close()
+					c := client.New(api.URL)
+					events, err := c.Events(context.Background(), 0)
+					if err != nil || len(events) != 1 {
+						t.Fatalf("events=%d err=%v", len(events), err)
+					}
+					ref := events[0].Message.Resources[0]
+					if !events[0].Addressed || ref.Kind != wantKind || ref.InternalURL == "" || ref.Error != "" || ref.URL != "" || ref.Secret != "" {
+						t.Fatalf("public event = %+v", events[0])
+					}
+					resp, err := c.ResolveInternalURL(context.Background(), ref.InternalURL)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer resp.Body.Close()
+					got, err := io.ReadAll(resp.Body)
+					if err != nil || !bytes.Equal(got, plain) {
+						t.Fatalf("downloaded=%q err=%v", got, err)
+					}
+				})
+			}
+		}
+	}
+}
 
 func TestProviderConformanceShape(t *testing.T) {
 	provider, err := New(Config{BotID: "bot", Secret: "secret", ResourceStore: &uvim.ResourceStore{Dir: t.TempDir()}, Now: func() time.Time { return time.Unix(1, 0) }})
@@ -272,8 +363,8 @@ func TestWeComUploadChunkCountBoundaries(t *testing.T) {
 		{size: 1, want: 1, ok: true},
 		{size: uploadChunkSize, want: 1, ok: true},
 		{size: uploadChunkSize + 1, want: 2, ok: true},
-		{size: uploadChunkSize * uploadMaxChunks, want: uploadMaxChunks, ok: true},
-		{size: uploadChunkSize*uploadMaxChunks + 1, ok: false},
+		{size: uploadChunkSize * 100, want: 100, ok: true},
+		{size: uploadChunkSize*100 + 1, want: 101, ok: true},
 	} {
 		got, err := wecomUploadChunkCount(test.size)
 		if test.ok && (err != nil || got != test.want) {
@@ -383,16 +474,15 @@ func TestSendResourceProactivelyUsesTarget(t *testing.T) {
 	}
 }
 
-func TestUploadResourceRejectsEmptyAndOversizeBeforeWriting(t *testing.T) {
+func TestUploadResourceRejectsEmptyBeforeWriting(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		data []byte
 	}{
 		{name: "empty"},
-		{name: "oversize", data: make([]byte, uploadChunkSize*uploadMaxChunks+1)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			store := &uvim.ResourceStore{Dir: t.TempDir(), MaxBytes: int64(len(test.data)) + 1}
+			store := &uvim.ResourceStore{Dir: t.TempDir()}
 			ref, err := store.Save(context.Background(), bytes.NewReader(test.data), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "large.bin"})
 			if err != nil {
 				t.Fatal(err)
@@ -411,6 +501,40 @@ func TestUploadResourceRejectsEmptyAndOversizeBeforeWriting(t *testing.T) {
 				t.Fatalf("unexpected frame = %+v", conn.sent)
 			}
 		})
+	}
+}
+
+func TestLargeUploadDefersChunkLimitToWeCom(t *testing.T) {
+	data := bytes.Repeat([]byte("x"), uploadChunkSize*100+1)
+	store := &uvim.ResourceStore{Dir: t.TempDir()}
+	ref, err := store.Save(context.Background(), bytes.NewReader(data), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "large.bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(Config{BotID: "bot", Secret: "secret", ResourceStore: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := &sendTestConn{}
+	requests := 0
+	conn.onWrite = func(raw []byte) {
+		requests++
+		var sent frame
+		if err := json.Unmarshal(raw, &sent); err != nil {
+			t.Error(err)
+			return
+		}
+		if sent.Cmd != cmdUploadInit || sent.Body["total_chunks"] != float64(101) || sent.Body["total_size"] != float64(len(data)) {
+			t.Errorf("unexpected upload init: %+v", sent)
+		}
+		code := 40005
+		p.resolvePending(sent.Headers.ReqID, frame{Headers: sent.Headers, ErrCode: &code, ErrMsg: "media too large"})
+	}
+	activateSendTestConn(p, conn)
+	_, err = p.Send(context.Background(), uvim.OutboundMessage{ChannelID: "chat", Resources: []uvim.ResourceRef{ref}})
+	failure, ok := uvim.ProviderSendFailure(err)
+	if requests != 1 || !ok || failure.ProviderCode != "40005" {
+		t.Fatalf("requests=%d failure=%+v err=%v", requests, failure, err)
 	}
 }
 

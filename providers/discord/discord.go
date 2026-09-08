@@ -22,8 +22,6 @@ type Config struct {
 	HTTPClient    *http.Client
 }
 
-const maxAttachmentBytes = 10 * 1024 * 1024
-
 func New(config Config) (*httpchannel.Provider, error) {
 	baseURL := config.BaseURL
 	if baseURL == "" {
@@ -143,7 +141,7 @@ func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Requ
 		if err != nil {
 			return httpchannel.Request{}, uvim.NewProviderSendError("discord resource is unavailable", err)
 		}
-		data, readErr := io.ReadAll(io.LimitReader(file, maxAttachmentBytes+1))
+		data, readErr := io.ReadAll(file)
 		closeErr := file.Close()
 		if readErr != nil {
 			return httpchannel.Request{}, uvim.NewProviderSendError("discord resource read failed", readErr)
@@ -153,9 +151,6 @@ func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Requ
 		}
 		if len(data) == 0 {
 			return httpchannel.Request{}, fmt.Errorf("discord upload: empty resources are not supported")
-		}
-		if len(data) > maxAttachmentBytes {
-			return httpchannel.Request{}, fmt.Errorf("discord upload: resource exceeds %d bytes", maxAttachmentBytes)
 		}
 		name := uvim.ResourceUploadName(0, ref, ref.MIME)
 		body["attachments"] = []map[string]any{{"id": 0, "filename": name}}

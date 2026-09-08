@@ -159,13 +159,6 @@ func (p *Provider) mediaURL(ctx context.Context, mediaID string) (string, string
 	return decoded.URL, decoded.MIME, decoded.FileSize, nil
 }
 
-const (
-	maxImageBytes    = 5 * 1024 * 1024
-	maxAudioBytes    = 16 * 1024 * 1024
-	maxVideoBytes    = 16 * 1024 * 1024
-	maxDocumentBytes = 100 * 1024 * 1024
-)
-
 func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, ref uvim.ResourceRef) (result uvim.SendResult, err error) {
 	defer func() {
 		err = uvim.NewProviderSendOperationError("whatsapp upload", err)
@@ -181,8 +174,8 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	if err != nil {
 		return uvim.SendResult{}, uvim.NewProviderSendError("whatsapp resource is unavailable", err)
 	}
-	mediaType, limit := whatsappMediaRoute(ref.Kind)
-	data, readErr := io.ReadAll(io.LimitReader(file, int64(limit)+1))
+	mediaType := whatsappMediaRoute(ref.Kind)
+	data, readErr := io.ReadAll(file)
 	closeErr := file.Close()
 	if readErr != nil {
 		return uvim.SendResult{}, uvim.NewProviderSendError("whatsapp resource read failed", readErr)
@@ -192,9 +185,6 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	}
 	if len(data) == 0 {
 		return uvim.SendResult{}, fmt.Errorf("whatsapp upload: empty resources are not supported")
-	}
-	if len(data) > limit {
-		return uvim.SendResult{}, fmt.Errorf("whatsapp upload: %s resource exceeds %d bytes", mediaType, limit)
 	}
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	var uploadBody bytes.Buffer
@@ -282,16 +272,16 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: messageID, Time: time.Now().UTC()}, nil
 }
 
-func whatsappMediaRoute(kind string) (string, int) {
+func whatsappMediaRoute(kind string) string {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case uvim.ElementImage:
-		return "image", maxImageBytes
+		return "image"
 	case uvim.ElementAudio:
-		return "audio", maxAudioBytes
+		return "audio"
 	case uvim.ElementVideo:
-		return "video", maxVideoBytes
+		return "video"
 	default:
-		return "document", maxDocumentBytes
+		return "document"
 	}
 }
 

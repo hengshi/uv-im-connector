@@ -16,6 +16,78 @@ import (
 	"github.com/hengshi/uv-im-connector/conformance"
 )
 
+func TestDecodePayloadPostResources(t *testing.T) {
+	for _, chatType := range []string{"p2p", "group"} {
+		t.Run(chatType, func(t *testing.T) {
+			content := `{"title":"Review","content":[[{"tag":"text","text":"analyze this"},{"tag":"img","image_key":"image-1"}],[{"tag":"media","file_key":"video-1","image_key":"preview-1"},{"tag":"img"}]]}`
+			payload, err := json.Marshal(map[string]any{
+				"header": map[string]any{"event_type": "im.message.receive_v1", "event_id": "event-1"},
+				"event": map[string]any{"message": map[string]any{
+					"message_id": "message-1", "chat_id": "chat-1", "chat_type": chatType,
+					"message_type": "post", "content": content,
+					"mentions": []any{map[string]any{"key": "@_user_1", "id": map[string]any{"open_id": "bot"}}},
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			event, ok, err := DecodePayload(payload, DecoderConfig{Connector: "main", BotOpenID: "bot"})
+			if err != nil || !ok || !event.Addressed || len(event.Message.Resources) != 2 {
+				t.Fatalf("ok=%t err=%v event=%+v", ok, err, event)
+			}
+			for i, want := range []uvim.ResourceRef{{Kind: "image", Key: "image-1"}, {Kind: "video", Key: "video-1"}} {
+				ref := event.Message.Resources[i]
+				if ref.Kind != want.Kind || ref.Key != want.Key || ref.Metadata["message_id"] != "message-1" || ref.Provider != "lark" || ref.Connector != "main" {
+					t.Fatalf("resource %d = %+v", i, ref)
+				}
+			}
+			ambient, _, err := DecodePayload(payload, DecoderConfig{Connector: "main", BotOpenID: "another-bot"})
+			if err != nil || ambient.Addressed != (chatType == "p2p") || len(ambient.Message.Resources) != 2 {
+				t.Fatalf("ambient addressed=%t resources=%d err=%v", ambient.Addressed, len(ambient.Message.Resources), err)
+			}
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				switch req.URL.Path {
+				case "/open-apis/auth/v3/tenant_access_token/internal":
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+				case "/open-apis/im/v1/messages/message-1/resources/image-1", "/open-apis/im/v1/messages/message-1/resources/video-1":
+					wantType := "file"
+					if req.URL.Path == "/open-apis/im/v1/messages/message-1/resources/image-1" {
+						wantType = "image"
+					}
+					if req.URL.Query().Get("type") != wantType || req.Header.Get("Authorization") != "Bearer token" {
+						t.Errorf("download query=%v authorization=%q", req.URL.Query(), req.Header.Get("Authorization"))
+					}
+					_, _ = w.Write([]byte("resource bytes"))
+				default:
+					t.Errorf("unexpected download path %q", req.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer api.Close()
+			store := &uvim.ResourceStore{Dir: t.TempDir()}
+			p, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: api.URL, ResourceStore: store})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, ref := range event.Message.Resources {
+				downloaded, err := p.Download(context.Background(), uvim.ResourceDownloadRequest{Resource: ref, Event: event, Message: event.Message})
+				if err != nil {
+					t.Fatal(err)
+				}
+				file, _, err := store.Open(downloaded.InternalURL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := io.ReadAll(file)
+				file.Close()
+				if err != nil || string(data) != "resource bytes" {
+					t.Fatalf("downloaded=%q err=%v", data, err)
+				}
+			}
+		})
+	}
+}
+
 func TestDecodePayloadTextMention(t *testing.T) {
 	event := map[string]any{
 		"schema": "2.0",
@@ -260,7 +332,7 @@ func TestSendResourceUploadsThenReplies(t *testing.T) {
 		case "/open-apis/auth/v3/tenant_access_token/internal":
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
 		case "/open-apis/im/v1/files":
-			if err := req.ParseMultipartForm(maxFileBytes); err != nil {
+			if err := req.ParseMultipartForm(1 << 20); err != nil {
 				t.Error(err)
 			}
 			file, header, err := req.FormFile("file")
@@ -303,6 +375,60 @@ func TestSendResourceUploadsThenReplies(t *testing.T) {
 	}
 	if content["file_key"] != "file-1" || len(content) != 1 {
 		t.Fatalf("content = %+v", content)
+	}
+}
+
+func TestLargeResourceReachesProviderSizePolicy(t *testing.T) {
+	store := &uvim.ResourceStore{Dir: t.TempDir()}
+	data := bytes.Repeat([]byte("x"), 30*1024*1024+1)
+	ref, err := store.Save(context.Background(), bytes.NewReader(data), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "large.bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploaded := int64(0)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+			return
+		}
+		if req.URL.Path != "/open-apis/im/v1/files" {
+			t.Errorf("unexpected path %q", req.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		reader, err := req.MultipartReader()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if part.FormName() == "file" {
+				uploaded, err = io.Copy(io.Discard, part)
+				if err != nil {
+					t.Error(err)
+				}
+			}
+			part.Close()
+		}
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+	}))
+	defer api.Close()
+	p, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: api.URL, ResourceStore: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Send(context.Background(), uvim.OutboundMessage{ChannelID: "chat", Resources: []uvim.ResourceRef{ref}})
+	failure, ok := uvim.ProviderSendFailure(err)
+	if uploaded != int64(len(data)) || !ok || failure.Category != uvim.SendFailurePayloadTooLarge || failure.HTTPStatus != http.StatusRequestEntityTooLarge {
+		t.Fatalf("uploaded=%d failure=%+v err=%v", uploaded, failure, err)
 	}
 }
 

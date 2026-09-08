@@ -29,9 +29,6 @@ type Config struct {
 const (
 	wechatMediaIDKey   = "uv_wechat_media_id"
 	wechatMediaTypeKey = "uv_wechat_media_type"
-	maxWechatImage     = 10 * 1024 * 1024
-	maxWechatVoice     = 2 * 1024 * 1024
-	maxWechatVideo     = 10 * 1024 * 1024
 )
 
 func New(config Config) (*httpchannel.Provider, error) {
@@ -79,7 +76,7 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 		return msg, fmt.Errorf("wechat-official send: text, elements, and resources must be sent separately")
 	}
 	ref := msg.Resources[0]
-	mediaType, limit, err := wechatMediaRoute(ref.Kind)
+	mediaType, err := wechatMediaRoute(ref.Kind)
 	if err != nil {
 		return msg, err
 	}
@@ -90,7 +87,7 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	if err != nil {
 		return msg, uvim.NewProviderSendError("wechat-official resource is unavailable", err)
 	}
-	data, readErr := io.ReadAll(io.LimitReader(file, int64(limit)+1))
+	data, readErr := io.ReadAll(file)
 	closeErr := file.Close()
 	if readErr != nil {
 		return msg, uvim.NewProviderSendError("wechat-official resource read failed", readErr)
@@ -100,9 +97,6 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	}
 	if len(data) == 0 {
 		return msg, fmt.Errorf("wechat-official upload: empty resources are not supported")
-	}
-	if len(data) > limit {
-		return msg, fmt.Errorf("wechat-official upload: %s resource exceeds %d bytes", mediaType, limit)
 	}
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	var body bytes.Buffer
@@ -166,16 +160,16 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	return msg, nil
 }
 
-func wechatMediaRoute(kind string) (string, int, error) {
+func wechatMediaRoute(kind string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case uvim.ElementImage:
-		return "image", maxWechatImage, nil
+		return "image", nil
 	case uvim.ElementAudio:
-		return "voice", maxWechatVoice, nil
+		return "voice", nil
 	case uvim.ElementVideo:
-		return "video", maxWechatVideo, nil
+		return "video", nil
 	default:
-		return "", 0, fmt.Errorf("wechat-official upload: resource kind %q is not supported", kind)
+		return "", fmt.Errorf("wechat-official upload: resource kind %q is not supported", kind)
 	}
 }
 

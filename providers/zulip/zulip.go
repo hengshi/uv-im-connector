@@ -56,8 +56,6 @@ func New(config Config) (*httpchannel.Provider, error) {
 	})
 }
 
-const maxSimpleUploadBytes = 25 * 1024 * 1024
-
 func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchannel.Config) (prepared uvim.OutboundMessage, err error) {
 	defer func() {
 		err = uvim.NewProviderSendOperationError("zulip upload", err)
@@ -76,7 +74,7 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	if err != nil {
 		return msg, uvim.NewProviderSendError("zulip resource is unavailable", err)
 	}
-	data, readErr := io.ReadAll(io.LimitReader(file, maxSimpleUploadBytes+1))
+	data, readErr := io.ReadAll(file)
 	closeErr := file.Close()
 	if readErr != nil {
 		return msg, uvim.NewProviderSendError("zulip resource read failed", readErr)
@@ -86,9 +84,6 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	}
 	if len(data) == 0 {
 		return msg, fmt.Errorf("zulip upload: empty resources are not supported")
-	}
-	if len(data) > maxSimpleUploadBytes {
-		return msg, fmt.Errorf("zulip upload: resource exceeds %d bytes", maxSimpleUploadBytes)
 	}
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	var body bytes.Buffer

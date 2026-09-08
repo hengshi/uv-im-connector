@@ -22,7 +22,6 @@ import (
 
 const (
 	maxOutboundAttachmentCount = 10
-	maxOutboundAttachmentBytes = 25 * 1024 * 1024
 )
 
 type SendMailFunc func(string, smtp.Auth, string, []string, []byte) error
@@ -168,7 +167,6 @@ func (p *Provider) outboundAttachments(refs []uvim.ResourceRef) (attachments []o
 		return nil, fmt.Errorf("mail upload: %d resources exceed maximum %d", len(refs), maxOutboundAttachmentCount)
 	}
 	attachments = make([]outboundMailAttachment, 0, len(refs))
-	remaining := int64(maxOutboundAttachmentBytes)
 	for index, ref := range refs {
 		if !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
 			return nil, fmt.Errorf("mail upload: internal resource is required")
@@ -177,7 +175,7 @@ func (p *Provider) outboundAttachments(refs []uvim.ResourceRef) (attachments []o
 		if err != nil {
 			return nil, uvim.NewProviderSendError("mail resource is unavailable", err)
 		}
-		data, readErr := io.ReadAll(io.LimitReader(file, remaining+1))
+		data, readErr := io.ReadAll(file)
 		closeErr := file.Close()
 		if readErr != nil {
 			return nil, uvim.NewProviderSendError("mail resource read failed", readErr)
@@ -188,10 +186,6 @@ func (p *Provider) outboundAttachments(refs []uvim.ResourceRef) (attachments []o
 		if len(data) == 0 {
 			return nil, fmt.Errorf("mail upload: empty resources are not supported")
 		}
-		if int64(len(data)) > remaining {
-			return nil, fmt.Errorf("mail upload: resources exceed %d bytes", maxOutboundAttachmentBytes)
-		}
-		remaining -= int64(len(data))
 		name := uvim.ResourceUploadName(index, ref, ref.MIME)
 		mimeType := strings.TrimSpace(ref.MIME)
 		if mimeType == "" {

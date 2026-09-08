@@ -21,6 +21,28 @@ import (
 	"github.com/hengshi/uv-im-connector/providers/slack"
 )
 
+func TestUploadBeyondLegacyResourceSizeLimit(t *testing.T) {
+	store := &uvim.ResourceStore{Dir: t.TempDir()}
+	hub := NewHub(nil, nil, store)
+	server := httptest.NewServer(hub.Handler())
+	defer server.Close()
+	c := client.New(server.URL)
+	data := bytes.Repeat([]byte("x"), 100*1024*1024+1)
+	ref, err := c.Upload(context.Background(), uvim.ResourceRef{Name: "report.txt"}, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.ResolveInternalURL(context.Background(), ref.InternalURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil || !bytes.Equal(got, data) || ref.SizeBytes != int64(len(data)) {
+		t.Fatalf("upload round trip: size=%d metadata=%d err=%v", len(got), ref.SizeBytes, err)
+	}
+}
+
 func TestHubEventsAndOutbound(t *testing.T) {
 	dir := t.TempDir()
 	log, err := uvim.NewEventLog(filepath.Join(dir, "events.jsonl"))

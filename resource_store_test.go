@@ -2,9 +2,28 @@ package uvim
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 )
+
+func TestResourceStoreSavesBeyondLegacySizeLimits(t *testing.T) {
+	data := strings.Repeat("x", 100*1024*1024+1)
+	store := &ResourceStore{Dir: t.TempDir()}
+	ref, err := store.Save(context.Background(), strings.NewReader(data), ResourceRef{Name: "large.bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, _, err := store.Open(ref.InternalURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	size, err := io.Copy(io.Discard, file)
+	file.Close()
+	if err != nil || size != int64(len(data)) || ref.SizeBytes != size {
+		t.Fatalf("stored size=%d metadata=%d err=%v", size, ref.SizeBytes, err)
+	}
+}
 
 func TestResourceStoreSaveOpenAndSanitize(t *testing.T) {
 	store := &ResourceStore{Dir: t.TempDir()}
