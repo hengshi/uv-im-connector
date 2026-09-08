@@ -73,7 +73,7 @@ caller application
 | Provider | 入站资源 | 出站 internal resource | 接受的出站 kind | Adapter / 平台限制 |
 | --- | --- | --- | --- | --- |
 | WeCom | 支持 | 支持 | `file`、`image`、`audio`、`video` | AI Bot WebSocket 上传，每片 512 KiB；总大小和分片数量由平台校验。 |
-| Lark / Feishu | 支持 | 支持 | `file`、`image`、`audio`、`video` | 支持的图片不超过 10 MiB 时使用图片 API；较大图片和其他资源走文件上传，由平台校验大小。 |
+| Lark / Feishu | 支持 | 支持 | `file`、`image`、`audio`、`video` | 支持格式的图片始终使用图片 API，不按大小转为文件；其他资源走文件上传，由平台校验大小。 |
 | DingTalk | 支持 | 不支持 | — | 当前机器人 / session-webhook adapter 没有 internal bytes 上传路径。 |
 | Discord | 支持 | 支持 | `file`、`image`、`audio`、`video` | 资源随消息直接 multipart 上传，由平台校验大小。 |
 | KOOK | 支持 | 支持 | `file`、`image`、`audio`、`video` | 先上传 asset，再发送图片消息或附件卡片。 |

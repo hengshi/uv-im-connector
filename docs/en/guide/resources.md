@@ -74,7 +74,7 @@ Before sending, inspect the exact provider and connector in `GET /v1/meta`, requ
 In the standalone binary, WeCom, Lark / Feishu, Discord, KOOK, Telegram, Matrix, Slack, WhatsApp, Zulip, WeChat Official Account, and Mail share the HTTP upload resource store and declare `upload_resource=true`. See the [provider capability matrix](/en/architecture.html#provider-capability-matrix) for every provider.
 
 - WeCom: one resource per message with no mixed text; WebSocket upload uses 512 KiB chunks, and the provider validates total size and chunk count.
-- Lark / Feishu: Supported images up to 10 MiB use the image API; larger images and other resources use file upload. The provider validates size.
+- Lark / Feishu: Supported image formats use the image API regardless of size; other resources use file upload. The provider validates size.
 - Discord: Direct multipart message upload; the provider validates attachment size.
 - KOOK: Asset upload followed by an image or attachment-card message.
 - Telegram: Multipart Bot API upload; unsupported native formats fall back to documents.

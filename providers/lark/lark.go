@@ -31,8 +31,6 @@ const (
 	displayNameTimeout = 3 * time.Second
 	displayNameTTL     = 30 * time.Minute
 	displayNameMax     = 2048
-	// Larger images use file upload instead of being rejected locally.
-	maxImageBytes = 10 * 1024 * 1024
 )
 
 type Config struct {
@@ -519,7 +517,7 @@ func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (ki
 		return "", nil, fmt.Errorf("lark upload: empty resources are not supported")
 	}
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
-	if strings.EqualFold(strings.TrimSpace(ref.Kind), uvim.ElementImage) && larkNativeImageMIME(ref.MIME) && len(data) <= maxImageBytes {
+	if strings.EqualFold(strings.TrimSpace(ref.Kind), uvim.ElementImage) && larkNativeImageMIME(ref.MIME) {
 		key, err := p.uploadMultipart(ctx, "/open-apis/im/v1/images", map[string]string{"image_type": "message"}, "image", name, ref.MIME, data, "image_key")
 		if err != nil {
 			return "", nil, err

@@ -180,7 +180,7 @@ The resource matrix is separate from text/conversation support. "Inbound" means 
 | Provider | Inbound resources | Outbound internal resources | Accepted outbound kinds | Adapter/platform limit |
 | --- | --- | --- | --- | --- |
 | WeCom | Yes | Yes | `file`, `image`, `audio`, `video` | AI Bot WebSocket upload in 512 KiB chunks; the provider validates total size and chunk count. |
-| Lark / Feishu | Yes | Yes | `file`, `image`, `audio`, `video` | Supported images up to 10 MiB use the image API; larger images and other resources use file upload. The provider validates size. |
+| Lark / Feishu | Yes | Yes | `file`, `image`, `audio`, `video` | Supported image formats use the image API regardless of size; other resources use file upload. The provider validates size. |
 | DingTalk | Yes | No | — | Current robot/session-webhook adapter has no internal-byte upload path. |
 | Discord | Yes | Yes | `file`, `image`, `audio`, `video` | Direct multipart message upload; the provider validates attachment size. |
 | KOOK | Yes | Yes | `file`, `image`, `audio`, `video` | Asset upload followed by an image or attachment-card message. |

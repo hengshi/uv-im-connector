@@ -24,8 +24,6 @@ type SendFunc func(uvim.OutboundMessage, Config) (Request, error)
 type PrepareSendFunc func(context.Context, uvim.OutboundMessage, Config) (uvim.OutboundMessage, error)
 type ParseSendResponseFunc func([]byte) (string, error)
 
-const maxWebhookPayloadBytes = 100 * 1024 * 1024
-
 type Request struct {
 	Method    string
 	Path      string
@@ -236,13 +234,9 @@ func (p *Provider) ServeWebhook(w http.ResponseWriter, req *http.Request, sink u
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "unauthorized"})
 		return
 	}
-	raw, err := io.ReadAll(io.LimitReader(req.Body, maxWebhookPayloadBytes+1))
+	raw, err := io.ReadAll(req.Body)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "read_failed"})
-		return
-	}
-	if int64(len(raw)) > maxWebhookPayloadBytes {
-		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"ok": false, "error": "payload_too_large"})
 		return
 	}
 	if p.config.Decode == nil && p.config.DecodeEvents == nil {
