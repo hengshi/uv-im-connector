@@ -256,8 +256,6 @@ func (h *Hub) handleUploadCreate(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
-	maxBytes := h.resourceMaxBytes()
-	req.Body = http.MaxBytesReader(w, req.Body, maxBytes*2+4096)
 	var input struct {
 		Kind          string `json:"kind"`
 		Name          string `json:"name"`
@@ -266,10 +264,6 @@ func (h *Hub) handleUploadCreate(w http.ResponseWriter, req *http.Request) {
 	}
 	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if int64(len(input.ContentBase64)) > int64(base64.StdEncoding.EncodedLen(int(maxBytes)+1)) {
-		writeError(w, http.StatusRequestEntityTooLarge, "resource_too_large")
 		return
 	}
 	raw, err := base64.StdEncoding.DecodeString(input.ContentBase64)
@@ -414,13 +408,6 @@ func elementsFromTextAndResources(text string, refs []uvim.ResourceRef) []uvim.E
 		out = append(out, uvim.File(ref))
 	}
 	return out
-}
-
-func (h *Hub) resourceMaxBytes() int64 {
-	if h != nil && h.resources != nil && h.resources.MaxBytes > 0 {
-		return h.resources.MaxBytes
-	}
-	return uvim.DefaultResourceMaxBytes
 }
 
 func (h *Hub) authMiddleware(next http.Handler) http.Handler {

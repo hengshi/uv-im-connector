@@ -105,7 +105,7 @@ func (l *EventLog) ReadAfter(ctx context.Context, sequence int64) ([]Event, erro
 	defer file.Close()
 	var out []Event
 	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), int(DefaultResourceMaxBytes))
+	scanner.Buffer(make([]byte, 64*1024), 100*1024*1024)
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():

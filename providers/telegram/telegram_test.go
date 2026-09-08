@@ -23,7 +23,7 @@ func TestSendResourceUsesMultipartBotAPI(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		if err := req.ParseMultipartForm(maxMediaBytes); err != nil {
+		if err := req.ParseMultipartForm(1 << 20); err != nil {
 			t.Error(err)
 		}
 		if req.FormValue("chat_id") != "123" || req.FormValue("reply_parameters") != `{"message_id":9}` {
@@ -76,7 +76,7 @@ func TestTelegramMediaRouteFallsBackForUnsupportedNativeFormats(t *testing.T) {
 		{ref: uvim.ResourceRef{Kind: uvim.ElementVideo, MIME: "video/quicktime"}, wantMethod: "sendDocument", wantField: "document"},
 	}
 	for _, test := range tests {
-		method, field, _ := telegramMediaRoute(test.ref)
+		method, field := telegramMediaRoute(test.ref)
 		if method != test.wantMethod || field != test.wantField {
 			t.Fatalf("route(%+v) = %q/%q, want %q/%q", test.ref, method, field, test.wantMethod, test.wantField)
 		}

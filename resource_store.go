@@ -12,17 +12,10 @@ import (
 	"strings"
 )
 
-const (
-	DefaultResourceMaxBytes      int64 = 100 * 1024 * 1024
-	DefaultResourceTotalMaxBytes int64 = 100 * 1024 * 1024
-	DefaultResourceMaxCount            = 10
-)
-
 type ResourceStore struct {
 	Dir           string
 	PublicBaseURL string
 	HTTPClient    *http.Client
-	MaxBytes      int64
 }
 
 func (s *ResourceStore) SaveHTTP(ctx context.Context, req *http.Request, ref ResourceRef) (ResourceRef, error) {
@@ -59,10 +52,6 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return ref, err
 	}
-	maxBytes := s.MaxBytes
-	if maxBytes <= 0 {
-		maxBytes = DefaultResourceMaxBytes
-	}
 	id := FirstNonEmpty(ref.ID, NewID("res"))
 	ref.ID = id
 	name := SafeSegment(id) + "-" + ResourceFileName(0, ref, ref.MIME)
@@ -72,8 +61,7 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 		return ref, err
 	}
 	hash := sha256.New()
-	limited := io.LimitReader(src, maxBytes+1)
-	size, copyErr := io.Copy(io.MultiWriter(file, hash), limited)
+	size, copyErr := io.Copy(io.MultiWriter(file, hash), src)
 	closeErr := file.Close()
 	if copyErr != nil {
 		_ = os.Remove(path)
@@ -82,10 +70,6 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 	if closeErr != nil {
 		_ = os.Remove(path)
 		return ref, closeErr
-	}
-	if size > maxBytes {
-		_ = os.Remove(path)
-		return ref, fmt.Errorf("resource exceeds max size %d bytes", maxBytes)
 	}
 	ref.SizeBytes = size
 	ref.SHA256 = hex.EncodeToString(hash.Sum(nil))

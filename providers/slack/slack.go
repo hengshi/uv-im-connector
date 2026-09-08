@@ -119,7 +119,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	if err != nil {
 		return uvim.SendResult{}, uvim.NewProviderSendError("slack resource is unavailable", err)
 	}
-	data, readErr := io.ReadAll(io.LimitReader(file, uvim.DefaultResourceMaxBytes+1))
+	data, readErr := io.ReadAll(file)
 	closeErr := file.Close()
 	if readErr != nil {
 		return uvim.SendResult{}, uvim.NewProviderSendError("slack resource read failed", readErr)
@@ -129,9 +129,6 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	}
 	if len(data) == 0 {
 		return uvim.SendResult{}, fmt.Errorf("slack upload: empty resources are not supported")
-	}
-	if int64(len(data)) > uvim.DefaultResourceMaxBytes {
-		return uvim.SendResult{}, fmt.Errorf("slack upload: resource exceeds %d bytes", uvim.DefaultResourceMaxBytes)
 	}
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	channelID, err := p.resourceChannelID(ctx, msg.ResolvedTarget())

@@ -24,6 +24,8 @@ type SendFunc func(uvim.OutboundMessage, Config) (Request, error)
 type PrepareSendFunc func(context.Context, uvim.OutboundMessage, Config) (uvim.OutboundMessage, error)
 type ParseSendResponseFunc func([]byte) (string, error)
 
+const maxWebhookPayloadBytes = 100 * 1024 * 1024
+
 type Request struct {
 	Method    string
 	Path      string
@@ -234,12 +236,12 @@ func (p *Provider) ServeWebhook(w http.ResponseWriter, req *http.Request, sink u
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "unauthorized"})
 		return
 	}
-	raw, err := io.ReadAll(io.LimitReader(req.Body, uvim.DefaultResourceMaxBytes+1))
+	raw, err := io.ReadAll(io.LimitReader(req.Body, maxWebhookPayloadBytes+1))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "read_failed"})
 		return
 	}
-	if int64(len(raw)) > uvim.DefaultResourceMaxBytes {
+	if int64(len(raw)) > maxWebhookPayloadBytes {
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"ok": false, "error": "payload_too_large"})
 		return
 	}
@@ -289,7 +291,6 @@ func (p *Provider) store(dir string) *uvim.ResourceStore {
 	store := &uvim.ResourceStore{Dir: dir, HTTPClient: p.config.HTTPClient}
 	if store.Dir == "" && p.config.ResourceStore != nil {
 		store.Dir = p.config.ResourceStore.Dir
-		store.MaxBytes = p.config.ResourceStore.MaxBytes
 	}
 	return store
 }

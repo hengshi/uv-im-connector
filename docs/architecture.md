@@ -72,22 +72,22 @@ caller application
 
 | Provider | 入站资源 | 出站 internal resource | 接受的出站 kind | Adapter / 平台限制 |
 | --- | --- | --- | --- | --- |
-| WeCom | 支持 | 支持 | `file`、`image`、`audio`、`video` | AI Bot WebSocket 上传；每片 512 KiB，最多 100 片，单资源约 50 MiB。 |
-| Lark / Feishu | 支持 | 支持 | `file`、`image`、`audio`、`video` | 图片 API 上限 10 MiB；其余资源作为文件附件交付，上限 30 MiB。 |
+| WeCom | 支持 | 支持 | `file`、`image`、`audio`、`video` | AI Bot WebSocket 上传，每片 512 KiB；总大小和分片数量由平台校验。 |
+| Lark / Feishu | 支持 | 支持 | `file`、`image`、`audio`、`video` | 支持的图片不超过 10 MiB 时使用图片 API；较大图片和其他资源走文件上传，由平台校验大小。 |
 | DingTalk | 支持 | 不支持 | — | 当前机器人 / session-webhook adapter 没有 internal bytes 上传路径。 |
-| Discord | 支持 | 支持 | `file`、`image`、`audio`、`video` | 直接随消息 multipart 上传；平台默认单附件上限 10 MiB。 |
-| KOOK | 支持 | 支持 | `file`、`image`、`audio`、`video` | asset upload 后发送图片或附件卡片；adapter 上限 100 MiB，平台策略可能更低。 |
+| Discord | 支持 | 支持 | `file`、`image`、`audio`、`video` | 资源随消息直接 multipart 上传，由平台校验大小。 |
+| KOOK | 支持 | 支持 | `file`、`image`、`audio`、`video` | 先上传 asset，再发送图片消息或附件卡片。 |
 | LINE | 支持 | 不支持 | — | LINE 出站媒体要求 provider 可访问的 HTTPS 内容 URL；uv-im-connector 当前不提供公网 media origin。 |
-| Mail | 支持 | 支持 | `file`、`image`、`audio`、`video` | 作为 MIME 附件发送；adapter 每条消息最多 10 个附件、合计 25 MiB。 |
-| Matrix | 支持 | 支持 | `file`、`image`、`audio`、`video` | 先上传 content repository，再以 `mxc://` room message 发送；adapter 上限 100 MiB，homeserver 可能更低。 |
+| Mail | 支持 | 支持 | `file`、`image`、`audio`、`video` | 作为 MIME 附件发送，每条消息最多 10 个；大小由邮件服务器校验。 |
+| Matrix | 支持 | 支持 | `file`、`image`、`audio`、`video` | 先上传 content repository，再以 `mxc://` room message 发送。 |
 | OneBot | 支持 | 不支持 | — | 不同兼容 endpoint 的文件 / CQ 上传行为尚未归一化。 |
 | QQ | 支持 | 不支持 | — | 与 OneBot-style QQ adapter 的限制相同。 |
 | QQ Guild | 支持 | 不支持 | — | 尚未实现官方富媒体上传握手。 |
-| Slack | 支持 | 支持 | `file`、`image`、`audio`、`video` | external upload URL + raw upload + complete 流程；adapter 上限 100 MiB，workspace 策略可能更低。 |
-| Telegram | 支持 | 支持 | `file`、`image`、`audio`、`video` | Bot API multipart 上传；图片 10 MiB、其他文件 50 MiB；不符合原生格式时降级为 document。 |
-| WeChat Official Account | 支持 | 支持（仅媒体） | `image`、`audio`、`video` | 临时素材上传后通过客服消息发送；平台没有任意文件消息。图片 / 视频 10 MiB，语音 2 MiB。 |
-| WhatsApp | 支持 | 支持 | `file`、`image`、`audio`、`video` | Cloud API media upload 后再发消息；图片 5 MiB，音频 / 视频 16 MiB，文档 100 MiB。 |
-| Zulip | 支持 | 支持 | `file`、`image`、`audio`、`video` | simple user upload 后发送 Markdown 附件链接；adapter 上限 25 MiB，server 策略可能更低。 |
+| Slack | 支持 | 支持 | `file`、`image`、`audio`、`video` | 申请 external upload URL、上传原始字节，再 complete 并分享到 channel。 |
+| Telegram | 支持 | 支持 | `file`、`image`、`audio`、`video` | Bot API multipart 上传；不符合原生格式时降级为 document。 |
+| WeChat Official Account | 支持 | 支持（仅媒体） | `image`、`audio`、`video` | 临时素材上传后通过客服消息发送；不支持任意文件。 |
+| WhatsApp | 支持 | 支持 | `file`、`image`、`audio`、`video` | Cloud API media upload 后再引用 media ID 发送消息。 |
+| Zulip | 支持 | 支持 | `file`、`image`、`audio`、`video` | simple user upload 后发送 Markdown 附件链接。 |
 
 ## Resources
 

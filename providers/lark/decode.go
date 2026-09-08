@@ -171,6 +171,27 @@ func messageResources(msgType, rawContent string) []uvim.ResourceRef {
 		return nil
 	}
 	switch msgType {
+	case "post":
+		var post postContent
+		if err := json.Unmarshal([]byte(rawContent), &post); err != nil {
+			return nil
+		}
+		var refs []uvim.ResourceRef
+		for _, paragraph := range post.Content {
+			for _, span := range paragraph {
+				switch span.Tag {
+				case "img":
+					if span.ImageKey != "" {
+						refs = append(refs, uvim.ResourceRef{Kind: uvim.ElementImage, Key: span.ImageKey})
+					}
+				case "media":
+					if span.FileKey != "" {
+						refs = append(refs, uvim.ResourceRef{Kind: uvim.ElementVideo, Key: span.FileKey})
+					}
+				}
+			}
+		}
+		return refs
 	case "image":
 		key := uvim.StringValue(doc["image_key"])
 		if key == "" {
@@ -198,6 +219,8 @@ type postContent struct {
 }
 
 type postSpan struct {
+	ImageKey string `json:"image_key"`
+	FileKey  string `json:"file_key"`
 	Tag      string `json:"tag"`
 	Text     string `json:"text"`
 	Href     string `json:"href"`

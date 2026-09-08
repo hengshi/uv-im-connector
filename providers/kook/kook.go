@@ -84,7 +84,7 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	if err != nil {
 		return msg, uvim.NewProviderSendError("kook resource is unavailable", err)
 	}
-	data, readErr := io.ReadAll(io.LimitReader(file, uvim.DefaultResourceMaxBytes+1))
+	data, readErr := io.ReadAll(file)
 	closeErr := file.Close()
 	if readErr != nil {
 		return msg, uvim.NewProviderSendError("kook resource read failed", readErr)
@@ -94,9 +94,6 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	}
 	if len(data) == 0 {
 		return msg, fmt.Errorf("kook upload: empty resources are not supported")
-	}
-	if int64(len(data)) > uvim.DefaultResourceMaxBytes {
-		return msg, fmt.Errorf("kook upload: resource exceeds %d bytes", uvim.DefaultResourceMaxBytes)
 	}
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	var body bytes.Buffer

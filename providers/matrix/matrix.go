@@ -110,7 +110,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	if err != nil {
 		return uvim.SendResult{}, uvim.NewProviderSendError("matrix resource is unavailable", err)
 	}
-	data, readErr := io.ReadAll(io.LimitReader(file, uvim.DefaultResourceMaxBytes+1))
+	data, readErr := io.ReadAll(file)
 	closeErr := file.Close()
 	if readErr != nil {
 		return uvim.SendResult{}, uvim.NewProviderSendError("matrix resource read failed", readErr)
@@ -120,9 +120,6 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	}
 	if len(data) == 0 {
 		return uvim.SendResult{}, fmt.Errorf("matrix upload: empty resources are not supported")
-	}
-	if int64(len(data)) > uvim.DefaultResourceMaxBytes {
-		return uvim.SendResult{}, fmt.Errorf("matrix upload: resource exceeds %d bytes", uvim.DefaultResourceMaxBytes)
 	}
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	uploadURL := strings.TrimRight(p.config.BaseURL, "/") + "/_matrix/media/v3/upload?filename=" + url.QueryEscape(name)

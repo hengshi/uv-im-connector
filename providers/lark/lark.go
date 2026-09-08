@@ -31,8 +31,8 @@ const (
 	displayNameTimeout = 3 * time.Second
 	displayNameTTL     = 30 * time.Minute
 	displayNameMax     = 2048
-	maxImageBytes      = 10 * 1024 * 1024
-	maxFileBytes       = 30 * 1024 * 1024
+	// Larger images use file upload instead of being rejected locally.
+	maxImageBytes = 10 * 1024 * 1024
 )
 
 type Config struct {
@@ -507,7 +507,7 @@ func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (ki
 	if err != nil {
 		return "", nil, uvim.NewProviderSendError("lark resource is unavailable", err)
 	}
-	data, readErr := io.ReadAll(io.LimitReader(file, maxFileBytes+1))
+	data, readErr := io.ReadAll(file)
 	closeErr := file.Close()
 	if readErr != nil {
 		return "", nil, uvim.NewProviderSendError("lark resource read failed", readErr)
@@ -517,9 +517,6 @@ func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (ki
 	}
 	if len(data) == 0 {
 		return "", nil, fmt.Errorf("lark upload: empty resources are not supported")
-	}
-	if len(data) > maxFileBytes {
-		return "", nil, fmt.Errorf("lark upload: resource exceeds %d bytes", maxFileBytes)
 	}
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	if strings.EqualFold(strings.TrimSpace(ref.Kind), uvim.ElementImage) && larkNativeImageMIME(ref.MIME) && len(data) <= maxImageBytes {
@@ -786,7 +783,6 @@ func (p *Provider) store(dir string) *uvim.ResourceStore {
 	store := &uvim.ResourceStore{Dir: dir, HTTPClient: p.config.HTTPClient}
 	if store.Dir == "" && p.config.ResourceStore != nil {
 		store.Dir = p.config.ResourceStore.Dir
-		store.MaxBytes = p.config.ResourceStore.MaxBytes
 	}
 	return store
 }
