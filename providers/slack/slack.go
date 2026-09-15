@@ -250,26 +250,31 @@ func (p *Provider) request(ctx context.Context, path string, body io.Reader, con
 }
 
 func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
+	type slackFile struct {
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		URL      string `json:"url_private_download"`
+		MIME     string `json:"mimetype"`
+		Size     int64  `json:"size"`
+		Filetype string `json:"filetype"`
+	}
+	type slackMessage struct {
+		Type        string        `json:"type"`
+		Subtype     string        `json:"subtype"`
+		User        string        `json:"user"`
+		Channel     string        `json:"channel"`
+		ChannelType string        `json:"channel_type"`
+		Text        string        `json:"text"`
+		Timestamp   string        `json:"ts"`
+		DeletedTS   string        `json:"deleted_ts"`
+		ThreadTS    string        `json:"thread_ts"`
+		Files       []slackFile   `json:"files"`
+		Previous    *slackMessage `json:"previous_message"`
+	}
 	var env struct {
-		Type      string `json:"type"`
-		Challenge string `json:"challenge"`
-		Event     struct {
-			Type        string `json:"type"`
-			User        string `json:"user"`
-			Channel     string `json:"channel"`
-			ChannelType string `json:"channel_type"`
-			Text        string `json:"text"`
-			Timestamp   string `json:"ts"`
-			ThreadTS    string `json:"thread_ts"`
-			Files       []struct {
-				ID       string `json:"id"`
-				Name     string `json:"name"`
-				URL      string `json:"url_private_download"`
-				MIME     string `json:"mimetype"`
-				Size     int64  `json:"size"`
-				Filetype string `json:"filetype"`
-			} `json:"files"`
-		} `json:"event"`
+		Type      string       `json:"type"`
+		Challenge string       `json:"challenge"`
+		Event     slackMessage `json:"event"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return uvim.Event{}, false, err
@@ -277,11 +282,43 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	if env.Type != "" && env.Type != "event_callback" {
 		return uvim.Event{}, false, nil
 	}
-	if env.Event.Type != "" && env.Event.Type != "message" {
+	eventType := uvim.EventMessageCreate
+	event := env.Event
+	if env.Event.Subtype == "message_changed" {
+		var nested struct {
+			Event struct {
+				Message slackMessage `json:"message"`
+			} `json:"event"`
+		}
+		if err := json.Unmarshal(raw, &nested); err != nil {
+			return uvim.Event{}, false, err
+		}
+		if nested.Event.Message.Timestamp == "" {
+			return uvim.Event{}, false, nil
+		}
+		nested.Event.Message.Channel = firstNonEmpty(nested.Event.Message.Channel, env.Event.Channel)
+		nested.Event.Message.ChannelType = firstNonEmpty(nested.Event.Message.ChannelType, env.Event.ChannelType)
+		event = nested.Event.Message
+		eventType = uvim.EventMessageUpdate
+	} else if env.Event.Subtype == "message_deleted" {
+		if env.Event.Previous != nil {
+			event.User = firstNonEmpty(event.User, env.Event.Previous.User)
+			event.Channel = firstNonEmpty(event.Channel, env.Event.Previous.Channel)
+			event.ChannelType = firstNonEmpty(event.ChannelType, env.Event.Previous.ChannelType)
+			event.Text = firstNonEmpty(event.Text, env.Event.Previous.Text)
+			event.ThreadTS = firstNonEmpty(event.ThreadTS, env.Event.Previous.ThreadTS)
+		}
+		event.Timestamp = firstNonEmpty(env.Event.DeletedTS, event.Timestamp)
+		if event.Timestamp == "" && env.Event.Previous != nil {
+			event.Timestamp = env.Event.Previous.Timestamp
+		}
+		eventType = uvim.EventMessageDelete
+	}
+	if event.Type != "" && event.Type != "message" && event.Type != "app_mention" {
 		return uvim.Event{}, false, nil
 	}
-	refs := make([]uvim.ResourceRef, 0, len(env.Event.Files))
-	for _, file := range env.Event.Files {
+	refs := make([]uvim.ResourceRef, 0, len(event.Files))
+	for _, file := range event.Files {
 		kind := uvim.ElementFile
 		if strings.HasPrefix(file.MIME, "image/") {
 			kind = uvim.ElementImage
@@ -290,20 +327,20 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 			refs = append(refs, uvim.ResourceRef{Provider: "slack", Connector: config.ConnectorID, Kind: kind, Name: file.Name, URL: file.URL, MIME: file.MIME, SizeBytes: file.Size, Secret: config.Token})
 		}
 	}
-	id := firstNonEmpty(env.Event.Timestamp, uvim.NewID("slack"))
+	id := firstNonEmpty(event.Timestamp, uvim.NewID("slack"))
 	channelType := uvim.ChannelGroup
-	if env.Event.ChannelType == "im" || strings.HasPrefix(env.Event.Channel, "D") {
+	if event.ChannelType == "im" || strings.HasPrefix(event.Channel, "D") {
 		channelType = uvim.ChannelDirect
 	}
 	return uvim.Event{
 		ID:        id,
-		Type:      uvim.EventMessageCreate,
+		Type:      eventType,
 		Provider:  "slack",
 		Connector: config.ConnectorID,
-		Channel:   uvim.Channel{ID: env.Event.Channel, Type: channelType},
-		User:      uvim.User{ID: env.Event.User},
-		Message:   uvim.Message{ID: id, Text: env.Event.Text, Type: "message", Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: id, ChannelID: env.Event.Channel, ThreadID: env.Event.ThreadTS, Target: &uvim.OutboundTarget{ID: env.Event.Channel, Kind: uvim.TargetChannel}},
+		Channel:   uvim.Channel{ID: event.Channel, Type: channelType},
+		User:      uvim.User{ID: event.User},
+		Message:   uvim.Message{ID: id, Text: event.Text, Type: "message", Resources: refs},
+		Referrer:  uvim.Referrer{MessageID: id, ChannelID: event.Channel, ThreadID: event.ThreadTS, Target: &uvim.OutboundTarget{ID: event.Channel, Kind: uvim.TargetChannel}},
 		Addressed: true,
 	}, true, nil
 }

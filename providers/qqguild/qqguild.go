@@ -53,8 +53,10 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		GroupID     string `json:"group_id"`
 		Content     string `json:"content"`
 		Author      struct {
-			ID       string `json:"id"`
-			Username string `json:"username"`
+			ID           string `json:"id"`
+			UserOpenID   string `json:"user_openid"`
+			MemberOpenID string `json:"member_openid"`
+			Username     string `json:"username"`
 		} `json:"author"`
 		Attachments []struct {
 			ID          string `json:"id"`
@@ -67,7 +69,8 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return uvim.Event{}, false, err
 	}
-	channelID := firstNonEmpty(msg.ChannelID, msg.GroupOpenID, msg.GroupID, msg.Author.ID)
+	authorID := firstNonEmpty(msg.Author.ID, msg.Author.UserOpenID, msg.Author.MemberOpenID)
+	channelID := firstNonEmpty(msg.ChannelID, msg.GroupOpenID, msg.GroupID, authorID)
 	if msg.ID == "" || channelID == "" {
 		return uvim.Event{}, false, nil
 	}
@@ -95,7 +98,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 			Secret:    config.Token,
 		})
 	}
-	return uvim.Event{ID: msg.ID, Type: uvim.EventMessageCreate, Provider: "qqguild", Connector: config.ConnectorID, Channel: uvim.Channel{ID: channelID, Type: channelType}, User: uvim.User{ID: msg.Author.ID, Name: msg.Author.Username}, Message: uvim.Message{ID: msg.ID, Text: msg.Content, Type: "message", Resources: refs}, Referrer: uvim.Referrer{MessageID: msg.ID, ChannelID: channelID, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}}, Addressed: true}, true, nil
+	return uvim.Event{ID: msg.ID, Type: uvim.EventMessageCreate, Provider: "qqguild", Connector: config.ConnectorID, Channel: uvim.Channel{ID: channelID, Type: channelType}, User: uvim.User{ID: authorID, Name: msg.Author.Username}, Message: uvim.Message{ID: msg.ID, Text: msg.Content, Type: "message", Resources: refs}, Referrer: uvim.Referrer{MessageID: msg.ID, ChannelID: channelID, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}}, Addressed: true}, true, nil
 }
 
 func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Request, error) {

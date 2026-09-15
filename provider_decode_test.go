@@ -1,6 +1,7 @@
 package uvim_test
 
 import (
+	"strings"
 	"testing"
 
 	uvim "github.com/hengshi/uv-im-connector"
@@ -196,6 +197,365 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 			}
 			if len(event.Message.Resources) != tt.wantRefs {
 				t.Fatalf("resources = %+v, want %d", event.Message.Resources, tt.wantRefs)
+			}
+		})
+	}
+}
+
+func TestProviderDecodersCoverIssue20ProviderGaps(t *testing.T) {
+	type resourceWant struct {
+		kind        string
+		name        string
+		urlContains string
+	}
+	tests := []struct {
+		name             string
+		decode           httpchannel.DecodeFunc
+		config           httpchannel.Config
+		raw              string
+		wantEventType    string
+		wantText         string
+		wantTextContains []string
+		wantEmptyText    bool
+		wantChannelID    string
+		wantChannelType  string
+		wantUserID       string
+		wantMessageID    string
+		wantParentID     string
+		wantThreadID     string
+		wantRefs         []resourceWant
+	}{
+		{
+			name:            "slack app mention is delivered",
+			decode:          slack.Decode,
+			raw:             `{"type":"event_callback","event":{"type":"app_mention","user":"U1","channel":"C1","text":"<@BOT> hello","ts":"1700000000.000100"}}`,
+			wantEventType:   uvim.EventMessageCreate,
+			wantText:        "<@BOT> hello",
+			wantChannelID:   "C1",
+			wantChannelType: uvim.ChannelGroup,
+			wantUserID:      "U1",
+			wantMessageID:   "1700000000.000100",
+		},
+		{
+			name:            "slack message changed uses nested message",
+			decode:          slack.Decode,
+			raw:             `{"type":"event_callback","event":{"type":"message","subtype":"message_changed","channel":"C1","message":{"user":"U1","text":"edited text","ts":"1700000000.000200","thread_ts":"1700000000.000100"}}}`,
+			wantEventType:   uvim.EventMessageUpdate,
+			wantText:        "edited text",
+			wantChannelID:   "C1",
+			wantChannelType: uvim.ChannelGroup,
+			wantUserID:      "U1",
+			wantMessageID:   "1700000000.000200",
+			wantThreadID:    "1700000000.000100",
+		},
+		{
+			name:            "slack message deleted preserves deleted timestamp",
+			decode:          slack.Decode,
+			raw:             `{"type":"event_callback","event":{"type":"message","subtype":"message_deleted","channel":"C1","deleted_ts":"1700000000.000300","previous_message":{"user":"U1","text":"removed","ts":"1700000000.000300","thread_ts":"1700000000.000100"}}}`,
+			wantEventType:   uvim.EventMessageDelete,
+			wantText:        "removed",
+			wantChannelID:   "C1",
+			wantChannelType: uvim.ChannelGroup,
+			wantUserID:      "U1",
+			wantMessageID:   "1700000000.000300",
+			wantThreadID:    "1700000000.000100",
+		},
+		{
+			name:            "qqguild c2c user openid is sender and direct channel",
+			decode:          qqguild.Decode,
+			raw:             `{"id":"m1","content":"hello","author":{"user_openid":"uo_1","username":"Ada"}}`,
+			wantEventType:   uvim.EventMessageCreate,
+			wantText:        "hello",
+			wantChannelID:   "uo_1",
+			wantChannelType: uvim.ChannelDirect,
+			wantUserID:      "uo_1",
+			wantMessageID:   "m1",
+		},
+		{
+			name:            "qqguild group member openid is sender",
+			decode:          qqguild.Decode,
+			raw:             `{"id":"m2","group_openid":"go_1","content":"hello","author":{"member_openid":"mo_1","username":"Ada"}}`,
+			wantEventType:   uvim.EventMessageCreate,
+			wantText:        "hello",
+			wantChannelID:   "go_1",
+			wantChannelType: uvim.ChannelGroup,
+			wantUserID:      "mo_1",
+			wantMessageID:   "m2",
+		},
+		{
+			name:            "line sticker is text not fake file",
+			decode:          line.Decode,
+			raw:             `{"events":[{"replyToken":"r1","source":{"type":"user","userId":"u1"},"message":{"id":"m1","type":"sticker","packageId":"pkg","stickerId":"stk","stickerResourceType":"STATIC"}}]}`,
+			wantEventType:   uvim.EventMessageCreate,
+			wantText:        "[Sticker: pkg/stk]",
+			wantChannelID:   "u1",
+			wantChannelType: uvim.ChannelDirect,
+			wantUserID:      "u1",
+			wantMessageID:   "m1",
+		},
+		{
+			name:             "line location is text not fake file",
+			decode:           line.Decode,
+			raw:              `{"events":[{"replyToken":"r1","source":{"type":"group","userId":"u1","groupId":"g1"},"message":{"id":"m2","type":"location","title":"HQ","address":"1 Main St","latitude":31.2304,"longitude":121.4737}}]}`,
+			wantEventType:    uvim.EventMessageCreate,
+			wantTextContains: []string{"HQ", "1 Main St", "31.2304", "121.4737"},
+			wantChannelID:    "g1",
+			wantChannelType:  uvim.ChannelGroup,
+			wantUserID:       "u1",
+			wantMessageID:    "m2",
+		},
+		{
+			name:            "kook kmarkdown url remains text",
+			decode:          kook.Decode,
+			raw:             `{"s":0,"d":{"msg_id":"m1","target_id":"c1","author_id":"u1","content":"https://example.test/article","type":9}}`,
+			wantEventType:   uvim.EventMessageCreate,
+			wantText:        "https://example.test/article",
+			wantChannelID:   "c1",
+			wantChannelType: uvim.ChannelGroup,
+			wantUserID:      "u1",
+			wantMessageID:   "m1",
+		},
+		{
+			name:             "kook card extracts media modules",
+			decode:           kook.Decode,
+			raw:              `{"s":0,"d":{"msg_id":"m2","target_id":"c1","author_id":"u1","content":"[{\"type\":\"card\",\"modules\":[{\"type\":\"file\",\"src\":\"https://cdn.test/report.pdf\",\"title\":\"report.pdf\"},{\"type\":\"video\",\"src\":\"https://cdn.test/movie.mp4\",\"title\":\"movie.mp4\"}]}]","type":10}}`,
+			wantEventType:    uvim.EventMessageCreate,
+			wantTextContains: []string{"report.pdf", "movie.mp4"},
+			wantChannelID:    "c1",
+			wantChannelType:  uvim.ChannelGroup,
+			wantUserID:       "u1",
+			wantMessageID:    "m2",
+			wantRefs: []resourceWant{
+				{kind: uvim.ElementFile, name: "report.pdf", urlContains: "/report.pdf"},
+				{kind: uvim.ElementVideo, name: "movie.mp4", urlContains: "/movie.mp4"},
+			},
+		},
+		{
+			name:            "telegram voice keeps resource and thread context",
+			decode:          telegram.Decode,
+			raw:             `{"update_id":99,"message":{"message_id":10,"message_thread_id":7,"caption":"voice note","voice":{"file_id":"voice_1","mime_type":"audio/ogg","file_size":123},"reply_to_message":{"message_id":8},"chat":{"id":2,"type":"supergroup","title":"Team"},"from":{"id":3,"first_name":"Ada"}}}`,
+			wantEventType:   uvim.EventMessageCreate,
+			wantText:        "voice note",
+			wantChannelID:   "2",
+			wantChannelType: uvim.ChannelGroup,
+			wantUserID:      "3",
+			wantMessageID:   "10",
+			wantParentID:    "8",
+			wantThreadID:    "7",
+			wantRefs:        []resourceWant{{kind: uvim.ElementAudio}},
+		},
+		{
+			name:             "telegram edited channel location is normalized",
+			decode:           telegram.Decode,
+			raw:              `{"update_id":100,"edited_channel_post":{"message_id":11,"location":{"latitude":31.2304,"longitude":121.4737},"chat":{"id":-100,"type":"channel","title":"News"}}}`,
+			wantEventType:    uvim.EventMessageUpdate,
+			wantTextContains: []string{"Location", "31.2304", "121.4737"},
+			wantChannelID:    "-100",
+			wantChannelType:  uvim.ChannelGroup,
+			wantMessageID:    "11",
+		},
+		{
+			name:            "whatsapp media caption is surfaced",
+			decode:          whatsapp.Decode,
+			raw:             `{"entry":[{"changes":[{"value":{"messages":[{"id":"m1","from":"u1","type":"image","image":{"id":"media1","mime_type":"image/png","caption":"please analyze this"}}]}}]}]}`,
+			wantEventType:   uvim.EventMessageCreate,
+			wantText:        "please analyze this",
+			wantChannelID:   "u1",
+			wantChannelType: uvim.ChannelDirect,
+			wantUserID:      "u1",
+			wantMessageID:   "m1",
+			wantRefs:        []resourceWant{{kind: uvim.ElementImage}},
+		},
+		{
+			name:             "whatsapp interactive button reply is surfaced",
+			decode:           whatsapp.Decode,
+			raw:              `{"entry":[{"changes":[{"value":{"messages":[{"id":"m2","from":"u1","type":"interactive","interactive":{"button_reply":{"id":"approve","title":"Approve"}}}]}}]}]}`,
+			wantEventType:    uvim.EventMessageCreate,
+			wantTextContains: []string{"Approve", "approve"},
+			wantChannelID:    "u1",
+			wantChannelType:  uvim.ChannelDirect,
+			wantUserID:       "u1",
+			wantMessageID:    "m2",
+		},
+		{
+			name:             "discord embeds stickers polls and reference are normalized",
+			decode:           discord.Decode,
+			raw:              `{"id":"m1","channel_id":"c1","guild_id":"g1","content":"","type":19,"author":{"id":"u1","username":"Ada"},"embeds":[{"title":"Deploy","description":"finished"}],"sticker_items":[{"id":"s1","name":"Ship"}],"poll":{"question":{"text":"Ship?"},"answers":[{"poll_media":{"text":"Yes"}}]},"referenced_message":{"id":"parent1","content":"original"}}`,
+			wantEventType:    uvim.EventMessageCreate,
+			wantTextContains: []string{"Deploy", "finished", "Ship", "Ship?", "Yes", "original"},
+			wantChannelID:    "c1",
+			wantChannelType:  uvim.ChannelGroup,
+			wantUserID:       "u1",
+			wantMessageID:    "m1",
+			wantParentID:     "parent1",
+		},
+		{
+			name:            "discord message reference preserves parent id without expanded message",
+			decode:          discord.Decode,
+			raw:             `{"id":"m2","channel_id":"c1","guild_id":"g1","content":"reply","author":{"id":"u1","username":"Ada"},"message_reference":{"message_id":"parent2"}}`,
+			wantEventType:   uvim.EventMessageCreate,
+			wantText:        "reply",
+			wantChannelID:   "c1",
+			wantChannelType: uvim.ChannelGroup,
+			wantUserID:      "u1",
+			wantMessageID:   "m2",
+			wantParentID:    "parent2",
+		},
+		{
+			name:             "wechat official location content is kept",
+			decode:           wechatofficial.Decode,
+			raw:              `<xml><ToUserName>bot</ToUserName><FromUserName>u1</FromUserName><CreateTime>1</CreateTime><MsgType>location</MsgType><Location_X>31.2304</Location_X><Location_Y>121.4737</Location_Y><Scale>15</Scale><Label>HQ</Label><MsgId>m1</MsgId></xml>`,
+			wantEventType:    uvim.EventMessageCreate,
+			wantTextContains: []string{"HQ", "31.2304", "121.4737"},
+			wantChannelID:    "u1",
+			wantChannelType:  uvim.ChannelDirect,
+			wantUserID:       "u1",
+			wantMessageID:    "m1",
+		},
+		{
+			name:             "wechat official link content is kept",
+			decode:           wechatofficial.Decode,
+			raw:              `<xml><ToUserName>bot</ToUserName><FromUserName>u1</FromUserName><CreateTime>1</CreateTime><MsgType>link</MsgType><Title>Docs</Title><Description>Read me</Description><Url>https://example.test/docs</Url><MsgId>m2</MsgId></xml>`,
+			wantEventType:    uvim.EventMessageCreate,
+			wantTextContains: []string{"Docs", "Read me", "https://example.test/docs"},
+			wantChannelID:    "u1",
+			wantChannelType:  uvim.ChannelDirect,
+			wantUserID:       "u1",
+			wantMessageID:    "m2",
+		},
+		{
+			name:            "onebot cq string image becomes resource",
+			decode:          onebot.Decode,
+			raw:             `{"post_type":"message","message_type":"group","message_id":1,"user_id":2,"group_id":3,"raw_message":"[CQ:image,file=pic.png,url=https://cdn.test/pic.png]","message":"[CQ:image,file=pic.png,url=https://cdn.test/pic.png]"}`,
+			wantEventType:   uvim.EventMessageCreate,
+			wantChannelID:   "3",
+			wantChannelType: uvim.ChannelGroup,
+			wantUserID:      "2",
+			wantMessageID:   "1",
+			wantEmptyText:   true,
+			wantRefs:        []resourceWant{{kind: uvim.ElementImage, name: "pic.png", urlContains: "/pic.png"}},
+		},
+		{
+			name:            "qq cq string image becomes resource",
+			decode:          qq.Decode,
+			raw:             `{"post_type":"message","message_type":"private","message_id":1,"user_id":2,"raw_message":"[CQ:image,file=pic.png,url=https://cdn.test/pic.png]","message":"[CQ:image,file=pic.png,url=https://cdn.test/pic.png]"}`,
+			wantEventType:   uvim.EventMessageCreate,
+			wantChannelID:   "2",
+			wantChannelType: uvim.ChannelDirect,
+			wantUserID:      "2",
+			wantMessageID:   "1",
+			wantEmptyText:   true,
+			wantRefs:        []resourceWant{{kind: uvim.ElementImage, name: "pic.png", urlContains: "/pic.png"}},
+		},
+		{
+			name:            "matrix edit targets original message id",
+			decode:          matrix.Decode,
+			config:          httpchannel.Config{BaseURL: "https://matrix.test"},
+			raw:             `{"event_id":"$edit","room_id":"!room:matrix.test","sender":"@ada:matrix.test","type":"m.room.message","content":{"body":" * edited","msgtype":"m.text","m.new_content":{"body":"edited","msgtype":"m.text"},"m.relates_to":{"rel_type":"m.replace","event_id":"$original"}}}`,
+			wantEventType:   uvim.EventMessageUpdate,
+			wantText:        "edited",
+			wantChannelID:   "!room:matrix.test",
+			wantChannelType: uvim.ChannelRoom,
+			wantUserID:      "@ada:matrix.test",
+			wantMessageID:   "$original",
+		},
+		{
+			name:            "matrix encrypted attachment and reply are normalized",
+			decode:          matrix.Decode,
+			config:          httpchannel.Config{BaseURL: "https://matrix.test"},
+			raw:             `{"event_id":"$m1","room_id":"!room:matrix.test","sender":"@ada:matrix.test","type":"m.room.message","content":{"body":"secret.pdf","msgtype":"m.file","file":{"url":"mxc://matrix.test/media1","key":{"alg":"A256CTR","k":"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"},"iv":"MDEyMzQ1Njc4OWFiY2RlZg","hashes":{"sha256":"abc"}},"info":{"mimetype":"application/pdf","size":42},"m.relates_to":{"m.in_reply_to":{"event_id":"$parent"}}}}`,
+			wantEventType:   uvim.EventMessageCreate,
+			wantText:        "secret.pdf",
+			wantChannelID:   "!room:matrix.test",
+			wantChannelType: uvim.ChannelRoom,
+			wantUserID:      "@ada:matrix.test",
+			wantMessageID:   "$m1",
+			wantParentID:    "$parent",
+			wantRefs:        []resourceWant{{kind: uvim.ElementFile, name: "secret.pdf", urlContains: "/media/download/matrix.test/media1"}},
+		},
+		{
+			name:            "matrix sticker event is normalized",
+			decode:          matrix.Decode,
+			config:          httpchannel.Config{BaseURL: "https://matrix.test"},
+			raw:             `{"event_id":"$s1","room_id":"!room:matrix.test","sender":"@ada:matrix.test","type":"m.sticker","content":{"body":"ship it","url":"mxc://matrix.test/sticker1","info":{"mimetype":"image/png","size":12}}}`,
+			wantEventType:   uvim.EventMessageCreate,
+			wantText:        "ship it",
+			wantChannelID:   "!room:matrix.test",
+			wantChannelType: uvim.ChannelRoom,
+			wantUserID:      "@ada:matrix.test",
+			wantMessageID:   "$s1",
+			wantRefs:        []resourceWant{{kind: uvim.ElementImage, name: "ship it", urlContains: "/media/download/matrix.test/sticker1"}},
+		},
+		{
+			name:            "zulip upload links become resources",
+			decode:          zulip.Decode,
+			config:          httpchannel.Config{BaseURL: "https://zulip.test"},
+			raw:             `{"id":1,"sender_id":2,"sender_full_name":"Ada","stream_id":3,"subject":"general","content":"see [report.pdf](/user_uploads/1/report.pdf)","type":"stream"}`,
+			wantEventType:   uvim.EventMessageCreate,
+			wantText:        "see [report.pdf](/user_uploads/1/report.pdf)",
+			wantChannelID:   "3",
+			wantChannelType: uvim.ChannelGroup,
+			wantUserID:      "2",
+			wantMessageID:   "1",
+			wantThreadID:    "general",
+			wantRefs:        []resourceWant{{kind: uvim.ElementFile, name: "report.pdf", urlContains: "/user_uploads/1/report.pdf"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := tt.config
+			config.ConnectorID = "main"
+			config.Token = "token"
+			event, ok, err := tt.decode([]byte(tt.raw), config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !ok {
+				t.Fatal("decode ok = false")
+			}
+			if event.Type != tt.wantEventType {
+				t.Fatalf("event type = %q, want %q; event=%+v", event.Type, tt.wantEventType, event)
+			}
+			if tt.wantText != "" && event.Message.Text != tt.wantText {
+				t.Fatalf("message text = %q, want %q", event.Message.Text, tt.wantText)
+			}
+			if tt.wantEmptyText && event.Message.Text != "" {
+				t.Fatalf("message text = %q, want empty normalized text", event.Message.Text)
+			}
+			for _, want := range tt.wantTextContains {
+				if !strings.Contains(event.Message.Text, want) {
+					t.Fatalf("message text = %q, want to contain %q", event.Message.Text, want)
+				}
+			}
+			if event.Channel.ID != tt.wantChannelID || event.Channel.Type != tt.wantChannelType {
+				t.Fatalf("channel = %+v, want id=%q type=%q", event.Channel, tt.wantChannelID, tt.wantChannelType)
+			}
+			if event.User.ID != tt.wantUserID {
+				t.Fatalf("user id = %q, want %q; event=%+v", event.User.ID, tt.wantUserID, event)
+			}
+			if event.Message.ID != tt.wantMessageID || event.Referrer.MessageID != tt.wantMessageID {
+				t.Fatalf("message/referrer id = %q/%q, want %q", event.Message.ID, event.Referrer.MessageID, tt.wantMessageID)
+			}
+			if event.Referrer.ParentMessageID != tt.wantParentID {
+				t.Fatalf("parent id = %q, want %q", event.Referrer.ParentMessageID, tt.wantParentID)
+			}
+			if event.Referrer.ThreadID != tt.wantThreadID {
+				t.Fatalf("thread id = %q, want %q", event.Referrer.ThreadID, tt.wantThreadID)
+			}
+			if len(event.Message.Resources) != len(tt.wantRefs) {
+				t.Fatalf("resources = %+v, want %d", event.Message.Resources, len(tt.wantRefs))
+			}
+			for i, want := range tt.wantRefs {
+				ref := event.Message.Resources[i]
+				if ref.Kind != want.kind {
+					t.Fatalf("resource %d kind = %q, want %q; resources=%+v", i, ref.Kind, want.kind, event.Message.Resources)
+				}
+				if want.name != "" && ref.Name != want.name {
+					t.Fatalf("resource %d name = %q, want %q", i, ref.Name, want.name)
+				}
+				if want.urlContains != "" && !strings.Contains(ref.URL, want.urlContains) {
+					t.Fatalf("resource %d url = %q, want to contain %q", i, ref.URL, want.urlContains)
+				}
 			}
 		})
 	}
