@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -203,6 +204,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 			Secret:    config.Token,
 		})
 	}
+	refs = append(refs, zulipContentResources(msg.Content, config)...)
 	return uvim.Event{
 		ID:        num(msg.ID),
 		Type:      uvim.EventMessageCreate,
@@ -214,6 +216,44 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Referrer:  uvim.Referrer{MessageID: num(msg.ID), ChannelID: channelID, ThreadID: msg.Subject, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
 		Addressed: true,
 	}, true, nil
+}
+
+var zulipUploadLinkPattern = regexp.MustCompile(`\[[^\]]*\]\((/user_uploads/[^)\s]+|https?://[^)\s]+/user_uploads/[^)\s]+)\)|(?m)(/user_uploads/[^\s)]+|https?://[^\s)]+/user_uploads/[^\s)]+)`)
+
+func zulipContentResources(content string, config httpchannel.Config) []uvim.ResourceRef {
+	var refs []uvim.ResourceRef
+	seen := map[string]bool{}
+	for _, match := range zulipUploadLinkPattern.FindAllStringSubmatch(content, -1) {
+		rawURL := firstNonEmpty(match[1], match[2])
+		if rawURL == "" || seen[rawURL] {
+			continue
+		}
+		seen[rawURL] = true
+		resourceURL := rawURL
+		if strings.HasPrefix(resourceURL, "/") && config.BaseURL != "" {
+			resourceURL = strings.TrimRight(config.BaseURL, "/") + resourceURL
+		}
+		refs = append(refs, uvim.ResourceRef{
+			Provider:  "zulip",
+			Connector: config.ConnectorID,
+			Kind:      uvim.ElementFile,
+			Name:      zulipUploadName(rawURL),
+			URL:       resourceURL,
+			Secret:    config.Token,
+		})
+	}
+	return refs
+}
+
+func zulipUploadName(rawURL string) string {
+	rawURL = strings.TrimRight(rawURL, "/")
+	if index := strings.LastIndex(rawURL, "/"); index >= 0 && index+1 < len(rawURL) {
+		if name, err := url.PathUnescape(rawURL[index+1:]); err == nil && strings.TrimSpace(name) != "" {
+			return name
+		}
+		return rawURL[index+1:]
+	}
+	return rawURL
 }
 
 func Send(msg uvim.OutboundMessage, _ httpchannel.Config) (httpchannel.Request, error) {

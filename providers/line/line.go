@@ -82,7 +82,7 @@ func (p *Provider) Download(ctx context.Context, req uvim.ResourceDownloadReques
 		if ref.Key == "" {
 			return ref, fmt.Errorf("line download: message id is required")
 		}
-		ref.URL = strings.TrimRight(p.config.BaseURL, "/") + "/v2/bot/message/" + url.PathEscape(ref.Key) + "/content"
+		ref.URL = strings.TrimRight(lineContentBaseURL(p.config.BaseURL), "/") + "/v2/bot/message/" + url.PathEscape(ref.Key) + "/content"
 		ref.Secret = p.config.Token
 		req.Resource = ref
 	}
@@ -131,7 +131,7 @@ func eventFromWebhookItem(item lineWebhookEvent, config httpchannel.Config) uvim
 		}
 	}
 	var refs []uvim.ResourceRef
-	if item.Message.Type != "" && item.Message.Type != "text" && item.Message.ID != "" {
+	if lineDownloadable(item.Message.Type) && item.Message.ID != "" {
 		refs = append(refs, uvim.ResourceRef{
 			Provider:  "line",
 			Connector: config.ConnectorID,
@@ -141,6 +141,7 @@ func eventFromWebhookItem(item lineWebhookEvent, config httpchannel.Config) uvim
 			SizeBytes: item.Message.FileSize,
 		})
 	}
+	text := lineMessageText(item.Message)
 	return uvim.Event{
 		ID:        item.Message.ID,
 		Type:      uvim.EventMessageCreate,
@@ -148,7 +149,7 @@ func eventFromWebhookItem(item lineWebhookEvent, config httpchannel.Config) uvim
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: channelID, Type: channelType},
 		User:      uvim.User{ID: item.Source.UserID},
-		Message:   uvim.Message{ID: item.Message.ID, Text: item.Message.Text, Type: item.Message.Type, Resources: refs},
+		Message:   uvim.Message{ID: item.Message.ID, Text: text, Type: item.Message.Type, Resources: refs},
 		Referrer:  uvim.Referrer{MessageID: item.Message.ID, ChannelID: channelID, ReplyToken: item.ReplyToken, ExpiresAt: &expiresAt, Target: &target},
 		Addressed: true,
 	}
@@ -163,11 +164,18 @@ type lineWebhookEvent struct {
 		RoomID  string `json:"roomId"`
 	} `json:"source"`
 	Message struct {
-		ID       string `json:"id"`
-		Type     string `json:"type"`
-		Text     string `json:"text"`
-		FileName string `json:"fileName"`
-		FileSize int64  `json:"fileSize"`
+		ID                  string  `json:"id"`
+		Type                string  `json:"type"`
+		Text                string  `json:"text"`
+		FileName            string  `json:"fileName"`
+		FileSize            int64   `json:"fileSize"`
+		PackageID           string  `json:"packageId"`
+		StickerID           string  `json:"stickerId"`
+		StickerResourceType string  `json:"stickerResourceType"`
+		Title               string  `json:"title"`
+		Address             string  `json:"address"`
+		Latitude            float64 `json:"latitude"`
+		Longitude           float64 `json:"longitude"`
 	} `json:"message"`
 }
 
@@ -226,4 +234,58 @@ func lineKind(messageType string) string {
 	default:
 		return uvim.ElementFile
 	}
+}
+
+func lineDownloadable(messageType string) bool {
+	switch strings.ToLower(strings.TrimSpace(messageType)) {
+	case "image", "audio", "video", "file":
+		return true
+	default:
+		return false
+	}
+}
+
+func lineMessageText(msg struct {
+	ID                  string  `json:"id"`
+	Type                string  `json:"type"`
+	Text                string  `json:"text"`
+	FileName            string  `json:"fileName"`
+	FileSize            int64   `json:"fileSize"`
+	PackageID           string  `json:"packageId"`
+	StickerID           string  `json:"stickerId"`
+	StickerResourceType string  `json:"stickerResourceType"`
+	Title               string  `json:"title"`
+	Address             string  `json:"address"`
+	Latitude            float64 `json:"latitude"`
+	Longitude           float64 `json:"longitude"`
+}) string {
+	switch strings.ToLower(strings.TrimSpace(msg.Type)) {
+	case "sticker":
+		id := firstNonEmpty(msg.PackageID+"/"+msg.StickerID, msg.StickerID, msg.PackageID)
+		id = strings.Trim(id, "/")
+		if id == "" {
+			return "[Sticker]"
+		}
+		return "[Sticker: " + id + "]"
+	case "location":
+		parts := []string{"Location"}
+		if title := strings.TrimSpace(msg.Title); title != "" {
+			parts = append(parts, title)
+		}
+		if address := strings.TrimSpace(msg.Address); address != "" {
+			parts = append(parts, address)
+		}
+		parts = append(parts, fmt.Sprintf("(%g,%g)", msg.Latitude, msg.Longitude))
+		return strings.Join(parts, " ")
+	default:
+		return msg.Text
+	}
+}
+
+func lineContentBaseURL(baseURL string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if trimmed == "https://api.line.me" {
+		return "https://api-data.line.me"
+	}
+	return trimmed
 }

@@ -181,6 +181,10 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		return uvim.Event{}, false, nil
 	}
 	refs := kookResources(env.D.Type, env.D.Content, config)
+	text := env.D.Content
+	if env.D.Type == 10 {
+		text = firstNonEmpty(kookCardText(env.D.Content), env.D.Content)
+	}
 	channelType := uvim.ChannelGroup
 	channelID := env.D.TargetID
 	target := uvim.OutboundTarget{ID: env.D.TargetID, Kind: uvim.TargetChannel}
@@ -196,7 +200,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: channelID, Type: channelType, Name: env.D.Extra.ChannelName},
 		User:      uvim.User{ID: env.D.AuthorID, Name: firstNonEmpty(env.D.Extra.Author.Nickname, env.D.Extra.Author.Username)},
-		Message:   uvim.Message{ID: env.D.MsgID, Text: env.D.Content, Type: "message", Resources: refs},
+		Message:   uvim.Message{ID: env.D.MsgID, Text: text, Type: "message", Resources: refs},
 		Referrer:  uvim.Referrer{MessageID: env.D.MsgID, ChannelID: channelID, Target: &target},
 		Addressed: true,
 	}, true, nil
@@ -282,23 +286,89 @@ func firstNonEmpty(values ...string) string {
 }
 
 func kookResources(messageType int, content string, config httpchannel.Config) []uvim.ResourceRef {
-	if !strings.HasPrefix(content, "http://") && !strings.HasPrefix(content, "https://") {
-		return nil
-	}
-	kind := uvim.ElementFile
 	switch messageType {
 	case 2:
-		kind = uvim.ElementImage
+		return kookURLResource(content, uvim.ElementImage, "", config)
 	case 3:
-		kind = uvim.ElementVideo
-	case 8, 9:
-		kind = uvim.ElementAudio
+		return kookURLResource(content, uvim.ElementVideo, "", config)
+	case 8:
+		return kookURLResource(content, uvim.ElementAudio, "", config)
+	case 10:
+		return kookCardResources(content, config)
+	default:
+		return nil
+	}
+}
+
+func kookURLResource(rawURL, kind, name string, config httpchannel.Config) []uvim.ResourceRef {
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		return nil
 	}
 	return []uvim.ResourceRef{{
 		Provider:  "kook",
 		Connector: config.ConnectorID,
 		Kind:      kind,
-		URL:       content,
+		Name:      name,
+		URL:       rawURL,
 		Secret:    config.Token,
 	}}
+}
+
+type kookCard struct {
+	Modules []struct {
+		Type  string `json:"type"`
+		Src   string `json:"src"`
+		Title string `json:"title"`
+	} `json:"modules"`
+}
+
+func kookCardResources(content string, config httpchannel.Config) []uvim.ResourceRef {
+	var cards []kookCard
+	if err := json.Unmarshal([]byte(content), &cards); err != nil {
+		return nil
+	}
+	var refs []uvim.ResourceRef
+	for _, card := range cards {
+		for _, module := range card.Modules {
+			kind := kookCardModuleKind(module.Type)
+			if kind == "" {
+				continue
+			}
+			refs = append(refs, kookURLResource(module.Src, kind, module.Title, config)...)
+		}
+	}
+	return refs
+}
+
+func kookCardText(content string) string {
+	var cards []kookCard
+	if err := json.Unmarshal([]byte(content), &cards); err != nil {
+		return ""
+	}
+	var parts []string
+	for _, card := range cards {
+		for _, module := range card.Modules {
+			if title := strings.TrimSpace(module.Title); title != "" {
+				parts = append(parts, title)
+			} else if src := strings.TrimSpace(module.Src); src != "" && kookCardModuleKind(module.Type) != "" {
+				parts = append(parts, src)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func kookCardModuleKind(moduleType string) string {
+	switch strings.ToLower(strings.TrimSpace(moduleType)) {
+	case "image":
+		return uvim.ElementImage
+	case "audio":
+		return uvim.ElementAudio
+	case "video":
+		return uvim.ElementVideo
+	case "file":
+		return uvim.ElementFile
+	default:
+		return ""
+	}
 }

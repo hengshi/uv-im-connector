@@ -62,6 +62,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		ID        string `json:"id"`
 		ChannelID string `json:"channel_id"`
 		GuildID   string `json:"guild_id"`
+		Type      int    `json:"type"`
 		Content   string `json:"content"`
 		Author    struct {
 			ID       string `json:"id"`
@@ -74,6 +75,38 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 			ContentType string `json:"content_type"`
 			Size        int64  `json:"size"`
 		} `json:"attachments"`
+		Embeds []struct {
+			Title       string `json:"title"`
+			Description string `json:"description"`
+			URL         string `json:"url"`
+		} `json:"embeds"`
+		StickerItems []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"sticker_items"`
+		Components []discordComponent `json:"components"`
+		Poll       *struct {
+			Question struct {
+				Text string `json:"text"`
+			} `json:"question"`
+			Answers []struct {
+				PollMedia struct {
+					Text string `json:"text"`
+				} `json:"poll_media"`
+			} `json:"answers"`
+		} `json:"poll"`
+		MessageSnapshots []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"message_snapshots"`
+		ReferencedMessage *struct {
+			ID      string `json:"id"`
+			Content string `json:"content"`
+		} `json:"referenced_message"`
+		MessageReference *struct {
+			MessageID string `json:"message_id"`
+		} `json:"message_reference"`
 	}
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return uvim.Event{}, false, err
@@ -100,6 +133,47 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	if msg.GuildID == "" {
 		channelType = uvim.ChannelDirect
 	}
+	parentID := ""
+	if msg.ReferencedMessage != nil {
+		parentID = msg.ReferencedMessage.ID
+	}
+	if parentID == "" && msg.MessageReference != nil {
+		parentID = msg.MessageReference.MessageID
+	}
+	var textParts []string
+	addText := func(text string) {
+		if text = strings.TrimSpace(text); text != "" {
+			textParts = append(textParts, text)
+		}
+	}
+	addText(msg.Content)
+	for _, embed := range msg.Embeds {
+		addText(embed.Title)
+		addText(embed.Description)
+		addText(embed.URL)
+	}
+	for _, sticker := range msg.StickerItems {
+		addText("[Sticker: " + firstNonEmpty(sticker.Name, sticker.ID) + "]")
+	}
+	for _, component := range msg.Components {
+		addText(discordComponentText(component))
+	}
+	if msg.Poll != nil {
+		addText("Poll: " + msg.Poll.Question.Text)
+		for _, answer := range msg.Poll.Answers {
+			addText("- " + answer.PollMedia.Text)
+		}
+	}
+	for _, snapshot := range msg.MessageSnapshots {
+		addText("Forwarded: " + snapshot.Message.Content)
+	}
+	if msg.ReferencedMessage != nil {
+		addText("Referenced: " + msg.ReferencedMessage.Content)
+	}
+	text := strings.Join(textParts, "\n")
+	if text == "" && msg.Type != 0 {
+		text = fmt.Sprintf("[Discord message type: %d]", msg.Type)
+	}
 	return uvim.Event{
 		ID:        msg.ID,
 		Type:      uvim.EventMessageCreate,
@@ -107,10 +181,30 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: msg.ChannelID, Type: channelType},
 		User:      uvim.User{ID: msg.Author.ID, Name: msg.Author.Username},
-		Message:   uvim.Message{ID: msg.ID, Text: msg.Content, Type: "message", Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: msg.ID, ChannelID: msg.ChannelID, Target: &uvim.OutboundTarget{ID: msg.ChannelID, Kind: uvim.TargetChannel}},
+		Message:   uvim.Message{ID: msg.ID, Text: text, Type: "message", Resources: refs},
+		Referrer:  uvim.Referrer{MessageID: msg.ID, ParentMessageID: parentID, ChannelID: msg.ChannelID, Target: &uvim.OutboundTarget{ID: msg.ChannelID, Kind: uvim.TargetChannel}},
 		Addressed: true,
 	}, true, nil
+}
+
+type discordComponent struct {
+	Type       int                `json:"type"`
+	Label      string             `json:"label"`
+	CustomID   string             `json:"custom_id"`
+	Components []discordComponent `json:"components"`
+}
+
+func discordComponentText(component discordComponent) string {
+	var parts []string
+	if text := strings.TrimSpace(firstNonEmpty(component.Label, component.CustomID)); text != "" {
+		parts = append(parts, text)
+	}
+	for _, child := range component.Components {
+		if text := discordComponentText(child); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Request, error) {

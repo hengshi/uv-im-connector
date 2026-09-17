@@ -344,7 +344,7 @@ func DecodeEvents(raw []byte, config httpchannel.Config) ([]uvim.Event, error) {
 }
 
 func eventFromWebhookMessage(msg whatsappWebhookMessage, config httpchannel.Config) uvim.Event {
-	refs := whatsappResources(msg.Image, msg.Audio, msg.Video, msg.Document, config)
+	refs := whatsappResources(msg.Image, msg.Audio, msg.Video, msg.Document, msg.Sticker, config)
 	channelID := msg.From
 	channelType := uvim.ChannelDirect
 	if msg.Context.GroupID != "" {
@@ -362,7 +362,7 @@ func eventFromWebhookMessage(msg whatsappWebhookMessage, config httpchannel.Conf
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: channelID, Type: channelType, Name: msg.Context.GroupSubject},
 		User:      uvim.User{ID: msg.From},
-		Message:   uvim.Message{ID: msg.ID, Text: msg.Text.Body, Type: msg.Type, Resources: refs},
+		Message:   uvim.Message{ID: msg.ID, Text: whatsappMessageText(msg), Type: msg.Type, Resources: refs},
 		Referrer:  uvim.Referrer{MessageID: msg.ID, ParentMessageID: msg.Context.ID, ChannelID: channelID, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
 		Addressed: true,
 	}
@@ -384,6 +384,23 @@ type whatsappWebhookMessage struct {
 	Audio    *whatsappMedia `json:"audio"`
 	Video    *whatsappMedia `json:"video"`
 	Document *whatsappMedia `json:"document"`
+	Sticker  *whatsappMedia `json:"sticker"`
+	Button   *struct {
+		Text    string `json:"text"`
+		Payload string `json:"payload"`
+	} `json:"button"`
+	Interactive *struct {
+		Type        string `json:"type"`
+		ButtonReply *struct {
+			ID    string `json:"id"`
+			Title string `json:"title"`
+		} `json:"button_reply"`
+		ListReply *struct {
+			ID          string `json:"id"`
+			Title       string `json:"title"`
+			Description string `json:"description"`
+		} `json:"list_reply"`
+	} `json:"interactive"`
 }
 
 type whatsappMedia struct {
@@ -452,7 +469,33 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func whatsappResources(image, audio, video, document *whatsappMedia, config httpchannel.Config) []uvim.ResourceRef {
+func whatsappMessageText(msg whatsappWebhookMessage) string {
+	if text := strings.TrimSpace(msg.Text.Body); text != "" {
+		return text
+	}
+	for _, media := range []*whatsappMedia{msg.Image, msg.Audio, msg.Video, msg.Document, msg.Sticker} {
+		if media != nil && strings.TrimSpace(media.Caption) != "" {
+			return strings.TrimSpace(media.Caption)
+		}
+	}
+	if msg.Button != nil {
+		return strings.TrimSpace(firstNonEmpty(msg.Button.Text, msg.Button.Payload))
+	}
+	if msg.Interactive != nil {
+		if msg.Interactive.ButtonReply != nil {
+			return strings.TrimSpace(firstNonEmpty(msg.Interactive.ButtonReply.Title, msg.Interactive.ButtonReply.ID) + " " + msg.Interactive.ButtonReply.ID)
+		}
+		if msg.Interactive.ListReply != nil {
+			return strings.TrimSpace(firstNonEmpty(msg.Interactive.ListReply.Title, msg.Interactive.ListReply.ID) + " " + firstNonEmpty(msg.Interactive.ListReply.Description, msg.Interactive.ListReply.ID))
+		}
+	}
+	if msg.Sticker != nil {
+		return "[Sticker]"
+	}
+	return ""
+}
+
+func whatsappResources(image, audio, video, document, sticker *whatsappMedia, config httpchannel.Config) []uvim.ResourceRef {
 	var refs []uvim.ResourceRef
 	add := func(kind string, media *whatsappMedia) {
 		if media == nil || media.ID == "" {
@@ -471,5 +514,6 @@ func whatsappResources(image, audio, video, document *whatsappMedia, config http
 	add(uvim.ElementAudio, audio)
 	add(uvim.ElementVideo, video)
 	add(uvim.ElementFile, document)
+	add(uvim.ElementImage, sticker)
 	return refs
 }
