@@ -1,6 +1,9 @@
 package uvim_test
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -402,6 +405,71 @@ func TestProviderDecodersCoverIssue20ProviderGaps(t *testing.T) {
 			wantParentID:    "parent2",
 		},
 		{
+			name:            "discord file-only forwarded snapshot",
+			decode:          discord.Decode,
+			raw:             `{"id":"m3","channel_id":"c1","guild_id":"g1","author":{"id":"u1"},"message_reference":{"type":1,"message_id":"original"},"message_snapshots":[{"message":{"attachments":[{"id":"a1","filename":"report.pdf","url":"https://cdn.test/report.pdf","content_type":"application/pdf","size":12}]}}]}`,
+			wantEventType:   uvim.EventMessageCreate,
+			wantChannelID:   "c1",
+			wantChannelType: uvim.ChannelGroup,
+			wantUserID:      "u1",
+			wantMessageID:   "m3",
+			wantParentID:    "original",
+			wantRefs:        []resourceWant{{kind: uvim.ElementFile, name: "report.pdf", urlContains: "https://cdn.test/report.pdf"}},
+		},
+		{
+			name:             "discord forwarded rich content",
+			decode:           discord.Decode,
+			raw:              `{"id":"m4","channel_id":"c1","guild_id":"g1","author":{"id":"u1"},"message_snapshots":[{"message":{"content":"original","embeds":[{"title":"Deploy","description":"finished","image":{"url":"https://cdn.test/chart.png"}}],"sticker_items":[{"id":"s1","name":"Ship"}],"components":[{"type":1,"components":[{"type":2,"label":"Open","custom_id":"open"}]}]}}]}`,
+			wantEventType:    uvim.EventMessageCreate,
+			wantTextContains: []string{"Forwarded: original", "Deploy", "finished", "Ship", "Open"},
+			wantChannelID:    "c1",
+			wantChannelType:  uvim.ChannelGroup,
+			wantUserID:       "u1",
+			wantMessageID:    "m4",
+			wantRefs:         []resourceWant{{kind: uvim.ElementImage, urlContains: "https://cdn.test/chart.png"}},
+		},
+		{
+			name:            "discord components v2 text display",
+			decode:          discord.Decode,
+			raw:             `{"id":"m5","channel_id":"c1","guild_id":"g1","type":0,"flags":32768,"author":{"id":"u1"},"components":[{"type":10,"content":"Release checklist"}]}`,
+			wantEventType:   uvim.EventMessageCreate,
+			wantText:        "Release checklist",
+			wantChannelID:   "c1",
+			wantChannelType: uvim.ChannelGroup,
+			wantUserID:      "u1",
+			wantMessageID:   "m5",
+		},
+		{
+			name:             "discord nested components v2 media and file",
+			decode:           discord.Decode,
+			raw:              `{"id":"m6","channel_id":"c1","guild_id":"g1","flags":32768,"author":{"id":"u1"},"components":[{"type":17,"components":[{"type":9,"components":[{"type":10,"content":"Preview"}],"accessory":{"type":11,"media":{"url":"https://cdn.test/thumb.png","content_type":"image/png"}}},{"type":12,"items":[{"media":{"url":"https://cdn.test/demo.mp4","content_type":"video/mp4"},"description":"Demo"}]},{"type":13,"file":{"url":"https://cdn.test/report.pdf","content_type":"application/pdf","attachment_id":"a1"}}]}]}`,
+			wantEventType:    uvim.EventMessageCreate,
+			wantTextContains: []string{"Preview", "Demo"},
+			wantChannelID:    "c1",
+			wantChannelType:  uvim.ChannelGroup,
+			wantUserID:       "u1",
+			wantMessageID:    "m6",
+			wantRefs: []resourceWant{
+				{kind: uvim.ElementImage, urlContains: "https://cdn.test/thumb.png"},
+				{kind: uvim.ElementVideo, urlContains: "https://cdn.test/demo.mp4"},
+				{kind: uvim.ElementFile, urlContains: "https://cdn.test/report.pdf"},
+			},
+		},
+		{
+			name:            "discord component attachment references resolve without duplicates",
+			decode:          discord.Decode,
+			raw:             `{"id":"m7","channel_id":"c1","guild_id":"g1","flags":32768,"author":{"id":"u1"},"attachments":[{"id":"a1","filename":"report.pdf","url":"https://cdn.test/report.pdf","content_type":"application/pdf","size":12}],"components":[{"type":13,"file":{"url":"attachment://report.pdf","attachment_id":"a1"}},{"type":11,"media":{"url":"attachment://preview.png","proxy_url":"https://cdn.test/preview.png","content_type":"image/png"}},{"type":13,"file":{"url":"attachment://unavailable.pdf"}}]}`,
+			wantEventType:   uvim.EventMessageCreate,
+			wantChannelID:   "c1",
+			wantChannelType: uvim.ChannelGroup,
+			wantUserID:      "u1",
+			wantMessageID:   "m7",
+			wantRefs: []resourceWant{
+				{kind: uvim.ElementFile, name: "report.pdf", urlContains: "https://cdn.test/report.pdf"},
+				{kind: uvim.ElementImage, name: "preview.png", urlContains: "https://cdn.test/preview.png"},
+			},
+		},
+		{
 			name:             "wechat official location content is kept",
 			decode:           wechatofficial.Decode,
 			raw:              `<xml><ToUserName>bot</ToUserName><FromUserName>u1</FromUserName><CreateTime>1</CreateTime><MsgType>location</MsgType><Location_X>31.2304</Location_X><Location_Y>121.4737</Location_Y><Scale>15</Scale><Label>HQ</Label><MsgId>m1</MsgId></xml>`,
@@ -556,6 +624,87 @@ func TestProviderDecodersCoverIssue20ProviderGaps(t *testing.T) {
 				if want.urlContains != "" && !strings.Contains(ref.URL, want.urlContains) {
 					t.Fatalf("resource %d url = %q, want to contain %q", i, ref.URL, want.urlContains)
 				}
+			}
+		})
+	}
+}
+
+func TestZulipUploadLinkOrigins(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		link string
+		want bool
+	}{
+		{"relative", "/user_uploads/1/report.pdf", true},
+		{"same origin", "https://zulip.test/user_uploads/1/report.pdf", true},
+		{"default port", "https://zulip.test:443/user_uploads/1/report.pdf", true},
+		{"off origin", "https://attacker.test/user_uploads/1/report.pdf", false},
+		{"userinfo", "https://zulip.test@attacker.test/user_uploads/1/report.pdf", false},
+		{"subdomain", "https://evil.zulip.test/user_uploads/1/report.pdf", false},
+		{"other port", "https://zulip.test:444/user_uploads/1/report.pdf", false},
+		{"downgrade", "http://zulip.test/user_uploads/1/report.pdf", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			content := "[report](" + tt.link + ")"
+			raw, err := json.Marshal(map[string]any{"id": 1, "content": content})
+			if err != nil {
+				t.Fatal(err)
+			}
+			event, ok, err := zulip.Decode(raw, httpchannel.Config{BaseURL: "https://zulip.test", Token: "private-token"})
+			if err != nil || !ok || event.Message.Text != content {
+				t.Fatalf("decode ok=%v err=%v text=%q", ok, err, event.Message.Text)
+			}
+			refs := event.Message.Resources
+			if !tt.want {
+				if len(refs) != 0 {
+					t.Fatalf("off-origin content became downloadable resources: %+v", refs)
+				}
+				return
+			}
+			if len(refs) != 1 || refs[0].Secret != "private-token" || refs[0].Name != "report.pdf" || !strings.HasPrefix(refs[0].URL, "https://zulip.test") {
+				t.Fatalf("same-origin upload = %+v", refs)
+			}
+		})
+	}
+}
+
+func TestZulipAttachmentDownloadCredentials(t *testing.T) {
+	for _, trusted := range []bool{true, false} {
+		name, wantAuth := "off origin", ""
+		if trusted {
+			name, wantAuth = "same origin", "Bearer private-token"
+		}
+		t.Run(name, func(t *testing.T) {
+			requests := make(chan string, 1)
+			mediaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				requests <- req.Header.Get("Authorization")
+				w.Header().Set("Content-Type", "application/pdf")
+				_, _ = w.Write([]byte("report"))
+			}))
+			defer mediaServer.Close()
+			baseURL := "https://zulip.test"
+			if trusted {
+				baseURL = mediaServer.URL
+			}
+			config := httpchannel.Config{BaseURL: baseURL, Token: "private-token"}
+			raw, err := json.Marshal(map[string]any{"id": 1, "attachments": []map[string]string{{"url": mediaServer.URL + "/user_uploads/1/report.pdf"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			event, ok, err := zulip.Decode(raw, config)
+			if err != nil || !ok || len(event.Message.Resources) != 1 {
+				t.Fatalf("decode ok=%v err=%v resources=%+v", ok, err, event.Message.Resources)
+			}
+			provider, err := zulip.New(zulip.Config{BaseURL: baseURL, Token: config.Token, ResourceStore: &uvim.ResourceStore{Dir: t.TempDir()}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref, err := provider.Download(t.Context(), uvim.ResourceDownloadRequest{Resource: event.Message.Resources[0]})
+			if err != nil || !strings.HasPrefix(ref.InternalURL, "internal://") {
+				t.Fatalf("download ref=%+v err=%v", ref, err)
+			}
+			if got := <-requests; got != wantAuth {
+				t.Fatalf("download Authorization = %q, want %q", got, wantAuth)
 			}
 		})
 	}

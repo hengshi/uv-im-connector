@@ -189,8 +189,10 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		if rawURL == "" {
 			continue
 		}
-		if strings.HasPrefix(rawURL, "/") && config.BaseURL != "" {
-			rawURL = strings.TrimRight(config.BaseURL, "/") + rawURL
+		resourceURL, sameOrigin := zulipResourceURL(rawURL, config.BaseURL)
+		secret := ""
+		if sameOrigin {
+			secret = config.Token
 		}
 		refs = append(refs, uvim.ResourceRef{
 			Provider:  "zulip",
@@ -198,10 +200,10 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 			Kind:      uvim.ResourceKindFromMIME(attachment.MIME, uvim.ElementFile),
 			Name:      attachment.Name,
 			Key:       attachment.ID,
-			URL:       rawURL,
+			URL:       resourceURL,
 			MIME:      attachment.MIME,
 			SizeBytes: attachment.Size,
-			Secret:    config.Token,
+			Secret:    secret,
 		})
 	}
 	refs = append(refs, zulipContentResources(msg.Content, config)...)
@@ -229,9 +231,9 @@ func zulipContentResources(content string, config httpchannel.Config) []uvim.Res
 			continue
 		}
 		seen[rawURL] = true
-		resourceURL := rawURL
-		if strings.HasPrefix(resourceURL, "/") && config.BaseURL != "" {
-			resourceURL = strings.TrimRight(config.BaseURL, "/") + resourceURL
+		resourceURL, sameOrigin := zulipResourceURL(rawURL, config.BaseURL)
+		if !sameOrigin {
+			continue
 		}
 		refs = append(refs, uvim.ResourceRef{
 			Provider:  "zulip",
@@ -243,6 +245,29 @@ func zulipContentResources(content string, config httpchannel.Config) []uvim.Res
 		})
 	}
 	return refs
+}
+
+func zulipResourceURL(rawURL, baseURL string) (string, bool) {
+	base, err := url.Parse(baseURL)
+	if err != nil || base.Host == "" || (base.Scheme != "https" && base.Scheme != "http") {
+		return rawURL, false
+	}
+	resource, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL, false
+	}
+	resource = base.ResolveReference(resource)
+	port := func(u *url.URL) string {
+		if value := u.Port(); value != "" {
+			return value
+		}
+		if u.Scheme == "https" {
+			return "443"
+		}
+		return "80"
+	}
+	sameOrigin := strings.EqualFold(resource.Scheme, base.Scheme) && strings.EqualFold(resource.Hostname(), base.Hostname()) && port(resource) == port(base)
+	return resource.String(), sameOrigin
 }
 
 func zulipUploadName(rawURL string) string {
