@@ -334,6 +334,23 @@ func TestProviderDecodersCoverIssue20ProviderGaps(t *testing.T) {
 			},
 		},
 		{
+			name:             "kook card extracts nested media modules",
+			decode:           kook.Decode,
+			raw:              `{"s":0,"d":{"msg_id":"m3","target_id":"c1","author_id":"u1","content":"[{\"type\":\"card\",\"modules\":[{\"type\":\"section\",\"accessory\":{\"type\":\"image\",\"src\":\"https://cdn.test/accessory.png\",\"title\":\"accessory.png\"}},{\"type\":\"image-group\",\"elements\":[{\"type\":\"image\",\"src\":\"https://cdn.test/group.png\",\"title\":\"group.png\"}]},{\"type\":\"container\",\"elements\":[{\"type\":\"video\",\"src\":\"https://cdn.test/clip.mp4\",\"title\":\"clip.mp4\"},{\"type\":\"file\",\"src\":\"https://cdn.test/report.pdf\",\"title\":\"report.pdf\"}]}]}]","type":10}}`,
+			wantEventType:    uvim.EventMessageCreate,
+			wantTextContains: []string{"accessory.png", "group.png", "clip.mp4", "report.pdf"},
+			wantChannelID:    "c1",
+			wantChannelType:  uvim.ChannelGroup,
+			wantUserID:       "u1",
+			wantMessageID:    "m3",
+			wantRefs: []resourceWant{
+				{kind: uvim.ElementImage, name: "accessory.png", urlContains: "/accessory.png"},
+				{kind: uvim.ElementImage, name: "group.png", urlContains: "/group.png"},
+				{kind: uvim.ElementVideo, name: "clip.mp4", urlContains: "/clip.mp4"},
+				{kind: uvim.ElementFile, name: "report.pdf", urlContains: "/report.pdf"},
+			},
+		},
+		{
 			name:            "telegram voice keeps resource and thread context",
 			decode:          telegram.Decode,
 			raw:             `{"update_id":99,"message":{"message_id":10,"message_thread_id":7,"caption":"voice note","voice":{"file_id":"voice_1","mime_type":"audio/ogg","file_size":123},"reply_to_message":{"message_id":8},"chat":{"id":2,"type":"supergroup","title":"Team"},"from":{"id":3,"first_name":"Ada"}}}`,
@@ -705,6 +722,110 @@ func TestZulipAttachmentDownloadCredentials(t *testing.T) {
 			}
 			if got := <-requests; got != wantAuth {
 				t.Fatalf("download Authorization = %q, want %q", got, wantAuth)
+			}
+		})
+	}
+}
+
+func TestKOOKCardExternalMediaDownloadsWithoutCredentials(t *testing.T) {
+	requests := make(chan string, 1)
+	mediaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests <- req.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("image"))
+	}))
+	defer mediaServer.Close()
+
+	content, err := json.Marshal([]map[string]any{{"type": "card", "modules": []map[string]string{{"type": "image", "src": mediaServer.URL + "/external.png"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(map[string]any{"s": 0, "d": map[string]any{"msg_id": "m1", "target_id": "c1", "author_id": "u1", "content": string(content), "type": 10}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, ok, err := kook.Decode(raw, httpchannel.Config{ConnectorID: "main", Token: "private-token"})
+	if err != nil || !ok || len(event.Message.Resources) != 1 {
+		t.Fatalf("decode ok=%v err=%v resources=%+v", ok, err, event.Message.Resources)
+	}
+	if secret := event.Message.Resources[0].Secret; secret != "" {
+		t.Fatalf("card resource secret = %q, want empty", secret)
+	}
+	provider, err := kook.New(kook.Config{Token: "private-token", ResourceStore: &uvim.ResourceStore{Dir: t.TempDir()}, HTTPClient: mediaServer.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := provider.Download(t.Context(), uvim.ResourceDownloadRequest{Resource: event.Message.Resources[0]})
+	if err != nil || !strings.HasPrefix(ref.InternalURL, "internal://") {
+		t.Fatalf("download ref=%+v err=%v", ref, err)
+	}
+	if got := <-requests; got != "" {
+		t.Fatalf("download Authorization = %q, want empty", got)
+	}
+}
+
+func TestMessageUpdatesUseSourceEventIdentityForDedupe(t *testing.T) {
+	tests := []struct {
+		name          string
+		decode        httpchannel.DecodeFunc
+		first         string
+		second        string
+		wantMessageID string
+	}{
+		{
+			name:          "matrix",
+			decode:        matrix.Decode,
+			first:         `{"event_id":"$edit-1","room_id":"!room:matrix.test","sender":"@ada:matrix.test","type":"m.room.message","content":{"body":" * edit one","msgtype":"m.text","m.new_content":{"body":"edit one","msgtype":"m.text"},"m.relates_to":{"rel_type":"m.replace","event_id":"$original"}}}`,
+			second:        `{"event_id":"$edit-2","room_id":"!room:matrix.test","sender":"@ada:matrix.test","type":"m.room.message","content":{"body":" * edit two","msgtype":"m.text","m.new_content":{"body":"edit two","msgtype":"m.text"},"m.relates_to":{"rel_type":"m.replace","event_id":"$original"}}}`,
+			wantMessageID: "$original",
+		},
+		{
+			name:          "slack",
+			decode:        slack.Decode,
+			first:         `{"type":"event_callback","event_id":"Ev1","event":{"type":"message","subtype":"message_changed","channel":"C1","event_ts":"1700000000.000201","message":{"user":"U1","text":"edit one","ts":"1700000000.000100"}}}`,
+			second:        `{"type":"event_callback","event_id":"Ev2","event":{"type":"message","subtype":"message_changed","channel":"C1","event_ts":"1700000000.000202","message":{"user":"U1","text":"edit two","ts":"1700000000.000100"}}}`,
+			wantMessageID: "1700000000.000100",
+		},
+		{
+			name:          "slack event timestamp fallback",
+			decode:        slack.Decode,
+			first:         `{"type":"event_callback","event":{"type":"message","subtype":"message_changed","channel":"C1","event_ts":"1700000000.000201","message":{"user":"U1","text":"edit one","ts":"1700000000.000100"}}}`,
+			second:        `{"type":"event_callback","event":{"type":"message","subtype":"message_changed","channel":"C1","event_ts":"1700000000.000202","message":{"user":"U1","text":"edit two","ts":"1700000000.000100"}}}`,
+			wantMessageID: "1700000000.000100",
+		},
+		{
+			name:          "telegram",
+			decode:        telegram.Decode,
+			first:         `{"update_id":100,"edited_message":{"message_id":10,"text":"edit one","chat":{"id":2,"type":"private"},"from":{"id":3,"first_name":"Ada"}}}`,
+			second:        `{"update_id":101,"edited_message":{"message_id":10,"text":"edit two","chat":{"id":2,"type":"private"},"from":{"id":3,"first_name":"Ada"}}}`,
+			wantMessageID: "10",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			first, ok, err := tt.decode([]byte(tt.first), httpchannel.Config{ConnectorID: "main"})
+			if err != nil || !ok {
+				t.Fatalf("first decode ok=%v err=%v", ok, err)
+			}
+			second, ok, err := tt.decode([]byte(tt.second), httpchannel.Config{ConnectorID: "main"})
+			if err != nil || !ok {
+				t.Fatalf("second decode ok=%v err=%v", ok, err)
+			}
+			if first.Type != uvim.EventMessageUpdate || second.Type != uvim.EventMessageUpdate || first.Message.ID != tt.wantMessageID || first.Referrer.MessageID != tt.wantMessageID || second.Message.ID != tt.wantMessageID || second.Referrer.MessageID != tt.wantMessageID {
+				t.Fatalf("updates = %+v / %+v", first, second)
+			}
+			if first.DedupeKey() == second.DedupeKey() {
+				t.Fatalf("update dedupe keys collide: %q", first.DedupeKey())
+			}
+			log, err := uvim.NewEventLog("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, fresh, err := log.Append(t.Context(), first); err != nil || !fresh {
+				t.Fatalf("first append fresh=%v err=%v", fresh, err)
+			}
+			if _, fresh, err := log.Append(t.Context(), second); err != nil || !fresh {
+				t.Fatalf("second append fresh=%v err=%v", fresh, err)
 			}
 		})
 	}

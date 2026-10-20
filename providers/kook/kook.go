@@ -288,11 +288,11 @@ func firstNonEmpty(values ...string) string {
 func kookResources(messageType int, content string, config httpchannel.Config) []uvim.ResourceRef {
 	switch messageType {
 	case 2:
-		return kookURLResource(content, uvim.ElementImage, "", config)
+		return kookURLResource(content, uvim.ElementImage, "", config, true)
 	case 3:
-		return kookURLResource(content, uvim.ElementVideo, "", config)
+		return kookURLResource(content, uvim.ElementVideo, "", config, true)
 	case 8:
-		return kookURLResource(content, uvim.ElementAudio, "", config)
+		return kookURLResource(content, uvim.ElementAudio, "", config, true)
 	case 10:
 		return kookCardResources(content, config)
 	default:
@@ -300,26 +300,33 @@ func kookResources(messageType int, content string, config httpchannel.Config) [
 	}
 }
 
-func kookURLResource(rawURL, kind, name string, config httpchannel.Config) []uvim.ResourceRef {
+func kookURLResource(rawURL, kind, name string, config httpchannel.Config, authenticated bool) []uvim.ResourceRef {
 	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
 		return nil
 	}
-	return []uvim.ResourceRef{{
+	ref := uvim.ResourceRef{
 		Provider:  "kook",
 		Connector: config.ConnectorID,
 		Kind:      kind,
 		Name:      name,
 		URL:       rawURL,
-		Secret:    config.Token,
-	}}
+	}
+	if authenticated {
+		ref.Secret = config.Token
+	}
+	return []uvim.ResourceRef{ref}
 }
 
 type kookCard struct {
-	Modules []struct {
-		Type  string `json:"type"`
-		Src   string `json:"src"`
-		Title string `json:"title"`
-	} `json:"modules"`
+	Modules []kookCardModule `json:"modules"`
+}
+
+type kookCardModule struct {
+	Type      string           `json:"type"`
+	Src       string           `json:"src"`
+	Title     string           `json:"title"`
+	Accessory *kookCardModule  `json:"accessory"`
+	Elements  []kookCardModule `json:"elements"`
 }
 
 func kookCardResources(content string, config httpchannel.Config) []uvim.ResourceRef {
@@ -330,12 +337,23 @@ func kookCardResources(content string, config httpchannel.Config) []uvim.Resourc
 	var refs []uvim.ResourceRef
 	for _, card := range cards {
 		for _, module := range card.Modules {
-			kind := kookCardModuleKind(module.Type)
-			if kind == "" {
-				continue
-			}
-			refs = append(refs, kookURLResource(module.Src, kind, module.Title, config)...)
+			refs = append(refs, kookCardModuleResources(module, config)...)
 		}
+	}
+	return refs
+}
+
+func kookCardModuleResources(module kookCardModule, config httpchannel.Config) []uvim.ResourceRef {
+	var refs []uvim.ResourceRef
+	if kind := kookCardModuleKind(module.Type); kind != "" {
+		// Card media can use arbitrary third-party URLs, so it must never carry the bot token.
+		refs = append(refs, kookURLResource(module.Src, kind, module.Title, config, false)...)
+	}
+	if module.Accessory != nil {
+		refs = append(refs, kookCardModuleResources(*module.Accessory, config)...)
+	}
+	for _, element := range module.Elements {
+		refs = append(refs, kookCardModuleResources(element, config)...)
 	}
 	return refs
 }
@@ -348,14 +366,26 @@ func kookCardText(content string) string {
 	var parts []string
 	for _, card := range cards {
 		for _, module := range card.Modules {
-			if title := strings.TrimSpace(module.Title); title != "" {
-				parts = append(parts, title)
-			} else if src := strings.TrimSpace(module.Src); src != "" && kookCardModuleKind(module.Type) != "" {
-				parts = append(parts, src)
-			}
+			parts = append(parts, kookCardModuleText(module)...)
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func kookCardModuleText(module kookCardModule) []string {
+	var parts []string
+	if title := strings.TrimSpace(module.Title); title != "" {
+		parts = append(parts, title)
+	} else if src := strings.TrimSpace(module.Src); src != "" && kookCardModuleKind(module.Type) != "" {
+		parts = append(parts, src)
+	}
+	if module.Accessory != nil {
+		parts = append(parts, kookCardModuleText(*module.Accessory)...)
+	}
+	for _, element := range module.Elements {
+		parts = append(parts, kookCardModuleText(element)...)
+	}
+	return parts
 }
 
 func kookCardModuleKind(moduleType string) string {

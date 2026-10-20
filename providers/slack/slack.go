@@ -261,6 +261,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	type slackMessage struct {
 		Type        string        `json:"type"`
 		Subtype     string        `json:"subtype"`
+		EventTS     string        `json:"event_ts"`
 		User        string        `json:"user"`
 		Channel     string        `json:"channel"`
 		ChannelType string        `json:"channel_type"`
@@ -274,6 +275,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	var env struct {
 		Type      string       `json:"type"`
 		Challenge string       `json:"challenge"`
+		EventID   string       `json:"event_id"`
 		Event     slackMessage `json:"event"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -328,12 +330,13 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		}
 	}
 	id := firstNonEmpty(event.Timestamp, uvim.NewID("slack"))
+	sourceID := firstNonEmpty(env.EventID, env.Event.EventTS, id)
 	channelType := uvim.ChannelGroup
 	if event.ChannelType == "im" || strings.HasPrefix(event.Channel, "D") {
 		channelType = uvim.ChannelDirect
 	}
 	return uvim.Event{
-		ID:        id,
+		ID:        sourceID,
 		Type:      eventType,
 		Provider:  "slack",
 		Connector: config.ConnectorID,
