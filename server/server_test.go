@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,9 +13,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	uvim "github.com/hengshi/uv-im-connector"
 	"github.com/hengshi/uv-im-connector/client"
 	"github.com/hengshi/uv-im-connector/providers/lark"
@@ -22,6 +25,7 @@ import (
 	"github.com/hengshi/uv-im-connector/providers/memory"
 	"github.com/hengshi/uv-im-connector/providers/slack"
 	"github.com/hengshi/uv-im-connector/providers/wecom"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 func TestUploadValidLongFilename(t *testing.T) {
@@ -119,6 +123,168 @@ func TestWebSocketHandshakeCancellation(t *testing.T) {
 				t.Fatal("cancellation did not interrupt pending upgrade")
 			}
 		})
+	}
+}
+
+// Local provider transports, real adapters/Hub, and the public event API.
+// This proves recovery and sibling isolation, not external platform authentication.
+func TestHubRecoversWebSocketProvidersWithTransportStub(t *testing.T) {
+	for _, providerID := range []string{"wecom", "lark"} {
+		for _, normalClose := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/normal-close=%t", providerID, normalClose), func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				var attempts atomic.Int32
+				failed := make(chan struct{})
+				transport := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/callback/ws/endpoint" {
+						_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"URL": "ws://" + r.Host + "/ws?service_id=1"}})
+						return
+					}
+					attempt := attempts.Add(1)
+					if attempt == 1 {
+						http.Error(w, "temporary outage", http.StatusServiceUnavailable)
+						close(failed)
+						return
+					}
+					conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					defer conn.Close()
+					stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+					defer stop()
+					_ = conn.SetReadDeadline(time.Now().Add(8 * time.Second))
+					if providerID == "wecom" {
+						var subscribe map[string]any
+						if err := conn.ReadJSON(&subscribe); err != nil {
+							t.Error(err)
+							return
+						}
+						_ = conn.WriteJSON(map[string]any{"headers": subscribe["headers"], "errcode": 0})
+					}
+					// The platform redelivers m1 after reconnect; it must stay deduplicated.
+					ids := []string{"m1"}
+					if attempt >= 3 {
+						ids = append(ids, "m2")
+					}
+					for _, id := range ids {
+						if providerID == "wecom" {
+							_ = conn.WriteJSON(map[string]any{"cmd": "aibot_msg_callback", "headers": map[string]any{"req_id": id}, "body": map[string]any{
+								"msgid": id, "msgtype": "text", "chattype": "single", "from": map[string]any{"userid": "user"}, "text": map[string]any{"content": id},
+							}})
+						} else {
+							raw, _ := json.Marshal(map[string]any{"header": map[string]any{"event_type": "im.message.receive_v1"}, "event": map[string]any{"message": map[string]any{
+								"message_id": id, "chat_id": "chat", "chat_type": "p2p", "message_type": "text", "content": `{"text":"` + id + `"}`,
+							}}})
+							frame := protowire.AppendVarint(protowire.AppendTag(nil, 4, protowire.VarintType), 1)
+							frame = protowire.AppendBytes(protowire.AppendTag(frame, 8, protowire.BytesType), raw)
+							_ = conn.WriteMessage(websocket.BinaryMessage, frame)
+						}
+					}
+					if attempt == 2 {
+						if normalClose {
+							_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "rotate"), time.Now().Add(time.Second))
+						}
+						return
+					}
+					for {
+						if _, _, err := conn.ReadMessage(); err != nil {
+							return
+						}
+					}
+				}))
+				defer transport.Close()
+				var provider uvim.Provider
+				var err error
+				if providerID == "wecom" {
+					provider, err = wecom.New(wecom.Config{BotID: "bot", Secret: "secret", WSURL: strings.Replace(transport.URL, "http", "ws", 1)})
+				} else {
+					provider, err = lark.New(lark.Config{AppID: "app", AppSecret: "secret", BotOpenID: "bot", CallbackBaseURL: transport.URL})
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				sibling, err := slack.New(slack.Config{WebhookSecret: "secret"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				hub := NewHub(uvim.NewProviderRegistry(provider, sibling), mustEventLog(t, filepath.Join(t.TempDir(), "events.jsonl")), nil)
+				done := make(chan error, 1)
+				go func() { done <- hub.RunProviders(ctx) }()
+				defer func() {
+					cancel()
+					select {
+					case <-done:
+					case <-time.After(time.Second):
+						t.Error("provider shutdown blocked")
+					}
+				}()
+				api := httptest.NewServer(hub.Handler())
+				defer api.Close()
+				select {
+				case <-failed:
+				case <-time.After(time.Second):
+					t.Fatal("initial connection attempt missing")
+				}
+				req, _ := http.NewRequestWithContext(ctx, http.MethodPost, api.URL+"/v1/webhook/slack/slack", strings.NewReader(`{"event":{"type":"message","user":"u","channel":"c","text":"sibling alive","ts":"s1"}}`))
+				req.Header.Set("X-UV-Webhook-Secret", "secret")
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("healthy sibling webhook status = %d", resp.StatusCode)
+				}
+				deadline := time.NewTimer(8 * time.Second)
+				defer deadline.Stop()
+				ticker := time.NewTicker(10 * time.Millisecond)
+				defer ticker.Stop()
+				sawDisconnected := false
+				for {
+					select {
+					case err := <-done:
+						done <- err // Keep teardown bounded after a pre-fix failure.
+						t.Fatalf("one provider failure stopped the hub: %v", err)
+					case <-deadline.C:
+						t.Fatalf("provider did not recover; attempts=%d", attempts.Load())
+					case <-ticker.C:
+						resp, err := http.Get(api.URL + "/v1/meta")
+						if err != nil {
+							t.Fatal(err)
+						}
+						var meta uvim.ServiceMeta
+						err = json.NewDecoder(resp.Body).Decode(&meta)
+						resp.Body.Close()
+						if err != nil {
+							t.Fatal(err)
+						}
+						for _, item := range meta.Providers {
+							if attempts.Load() == 2 && item.Provider == providerID && (item.Health.State == "error" || item.Health.State == "disconnected") {
+								sawDisconnected = true
+							}
+						}
+						events, err := client.New(api.URL).Events(ctx, 0)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if len(events) < 3 {
+							continue
+						}
+						if len(events) != 3 || events[0].Message.Text != "sibling alive" || events[1].Message.ID != "m1" || events[2].Message.ID != "m2" {
+							t.Fatalf("events lost, duplicated, or reordered: %+v", events)
+						}
+						if !sawDisconnected {
+							t.Fatal("metadata never reported the disconnected provider during backoff")
+						}
+						return
+					}
+				}
+			})
+		}
 	}
 }
 

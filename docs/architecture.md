@@ -29,6 +29,10 @@ caller application
 
 没有任何 provider 能定义核心协议。Provider-specific 行为留在 provider package 内部，并只通过 capabilities 暴露给调用方。
 
+`Hub.RunProviders` 为每个注册的 provider/connector identity 串行监督 `Run`。父 context 未取消时，错误或正常返回都会重试；单个 provider 失败不会关闭 HTTP API 或停止其他 provider。指数退避从 1 秒开始，加入 ±20% 抖动，上限 1 分钟；单次运行至少 1 分钟后重置退避。取消会中断退避，Hub 返回前等待各 `Run` 结束；正在执行的传输调用能否立即取消取决于 provider 或 SDK。此机制只重启入站 runner，不重放出站消息。
+
+WeCom、Lark WebSocket 断线及 DingTalk Stream 首次启动失败由共享监督器恢复；DingTalk SDK 已建立连接后的重连仍由 SDK 负责。Discord、KOOK、LINE、Mail、Matrix、OneBot、QQ、QQ Guild、Slack、Telegram、WeChat Official Account、WhatsApp、Zulip 和 DingTalk webhook 模式通过 HTTP ingress 接收事件，其 `Run` 等待取消；memory 使用同一监督入口。
+
 ## Protocol
 
 标准协议包含这些稳定对象：

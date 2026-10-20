@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"strconv"
@@ -83,30 +84,45 @@ func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
 
 func (h *Hub) RunProviders(ctx context.Context) error {
 	var wg sync.WaitGroup
-	errCh := make(chan error, len(h.registry.List()))
 	for _, provider := range h.registry.List() {
 		provider := provider
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := provider.Run(ctx, h); err != nil && ctx.Err() == nil {
-				errCh <- err
-			}
+			h.runProvider(ctx, provider)
 		}()
 	}
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-ctx.Done():
-		<-done
-		return ctx.Err()
-	case err := <-errCh:
-		return err
-	case <-done:
-		return nil
+	wg.Wait()
+	return ctx.Err()
+}
+
+// Each registered identity has one runner. A returned Run (including a normal
+// remote close) is retried until the parent is cancelled, without restarting
+// the HTTP server, replaying sends, or interrupting sibling providers.
+func (h *Hub) runProvider(ctx context.Context, provider uvim.Provider) {
+	const initialBackoff, maxBackoff = time.Second, time.Minute
+	backoff := initialBackoff
+	for ctx.Err() == nil {
+		started := time.Now()
+		err := provider.Run(ctx, h)
+		if ctx.Err() != nil {
+			return
+		}
+		if time.Since(started) >= maxBackoff {
+			backoff = initialBackoff
+		}
+		retryIn := min(time.Duration(float64(backoff)*(0.8+rand.Float64()*0.4)), maxBackoff)
+		// Provider errors can contain credential-bearing URLs or response bodies.
+		// Leave provider-specific diagnostics to the adapter's safe logging.
+		slog.Warn("provider runner stopped; retrying", "provider", provider.ID(), "connector", provider.ConnectorID(), "failed", err != nil, "retry_in", retryIn)
+		timer := time.NewTimer(retryIn)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		backoff = min(backoff*2, maxBackoff)
 	}
 }
 

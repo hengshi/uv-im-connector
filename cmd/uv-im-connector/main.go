@@ -66,12 +66,7 @@ func run(addr, stateDir, providerList string) error {
 	hub.SetAuthToken(os.Getenv("UV_IM_AUTH_TOKEN"))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go func() {
-		if err := hub.RunProviders(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("provider runner stopped: %v", err)
-			stop()
-		}
-	}()
+	go hub.RunProviders(ctx)
 	httpServer := &http.Server{Addr: addr, Handler: hub.Handler()}
 	go func() {
 		<-ctx.Done()
