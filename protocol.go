@@ -72,7 +72,11 @@ func (e Event) DedupeKey() string {
 	if eventType == "" {
 		eventType = "event"
 	}
-	for _, value := range []string{e.Message.ID, e.Referrer.MessageID, e.ID} {
+	values := []string{e.Message.ID, e.Referrer.MessageID, e.ID}
+	if eventType == EventMessageUpdate {
+		values = []string{e.ID, e.Message.ID, e.Referrer.MessageID}
+	}
+	for _, value := range values {
 		if value = strings.TrimSpace(value); value != "" {
 			return e.Provider + ":" + e.Connector + ":" + eventType + ":" + e.Channel.ID + ":" + value
 		}

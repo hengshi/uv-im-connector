@@ -40,3 +40,12 @@ func TestCapabilitiesDeclareSingleUseReplyToken(t *testing.T) {
 		t.Fatalf("reply max uses = %d, want 1", got)
 	}
 }
+
+func TestDefaultDownloadUsesLineContentHost(t *testing.T) {
+	if got := lineContentBaseURL("https://api.line.me"); got != "https://api-data.line.me" {
+		t.Fatalf("content base = %q", got)
+	}
+	if got := lineContentBaseURL("http://127.0.0.1:1234"); got != "http://127.0.0.1:1234" {
+		t.Fatalf("custom content base = %q", got)
+	}
+}

@@ -3,6 +3,10 @@ package matrix
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -74,7 +78,61 @@ func (p *Provider) ServeWebhook(w http.ResponseWriter, req *http.Request, sink u
 	p.base.ServeWebhook(w, req, sink)
 }
 func (p *Provider) Download(ctx context.Context, req uvim.ResourceDownloadRequest) (uvim.ResourceRef, error) {
+	if strings.TrimSpace(req.Resource.Private["matrix_file_key"]) != "" {
+		return p.downloadEncrypted(ctx, req)
+	}
 	return p.base.Download(ctx, req)
+}
+
+func (p *Provider) downloadEncrypted(ctx context.Context, req uvim.ResourceDownloadRequest) (uvim.ResourceRef, error) {
+	ref := req.Resource
+	if strings.TrimSpace(ref.URL) == "" {
+		return ref, fmt.Errorf("matrix download: resource url is required")
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, ref.URL, nil)
+	if err != nil {
+		return ref, err
+	}
+	if token := strings.TrimSpace(ref.Secret); token != "" {
+		httpReq.Header.Set("Authorization", httpchannel.Authorization(token))
+	}
+	client := p.config.HTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return ref, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ref, fmt.Errorf("matrix download: http %d", resp.StatusCode)
+	}
+	encrypted, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ref, err
+	}
+	wantHash := strings.TrimSpace(ref.Private["matrix_sha256"])
+	if wantHash == "" {
+		return ref, fmt.Errorf("matrix encrypted file sha256 is required")
+	}
+	if err := verifyMatrixSHA256(encrypted, wantHash); err != nil {
+		return ref, err
+	}
+	plain, err := decryptMatrixFile(encrypted, ref.Private)
+	if err != nil {
+		return ref, err
+	}
+	store := p.config.ResourceStore
+	if store == nil || req.Dir != "" {
+		store = &uvim.ResourceStore{Dir: req.Dir, HTTPClient: p.config.HTTPClient}
+		if store.Dir == "" && p.config.ResourceStore != nil {
+			store.Dir = p.config.ResourceStore.Dir
+		}
+	}
+	storedRef := ref
+	storedRef.Private = nil
+	return store.Save(ctx, bytes.NewReader(plain), storedRef)
 }
 
 func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {
@@ -203,38 +261,76 @@ func matrixMessageType(kind string) string {
 
 func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	var event struct {
-		EventID string `json:"event_id"`
-		RoomID  string `json:"room_id"`
-		Sender  string `json:"sender"`
-		Type    string `json:"type"`
-		Content struct {
-			Body    string `json:"body"`
-			MsgType string `json:"msgtype"`
-			URL     string `json:"url"`
-			Info    struct {
-				MIME string `json:"mimetype"`
-				Size int64  `json:"size"`
-			} `json:"info"`
-		} `json:"content"`
+		EventID string        `json:"event_id"`
+		RoomID  string        `json:"room_id"`
+		Sender  string        `json:"sender"`
+		Type    string        `json:"type"`
+		Content matrixContent `json:"content"`
 	}
 	if err := json.Unmarshal(raw, &event); err != nil {
 		return uvim.Event{}, false, err
 	}
-	if event.EventID == "" || event.Type != "m.room.message" {
+	if event.EventID == "" || (event.Type != "m.room.message" && event.Type != "m.sticker") {
 		return uvim.Event{}, false, nil
 	}
-	refs := matrixResources(event.Content.URL, event.Content.Body, event.Content.MsgType, event.Content.Info.MIME, event.Content.Info.Size, config)
+	content := event.Content
+	eventType := uvim.EventMessageCreate
+	if content.NewContent != nil {
+		content = *content.NewContent
+		eventType = uvim.EventMessageUpdate
+	} else if strings.EqualFold(event.Content.RelatesTo.RelType, "m.replace") {
+		eventType = uvim.EventMessageUpdate
+	}
+	if event.Type == "m.sticker" && strings.TrimSpace(content.MsgType) == "" {
+		content.MsgType = "m.image"
+	}
+	text := matrixMessageText(content)
+	refs := matrixResources(content, config)
+	parentID := event.Content.RelatesTo.InReplyTo.EventID
+	messageID := event.EventID
+	if eventType == uvim.EventMessageUpdate && strings.TrimSpace(event.Content.RelatesTo.EventID) != "" {
+		messageID = strings.TrimSpace(event.Content.RelatesTo.EventID)
+	}
 	return uvim.Event{
 		ID:        event.EventID,
-		Type:      uvim.EventMessageCreate,
+		Type:      eventType,
 		Provider:  "matrix",
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: event.RoomID, Type: uvim.ChannelRoom},
 		User:      uvim.User{ID: event.Sender},
-		Message:   uvim.Message{ID: event.EventID, Text: event.Content.Body, Type: event.Content.MsgType, Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: event.EventID, ChannelID: event.RoomID, Target: &uvim.OutboundTarget{ID: event.RoomID, Kind: uvim.TargetConversation}},
+		Message:   uvim.Message{ID: messageID, Text: text, Type: firstNonEmpty(content.MsgType, event.Type), Resources: refs},
+		Referrer:  uvim.Referrer{MessageID: messageID, ParentMessageID: parentID, ChannelID: event.RoomID, Target: &uvim.OutboundTarget{ID: event.RoomID, Kind: uvim.TargetConversation}},
 		Addressed: true,
 	}, true, nil
+}
+
+type matrixContent struct {
+	Body          string `json:"body"`
+	FormattedBody string `json:"formatted_body"`
+	MsgType       string `json:"msgtype"`
+	URL           string `json:"url"`
+	GeoURI        string `json:"geo_uri"`
+	File          struct {
+		URL string `json:"url"`
+		Key struct {
+			Alg string `json:"alg"`
+			K   string `json:"k"`
+		} `json:"key"`
+		IV     string            `json:"iv"`
+		Hashes map[string]string `json:"hashes"`
+	} `json:"file"`
+	Info struct {
+		MIME string `json:"mimetype"`
+		Size int64  `json:"size"`
+	} `json:"info"`
+	RelatesTo struct {
+		RelType   string `json:"rel_type"`
+		EventID   string `json:"event_id"`
+		InReplyTo struct {
+			EventID string `json:"event_id"`
+		} `json:"m.in_reply_to"`
+	} `json:"m.relates_to"`
+	NewContent *matrixContent `json:"m.new_content"`
 }
 
 func Send(msg uvim.OutboundMessage, _ httpchannel.Config) (httpchannel.Request, error) {
@@ -282,7 +378,12 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func matrixResources(rawURL, name, msgType, mime string, size int64, config httpchannel.Config) []uvim.ResourceRef {
+func matrixResources(content matrixContent, config httpchannel.Config) []uvim.ResourceRef {
+	rawURL := firstNonEmpty(content.URL, content.File.URL)
+	name := content.Body
+	msgType := content.MsgType
+	mime := content.Info.MIME
+	size := content.Info.Size
 	if rawURL == "" || msgType == "m.text" {
 		return nil
 	}
@@ -302,7 +403,7 @@ func matrixResources(rawURL, name, msgType, mime string, size int64, config http
 	case "m.video":
 		kind = uvim.ElementVideo
 	}
-	return []uvim.ResourceRef{{
+	ref := uvim.ResourceRef{
 		Provider:  "matrix",
 		Connector: config.ConnectorID,
 		Kind:      kind,
@@ -311,7 +412,99 @@ func matrixResources(rawURL, name, msgType, mime string, size int64, config http
 		MIME:      mime,
 		SizeBytes: size,
 		Secret:    config.Token,
-	}}
+	}
+	if strings.TrimSpace(content.File.URL) != "" && strings.TrimSpace(content.File.Key.K) != "" && strings.TrimSpace(content.File.IV) != "" {
+		ref.Private = map[string]string{
+			"matrix_file_alg": content.File.Key.Alg,
+			"matrix_file_key": content.File.Key.K,
+			"matrix_file_iv":  content.File.IV,
+			"matrix_sha256":   content.File.Hashes["sha256"],
+		}
+	}
+	return []uvim.ResourceRef{ref}
+}
+
+func decryptMatrixFile(encrypted []byte, private map[string]string) ([]byte, error) {
+	alg := strings.TrimSpace(private["matrix_file_alg"])
+	if alg != "" && alg != "A256CTR" {
+		return nil, fmt.Errorf("matrix encrypted file alg %q is not supported", alg)
+	}
+	key, err := decodeMatrixBase64(private["matrix_file_key"])
+	if err != nil {
+		return nil, fmt.Errorf("matrix encrypted file key: %w", err)
+	}
+	iv, err := decodeMatrixBase64(private["matrix_file_iv"])
+	if err != nil {
+		return nil, fmt.Errorf("matrix encrypted file iv: %w", err)
+	}
+	if len(iv) != aes.BlockSize {
+		return nil, fmt.Errorf("matrix encrypted file iv length %d", len(iv))
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	plain := make([]byte, len(encrypted))
+	cipher.NewCTR(block, iv).XORKeyStream(plain, encrypted)
+	return plain, nil
+}
+
+func verifyMatrixSHA256(encrypted []byte, encoded string) error {
+	want, err := decodeMatrixBase64(encoded)
+	if err != nil {
+		return fmt.Errorf("matrix encrypted file sha256: %w", err)
+	}
+	got := sha256.Sum256(encrypted)
+	if !bytes.Equal(got[:], want) {
+		return fmt.Errorf("matrix encrypted file sha256 mismatch")
+	}
+	return nil
+}
+
+func decodeMatrixBase64(value string) ([]byte, error) {
+	value = strings.TrimSpace(value)
+	var lastErr error
+	for _, encoding := range []*base64.Encoding{
+		base64.RawURLEncoding,
+		base64.URLEncoding,
+		base64.RawStdEncoding,
+		base64.StdEncoding,
+	} {
+		decoded, err := encoding.DecodeString(value)
+		if err == nil {
+			return decoded, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func matrixMessageText(content matrixContent) string {
+	if strings.EqualFold(strings.TrimSpace(content.MsgType), "m.location") && strings.TrimSpace(content.GeoURI) != "" {
+		return strings.TrimSpace(firstNonEmpty(content.Body, "Location") + " " + content.GeoURI)
+	}
+	return firstNonEmpty(content.Body, stripSimpleHTML(content.FormattedBody), content.GeoURI)
+}
+
+func stripSimpleHTML(value string) string {
+	value = strings.ReplaceAll(value, "<br>", "\n")
+	value = strings.ReplaceAll(value, "<br/>", "\n")
+	value = strings.ReplaceAll(value, "<br />", "\n")
+	var out strings.Builder
+	inTag := false
+	for _, r := range value {
+		switch r {
+		case '<':
+			inTag = true
+		case '>':
+			inTag = false
+		default:
+			if !inTag {
+				out.WriteRune(r)
+			}
+		}
+	}
+	return out.String()
 }
 
 func matrixDownloadURL(baseURL, mxc string) string {
@@ -323,5 +516,5 @@ func matrixDownloadURL(baseURL, mxc string) string {
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return ""
 	}
-	return baseURL + "/_matrix/media/v3/download/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1])
+	return baseURL + "/_matrix/client/v1/media/download/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1])
 }

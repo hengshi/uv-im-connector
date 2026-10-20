@@ -247,38 +247,31 @@ func telegramMediaRoute(ref uvim.ResourceRef) (method, field string) {
 
 func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	var update struct {
-		UpdateID int64 `json:"update_id"`
-		Message  *struct {
-			MessageID int64  `json:"message_id"`
-			Text      string `json:"text"`
-			Caption   string `json:"caption"`
-			Chat      struct {
-				ID    int64  `json:"id"`
-				Type  string `json:"type"`
-				Title string `json:"title"`
-			} `json:"chat"`
-			From struct {
-				ID        int64  `json:"id"`
-				Username  string `json:"username"`
-				FirstName string `json:"first_name"`
-				LastName  string `json:"last_name"`
-			} `json:"from"`
-			Document *telegramFile `json:"document"`
-			Audio    *telegramFile `json:"audio"`
-			Video    *telegramFile `json:"video"`
-			Photo    []struct {
-				FileID string `json:"file_id"`
-				Size   int64  `json:"file_size"`
-			} `json:"photo"`
-		} `json:"message"`
+		UpdateID          int64            `json:"update_id"`
+		Message           *telegramMessage `json:"message"`
+		EditedMessage     *telegramMessage `json:"edited_message"`
+		ChannelPost       *telegramMessage `json:"channel_post"`
+		EditedChannelPost *telegramMessage `json:"edited_channel_post"`
 	}
 	if err := json.Unmarshal(raw, &update); err != nil {
 		return uvim.Event{}, false, err
 	}
-	if update.Message == nil {
+	msg := update.Message
+	eventType := uvim.EventMessageCreate
+	if msg == nil && update.EditedMessage != nil {
+		msg = update.EditedMessage
+		eventType = uvim.EventMessageUpdate
+	}
+	if msg == nil && update.ChannelPost != nil {
+		msg = update.ChannelPost
+	}
+	if msg == nil && update.EditedChannelPost != nil {
+		msg = update.EditedChannelPost
+		eventType = uvim.EventMessageUpdate
+	}
+	if msg == nil {
 		return uvim.Event{}, false, nil
 	}
-	msg := update.Message
 	messageID := fmt.Sprint(msg.MessageID)
 	chatID := fmt.Sprint(msg.Chat.ID)
 	channelType := uvim.ChannelDirect
@@ -287,19 +280,84 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		channelType = uvim.ChannelGroup
 		targetKind = uvim.TargetGroup
 	}
-	refs := telegramResources(msg.Document, msg.Audio, msg.Video, msg.Photo, config)
-	text := firstNonEmpty(msg.Text, msg.Caption)
+	refs := telegramResources(msg.Document, msg.Audio, msg.Video, msg.Voice, msg.VideoNote, msg.Sticker, msg.Photo, config)
+	text := firstNonEmpty(msg.Text, msg.Caption, telegramMessageText(msg))
+	parentID := ""
+	if msg.ReplyToMessage != nil && msg.ReplyToMessage.MessageID != 0 {
+		parentID = fmt.Sprint(msg.ReplyToMessage.MessageID)
+	}
+	threadID := ""
+	if msg.MessageThreadID != 0 {
+		threadID = fmt.Sprint(msg.MessageThreadID)
+	}
+	userID := ""
+	if msg.From.ID != 0 {
+		userID = fmt.Sprint(msg.From.ID)
+	}
 	return uvim.Event{
 		ID:        fmt.Sprint(update.UpdateID),
-		Type:      uvim.EventMessageCreate,
+		Type:      eventType,
 		Provider:  "telegram",
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: chatID, Type: channelType, Name: msg.Chat.Title},
-		User:      uvim.User{ID: fmt.Sprint(msg.From.ID), Name: strings.TrimSpace(msg.From.FirstName + " " + msg.From.LastName), DisplayName: msg.From.Username},
+		User:      uvim.User{ID: userID, Name: strings.TrimSpace(msg.From.FirstName + " " + msg.From.LastName), DisplayName: msg.From.Username},
 		Message:   uvim.Message{ID: messageID, Text: text, Type: "message", Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: messageID, ChannelID: chatID, Target: &uvim.OutboundTarget{ID: chatID, Kind: targetKind}},
+		Referrer:  uvim.Referrer{MessageID: messageID, ParentMessageID: parentID, ChannelID: chatID, ThreadID: threadID, Target: &uvim.OutboundTarget{ID: chatID, Kind: targetKind}},
 		Addressed: true,
 	}, true, nil
+}
+
+type telegramMessage struct {
+	MessageID       int64  `json:"message_id"`
+	MessageThreadID int64  `json:"message_thread_id"`
+	Text            string `json:"text"`
+	Caption         string `json:"caption"`
+	Chat            struct {
+		ID    int64  `json:"id"`
+		Type  string `json:"type"`
+		Title string `json:"title"`
+	} `json:"chat"`
+	From struct {
+		ID        int64  `json:"id"`
+		Username  string `json:"username"`
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+	} `json:"from"`
+	ReplyToMessage *struct {
+		MessageID int64 `json:"message_id"`
+	} `json:"reply_to_message"`
+	Document  *telegramFile `json:"document"`
+	Audio     *telegramFile `json:"audio"`
+	Video     *telegramFile `json:"video"`
+	Voice     *telegramFile `json:"voice"`
+	VideoNote *telegramFile `json:"video_note"`
+	Sticker   *telegramFile `json:"sticker"`
+	Photo     []struct {
+		FileID string `json:"file_id"`
+		Size   int64  `json:"file_size"`
+	} `json:"photo"`
+	Contact *struct {
+		PhoneNumber string `json:"phone_number"`
+		FirstName   string `json:"first_name"`
+		LastName    string `json:"last_name"`
+		UserID      int64  `json:"user_id"`
+	} `json:"contact"`
+	Location *struct {
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+	} `json:"location"`
+	Venue *struct {
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+		Title     string  `json:"title"`
+		Address   string  `json:"address"`
+	} `json:"venue"`
+	Poll *struct {
+		Question string `json:"question"`
+		Options  []struct {
+			Text string `json:"text"`
+		} `json:"options"`
+	} `json:"poll"`
 }
 
 type telegramFile struct {
@@ -307,9 +365,10 @@ type telegramFile struct {
 	FileName string `json:"file_name"`
 	MIME     string `json:"mime_type"`
 	Size     int64  `json:"file_size"`
+	Emoji    string `json:"emoji"`
 }
 
-func telegramResources(document, audio, video *telegramFile, photos []struct {
+func telegramResources(document, audio, video, voice, videoNote, sticker *telegramFile, photos []struct {
 	FileID string `json:"file_id"`
 	Size   int64  `json:"file_size"`
 }, config httpchannel.Config) []uvim.ResourceRef {
@@ -323,6 +382,15 @@ func telegramResources(document, audio, video *telegramFile, photos []struct {
 	if video != nil && video.FileID != "" {
 		refs = append(refs, uvim.ResourceRef{Provider: "telegram", Connector: config.ConnectorID, Kind: uvim.ElementVideo, Name: video.FileName, Key: video.FileID, MIME: video.MIME, SizeBytes: video.Size})
 	}
+	if voice != nil && voice.FileID != "" {
+		refs = append(refs, uvim.ResourceRef{Provider: "telegram", Connector: config.ConnectorID, Kind: uvim.ElementAudio, Name: voice.FileName, Key: voice.FileID, MIME: voice.MIME, SizeBytes: voice.Size})
+	}
+	if videoNote != nil && videoNote.FileID != "" {
+		refs = append(refs, uvim.ResourceRef{Provider: "telegram", Connector: config.ConnectorID, Kind: uvim.ElementVideo, Name: videoNote.FileName, Key: videoNote.FileID, MIME: videoNote.MIME, SizeBytes: videoNote.Size})
+	}
+	if sticker != nil && sticker.FileID != "" {
+		refs = append(refs, uvim.ResourceRef{Provider: "telegram", Connector: config.ConnectorID, Kind: uvim.ElementImage, Name: sticker.Emoji, Key: sticker.FileID, MIME: sticker.MIME, SizeBytes: sticker.Size})
+	}
 	if len(photos) > 0 {
 		photo := photos[len(photos)-1]
 		if photo.FileID != "" {
@@ -330,6 +398,38 @@ func telegramResources(document, audio, video *telegramFile, photos []struct {
 		}
 	}
 	return refs
+}
+
+func telegramMessageText(msg *telegramMessage) string {
+	if msg == nil {
+		return ""
+	}
+	if msg.Contact != nil {
+		name := strings.TrimSpace(msg.Contact.FirstName + " " + msg.Contact.LastName)
+		return strings.TrimSpace("Contact: " + firstNonEmpty(name, msg.Contact.PhoneNumber, fmt.Sprint(msg.Contact.UserID)))
+	}
+	if msg.Location != nil {
+		return fmt.Sprintf("Location: %g,%g", msg.Location.Latitude, msg.Location.Longitude)
+	}
+	if msg.Venue != nil {
+		return fmt.Sprintf("Venue: %s %s (%g,%g)", msg.Venue.Title, msg.Venue.Address, msg.Venue.Latitude, msg.Venue.Longitude)
+	}
+	if msg.Poll != nil {
+		var parts []string
+		if strings.TrimSpace(msg.Poll.Question) != "" {
+			parts = append(parts, "Poll: "+strings.TrimSpace(msg.Poll.Question))
+		}
+		for _, option := range msg.Poll.Options {
+			if text := strings.TrimSpace(option.Text); text != "" {
+				parts = append(parts, "- "+text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	if msg.Sticker != nil {
+		return firstNonEmpty("[Sticker: "+strings.TrimSpace(msg.Sticker.Emoji)+"]", "[Sticker]")
+	}
+	return ""
 }
 
 func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Request, error) {

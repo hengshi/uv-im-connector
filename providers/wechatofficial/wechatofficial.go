@@ -178,6 +178,13 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		PicURL       string   `xml:"PicUrl"`
 		Format       string   `xml:"Format"`
 		ThumbMediaID string   `xml:"ThumbMediaId"`
+		LocationX    string   `xml:"Location_X"`
+		LocationY    string   `xml:"Location_Y"`
+		Scale        string   `xml:"Scale"`
+		Label        string   `xml:"Label"`
+		Title        string   `xml:"Title"`
+		Description  string   `xml:"Description"`
+		URL          string   `xml:"Url"`
 	}
 	if err := xml.Unmarshal(raw, &msg); err != nil {
 		return uvim.Event{}, false, err
@@ -186,7 +193,8 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		return uvim.Event{}, false, nil
 	}
 	refs := wechatResources(msg.MsgType, msg.MediaID, msg.PicURL, msg.Format, config)
-	return uvim.Event{ID: msg.MsgID, Type: uvim.EventMessageCreate, Provider: "wechat-official", Connector: config.ConnectorID, Channel: uvim.Channel{ID: msg.FromUserName, Type: uvim.ChannelDirect}, User: uvim.User{ID: msg.FromUserName}, Message: uvim.Message{ID: msg.MsgID, Text: msg.Content, Type: msg.MsgType, Resources: refs}, Referrer: uvim.Referrer{MessageID: msg.MsgID, ChannelID: msg.FromUserName, Target: &uvim.OutboundTarget{ID: msg.FromUserName, Kind: uvim.TargetUser}}, Addressed: true}, true, nil
+	text := wechatMessageText(msg.MsgType, msg.Content, msg.LocationX, msg.LocationY, msg.Scale, msg.Label, msg.Title, msg.Description, msg.URL)
+	return uvim.Event{ID: msg.MsgID, Type: uvim.EventMessageCreate, Provider: "wechat-official", Connector: config.ConnectorID, Channel: uvim.Channel{ID: msg.FromUserName, Type: uvim.ChannelDirect}, User: uvim.User{ID: msg.FromUserName}, Message: uvim.Message{ID: msg.MsgID, Text: text, Type: msg.MsgType, Resources: refs}, Referrer: uvim.Referrer{MessageID: msg.MsgID, ChannelID: msg.FromUserName, Target: &uvim.OutboundTarget{ID: msg.FromUserName, Kind: uvim.TargetUser}}, Addressed: true}, true, nil
 }
 
 func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Request, error) {
@@ -269,5 +277,28 @@ func mimeFromFormat(format string) string {
 		return "audio/mpeg"
 	default:
 		return ""
+	}
+}
+
+func wechatMessageText(msgType, content, locationX, locationY, scale, label, title, description, rawURL string) string {
+	switch strings.ToLower(strings.TrimSpace(msgType)) {
+	case "location":
+		parts := []string{"Location"}
+		for _, part := range []string{label, locationX, locationY, "scale=" + strings.TrimSpace(scale)} {
+			if part = strings.TrimSpace(part); part != "" && part != "scale=" {
+				parts = append(parts, part)
+			}
+		}
+		return strings.Join(parts, " ")
+	case "link":
+		var parts []string
+		for _, part := range []string{title, description, rawURL} {
+			if part = strings.TrimSpace(part); part != "" {
+				parts = append(parts, part)
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return content
 	}
 }

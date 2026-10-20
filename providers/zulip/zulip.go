@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -188,8 +189,10 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		if rawURL == "" {
 			continue
 		}
-		if strings.HasPrefix(rawURL, "/") && config.BaseURL != "" {
-			rawURL = strings.TrimRight(config.BaseURL, "/") + rawURL
+		resourceURL, sameOrigin := zulipResourceURL(rawURL, config.BaseURL)
+		secret := ""
+		if sameOrigin {
+			secret = config.Token
 		}
 		refs = append(refs, uvim.ResourceRef{
 			Provider:  "zulip",
@@ -197,12 +200,13 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 			Kind:      uvim.ResourceKindFromMIME(attachment.MIME, uvim.ElementFile),
 			Name:      attachment.Name,
 			Key:       attachment.ID,
-			URL:       rawURL,
+			URL:       resourceURL,
 			MIME:      attachment.MIME,
 			SizeBytes: attachment.Size,
-			Secret:    config.Token,
+			Secret:    secret,
 		})
 	}
+	refs = append(refs, zulipContentResources(msg.Content, config)...)
 	return uvim.Event{
 		ID:        num(msg.ID),
 		Type:      uvim.EventMessageCreate,
@@ -214,6 +218,67 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Referrer:  uvim.Referrer{MessageID: num(msg.ID), ChannelID: channelID, ThreadID: msg.Subject, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
 		Addressed: true,
 	}, true, nil
+}
+
+var zulipUploadLinkPattern = regexp.MustCompile(`\[[^\]]*\]\((/user_uploads/[^)\s]+|https?://[^)\s]+/user_uploads/[^)\s]+)\)|(?m)(/user_uploads/[^\s)]+|https?://[^\s)]+/user_uploads/[^\s)]+)`)
+
+func zulipContentResources(content string, config httpchannel.Config) []uvim.ResourceRef {
+	var refs []uvim.ResourceRef
+	seen := map[string]bool{}
+	for _, match := range zulipUploadLinkPattern.FindAllStringSubmatch(content, -1) {
+		rawURL := firstNonEmpty(match[1], match[2])
+		if rawURL == "" || seen[rawURL] {
+			continue
+		}
+		seen[rawURL] = true
+		resourceURL, sameOrigin := zulipResourceURL(rawURL, config.BaseURL)
+		if !sameOrigin {
+			continue
+		}
+		refs = append(refs, uvim.ResourceRef{
+			Provider:  "zulip",
+			Connector: config.ConnectorID,
+			Kind:      uvim.ElementFile,
+			Name:      zulipUploadName(rawURL),
+			URL:       resourceURL,
+			Secret:    config.Token,
+		})
+	}
+	return refs
+}
+
+func zulipResourceURL(rawURL, baseURL string) (string, bool) {
+	base, err := url.Parse(baseURL)
+	if err != nil || base.Host == "" || (base.Scheme != "https" && base.Scheme != "http") {
+		return rawURL, false
+	}
+	resource, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL, false
+	}
+	resource = base.ResolveReference(resource)
+	port := func(u *url.URL) string {
+		if value := u.Port(); value != "" {
+			return value
+		}
+		if u.Scheme == "https" {
+			return "443"
+		}
+		return "80"
+	}
+	sameOrigin := strings.EqualFold(resource.Scheme, base.Scheme) && strings.EqualFold(resource.Hostname(), base.Hostname()) && port(resource) == port(base)
+	return resource.String(), sameOrigin
+}
+
+func zulipUploadName(rawURL string) string {
+	rawURL = strings.TrimRight(rawURL, "/")
+	if index := strings.LastIndex(rawURL, "/"); index >= 0 && index+1 < len(rawURL) {
+		if name, err := url.PathUnescape(rawURL[index+1:]); err == nil && strings.TrimSpace(name) != "" {
+			return name
+		}
+		return rawURL[index+1:]
+	}
+	return rawURL
 }
 
 func Send(msg uvim.OutboundMessage, _ httpchannel.Config) (httpchannel.Request, error) {

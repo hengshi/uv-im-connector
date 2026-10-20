@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
 	"strings"
 
 	uvim "github.com/hengshi/uv-im-connector"
@@ -59,21 +61,35 @@ func New(config Config) (*httpchannel.Provider, error) {
 
 func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	var msg struct {
+		discordMessageContent
 		ID        string `json:"id"`
 		ChannelID string `json:"channel_id"`
 		GuildID   string `json:"guild_id"`
-		Content   string `json:"content"`
+		Type      int    `json:"type"`
 		Author    struct {
 			ID       string `json:"id"`
 			Username string `json:"username"`
 		} `json:"author"`
-		Attachments []struct {
-			ID          string `json:"id"`
-			Filename    string `json:"filename"`
-			URL         string `json:"url"`
-			ContentType string `json:"content_type"`
-			Size        int64  `json:"size"`
-		} `json:"attachments"`
+		Poll *struct {
+			Question struct {
+				Text string `json:"text"`
+			} `json:"question"`
+			Answers []struct {
+				PollMedia struct {
+					Text string `json:"text"`
+				} `json:"poll_media"`
+			} `json:"answers"`
+		} `json:"poll"`
+		MessageSnapshots []struct {
+			Message discordMessageContent `json:"message"`
+		} `json:"message_snapshots"`
+		ReferencedMessage *struct {
+			ID      string `json:"id"`
+			Content string `json:"content"`
+		} `json:"referenced_message"`
+		MessageReference *struct {
+			MessageID string `json:"message_id"`
+		} `json:"message_reference"`
 	}
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return uvim.Event{}, false, err
@@ -81,24 +97,42 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	if msg.ID == "" || msg.ChannelID == "" {
 		return uvim.Event{}, false, nil
 	}
-	refs := make([]uvim.ResourceRef, 0, len(msg.Attachments))
-	for _, attachment := range msg.Attachments {
-		kind := uvim.ElementFile
-		switch {
-		case strings.HasPrefix(attachment.ContentType, "image/"):
-			kind = uvim.ElementImage
-		case strings.HasPrefix(attachment.ContentType, "video/"):
-			kind = uvim.ElementVideo
-		case strings.HasPrefix(attachment.ContentType, "audio/"):
-			kind = uvim.ElementAudio
-		}
-		if attachment.URL != "" {
-			refs = append(refs, uvim.ResourceRef{Provider: "discord", Connector: config.ConnectorID, Kind: kind, Name: attachment.Filename, URL: attachment.URL, MIME: attachment.ContentType, SizeBytes: attachment.Size})
-		}
-	}
+	content, refs := discordContent(msg.discordMessageContent, config)
 	channelType := uvim.ChannelGroup
 	if msg.GuildID == "" {
 		channelType = uvim.ChannelDirect
+	}
+	parentID := ""
+	if msg.ReferencedMessage != nil {
+		parentID = msg.ReferencedMessage.ID
+	}
+	if parentID == "" && msg.MessageReference != nil {
+		parentID = msg.MessageReference.MessageID
+	}
+	var textParts []string
+	addText := func(text string) {
+		if text = strings.TrimSpace(text); text != "" {
+			textParts = append(textParts, text)
+		}
+	}
+	addText(content)
+	if msg.Poll != nil {
+		addText("Poll: " + msg.Poll.Question.Text)
+		for _, answer := range msg.Poll.Answers {
+			addText("- " + answer.PollMedia.Text)
+		}
+	}
+	for _, snapshot := range msg.MessageSnapshots {
+		text, snapshotRefs := discordContent(snapshot.Message, config)
+		addText("Forwarded: " + text)
+		refs = append(refs, snapshotRefs...)
+	}
+	if msg.ReferencedMessage != nil {
+		addText("Referenced: " + msg.ReferencedMessage.Content)
+	}
+	text := strings.Join(textParts, "\n")
+	if text == "" && msg.Type != 0 {
+		text = fmt.Sprintf("[Discord message type: %d]", msg.Type)
 	}
 	return uvim.Event{
 		ID:        msg.ID,
@@ -107,10 +141,139 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: msg.ChannelID, Type: channelType},
 		User:      uvim.User{ID: msg.Author.ID, Name: msg.Author.Username},
-		Message:   uvim.Message{ID: msg.ID, Text: msg.Content, Type: "message", Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: msg.ID, ChannelID: msg.ChannelID, Target: &uvim.OutboundTarget{ID: msg.ChannelID, Kind: uvim.TargetChannel}},
+		Message:   uvim.Message{ID: msg.ID, Text: text, Type: "message", Resources: refs},
+		Referrer:  uvim.Referrer{MessageID: msg.ID, ParentMessageID: parentID, ChannelID: msg.ChannelID, Target: &uvim.OutboundTarget{ID: msg.ChannelID, Kind: uvim.TargetChannel}},
 		Addressed: true,
 	}, true, nil
+}
+
+type discordMessageContent struct {
+	Content     string              `json:"content"`
+	Attachments []discordAttachment `json:"attachments"`
+	Embeds      []struct {
+		Title       string        `json:"title"`
+		Description string        `json:"description"`
+		URL         string        `json:"url"`
+		Image       *discordMedia `json:"image"`
+		Thumbnail   *discordMedia `json:"thumbnail"`
+		Video       *discordMedia `json:"video"`
+	} `json:"embeds"`
+	StickerItems []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"sticker_items"`
+	Components []discordComponent `json:"components"`
+}
+
+type discordAttachment struct {
+	ID          string `json:"id"`
+	Filename    string `json:"filename"`
+	URL         string `json:"url"`
+	ContentType string `json:"content_type"`
+	Size        int64  `json:"size"`
+}
+
+type discordMedia struct {
+	URL          string `json:"url"`
+	ProxyURL     string `json:"proxy_url"`
+	ContentType  string `json:"content_type"`
+	AttachmentID string `json:"attachment_id"`
+}
+
+type discordComponent struct {
+	Type        int                `json:"type"`
+	Label       string             `json:"label"`
+	CustomID    string             `json:"custom_id"`
+	Content     string             `json:"content"`
+	Description string             `json:"description"`
+	Components  []discordComponent `json:"components"`
+	Accessory   *discordComponent  `json:"accessory"`
+	Media       *discordMedia      `json:"media"`
+	File        *discordMedia      `json:"file"`
+	Items       []struct {
+		Media       discordMedia `json:"media"`
+		Description string       `json:"description"`
+	} `json:"items"`
+}
+
+func discordContent(message discordMessageContent, config httpchannel.Config) (string, []uvim.ResourceRef) {
+	var parts []string
+	var refs []uvim.ResourceRef
+	addText := func(text string) {
+		if text = strings.TrimSpace(text); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	addText(message.Content)
+	for _, embed := range message.Embeds {
+		addText(embed.Title)
+		addText(embed.Description)
+		addText(embed.URL)
+	}
+	for _, sticker := range message.StickerItems {
+		addText("[Sticker: " + firstNonEmpty(sticker.Name, sticker.ID) + "]")
+	}
+	for _, attachment := range message.Attachments {
+		if attachment.URL != "" {
+			refs = append(refs, uvim.ResourceRef{Provider: "discord", Connector: config.ConnectorID, Kind: uvim.ResourceKindFromMIME(attachment.ContentType, uvim.ElementFile), Name: attachment.Filename, URL: attachment.URL, MIME: attachment.ContentType, SizeBytes: attachment.Size})
+		}
+	}
+	addMedia := func(media *discordMedia, fallbackKind string) {
+		if media == nil {
+			return
+		}
+		resourceURL := media.URL
+		name := ""
+		mime := media.ContentType
+		var size int64
+		for _, attachment := range message.Attachments {
+			if (media.AttachmentID != "" && media.AttachmentID == attachment.ID) || resourceURL == "attachment://"+attachment.Filename {
+				resourceURL = attachment.URL
+				name, mime, size = attachment.Filename, attachment.ContentType, attachment.Size
+				break
+			}
+		}
+		if strings.HasPrefix(resourceURL, "attachment://") || resourceURL == "" {
+			resourceURL = media.ProxyURL
+		}
+		parsed, err := url.Parse(resourceURL)
+		if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
+			return
+		}
+		for _, ref := range refs {
+			if ref.URL == resourceURL {
+				return
+			}
+		}
+		refs = append(refs, uvim.ResourceRef{Provider: "discord", Connector: config.ConnectorID, Kind: uvim.ResourceKindFromMIME(mime, fallbackKind), Name: firstNonEmpty(name, path.Base(parsed.Path)), URL: resourceURL, MIME: mime, SizeBytes: size})
+	}
+	for _, embed := range message.Embeds {
+		addMedia(embed.Image, uvim.ElementImage)
+		addMedia(embed.Thumbnail, uvim.ElementImage)
+		addMedia(embed.Video, uvim.ElementVideo)
+	}
+	var addComponent func(discordComponent)
+	addComponent = func(component discordComponent) {
+		addText(firstNonEmpty(component.Label, component.CustomID))
+		addText(component.Content)
+		addText(component.Description)
+		addMedia(component.Media, uvim.ElementImage)
+		addMedia(component.File, uvim.ElementFile)
+		for _, item := range component.Items {
+			addText(item.Description)
+			addMedia(&item.Media, uvim.ElementImage)
+		}
+		for _, child := range component.Components {
+			addComponent(child)
+		}
+		if component.Accessory != nil {
+			addComponent(*component.Accessory)
+		}
+	}
+	for _, component := range message.Components {
+		addComponent(component)
+	}
+	return strings.Join(parts, "\n"), refs
 }
 
 func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Request, error) {

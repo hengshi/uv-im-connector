@@ -77,7 +77,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: channelID, Type: channelType},
 		User:      uvim.User{ID: fmt.Sprint(msg.UserID), Name: firstNonEmpty(msg.Sender.Card, msg.Sender.Nickname)},
-		Message:   uvim.Message{ID: messageID, Text: msg.RawMessage, Type: msg.MessageType, Resources: refs},
+		Message:   uvim.Message{ID: messageID, Text: onebotPlainText(msg.RawMessage), Type: msg.MessageType, Resources: refs},
 		Referrer:  uvim.Referrer{MessageID: messageID, ChannelID: channelID, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
 		Addressed: true,
 	}, true, nil
@@ -141,7 +141,11 @@ func onebotResources(raw json.RawMessage, config httpchannel.Config) []uvim.Reso
 		Data map[string]any `json:"data"`
 	}
 	if len(raw) == 0 || json.Unmarshal(raw, &segments) != nil {
-		return nil
+		var cq string
+		if json.Unmarshal(raw, &cq) != nil {
+			return nil
+		}
+		segments = onebotCQSegments(cq)
 	}
 	var refs []uvim.ResourceRef
 	for _, segment := range segments {
@@ -162,6 +166,70 @@ func onebotResources(raw json.RawMessage, config httpchannel.Config) []uvim.Reso
 		})
 	}
 	return refs
+}
+
+func onebotCQSegments(message string) []struct {
+	Type string         `json:"type"`
+	Data map[string]any `json:"data"`
+} {
+	var segments []struct {
+		Type string         `json:"type"`
+		Data map[string]any `json:"data"`
+	}
+	rest := message
+	for {
+		start := strings.Index(rest, "[CQ:")
+		if start < 0 {
+			return segments
+		}
+		rest = rest[start+4:]
+		end := strings.Index(rest, "]")
+		if end < 0 {
+			return segments
+		}
+		raw := rest[:end]
+		rest = rest[end+1:]
+		parts := strings.Split(raw, ",")
+		if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+			continue
+		}
+		data := map[string]any{}
+		for _, part := range parts[1:] {
+			key, value, ok := strings.Cut(part, "=")
+			if !ok {
+				continue
+			}
+			data[strings.TrimSpace(key)] = onebotCQUnescape(value)
+		}
+		segments = append(segments, struct {
+			Type string         `json:"type"`
+			Data map[string]any `json:"data"`
+		}{Type: strings.TrimSpace(parts[0]), Data: data})
+	}
+}
+
+func onebotCQUnescape(value string) string {
+	replacer := strings.NewReplacer("&#91;", "[", "&#93;", "]", "&#44;", ",", "&amp;", "&")
+	return strings.TrimSpace(replacer.Replace(value))
+}
+
+func onebotPlainText(message string) string {
+	var out strings.Builder
+	rest := message
+	for {
+		start := strings.Index(rest, "[CQ:")
+		if start < 0 {
+			out.WriteString(rest)
+			return strings.TrimSpace(out.String())
+		}
+		out.WriteString(rest[:start])
+		rest = rest[start+4:]
+		end := strings.Index(rest, "]")
+		if end < 0 {
+			return strings.TrimSpace(out.String())
+		}
+		rest = rest[end+1:]
+	}
 }
 
 func onebotKind(segmentType string) string {
