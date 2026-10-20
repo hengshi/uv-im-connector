@@ -3,6 +3,7 @@ package dingtalk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -161,19 +162,23 @@ func apiURL(r *http.Request) string {
 	return "http://" + r.Host
 }
 
-func TestStreamRunEmitsNormalizedEvent(t *testing.T) {
-	provider, err := New(Config{
-		ConnectorID:  "main",
-		ClientID:     "client-id",
-		ClientSecret: "client-secret",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+// The SDK is stubbed; the real DingTalk adapter, Hub and event log execute.
+func TestStreamRunEmitsNormalizedEventWithSDKStub(t *testing.T) {
+	for _, failStartup := range []bool{false, true} {
+		t.Run(fmt.Sprintf("startup-failure=%t", failStartup), func(t *testing.T) {
+			provider, err := New(Config{
+				ConnectorID:  "main",
+				ClientID:     "client-id",
+				ClientSecret: "client-secret",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	fake := &fakeStreamClient{
-		data: `{
+			ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+			defer cancel()
+			fake := &fakeStreamClient{
+				data: `{
   "msgId": "m-stream",
   "msgtype": "text",
   "senderStaffId": "u1",
@@ -183,30 +188,41 @@ func TestStreamRunEmitsNormalizedEvent(t *testing.T) {
   "sessionWebhook": "https://oapi.dingtalk.com/robot/sendBySession?session=secret",
   "text": {"content": "/start JARVIS-IM-REAL-E2E-1"}
 }`,
-		afterMessage: cancel,
-	}
-	provider.newStreamClient = func(string, string) streamClient { return fake }
-
-	var events []uvim.Event
-	err = provider.Run(ctx, uvim.EventSinkFunc(func(_ context.Context, event uvim.Event) error {
-		events = append(events, event)
-		return nil
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("events = %d, want 1", len(events))
-	}
-	event := events[0]
-	if event.Provider != "dingtalk" || event.Connector != "main" || event.ID != "m-stream" {
-		t.Fatalf("unexpected event identity: %#v", event)
-	}
-	if event.User.ID != "u1" || event.Channel.ID != "c1" || event.Message.Text != "/start JARVIS-IM-REAL-E2E-1" {
-		t.Fatalf("unexpected normalized event: %#v", event)
-	}
-	if event.Referrer.ReplyToken == "" {
-		t.Fatal("stream event lost session webhook reply token")
+				afterMessage: cancel,
+			}
+			provider.newStreamClient = func(string, string) streamClient {
+				if failStartup {
+					failStartup = false
+					return &fakeStreamClient{startErr: errors.New("temporary connection failure")}
+				}
+				return fake
+			}
+			log, err := uvim.NewEventLog(t.TempDir() + "/events.jsonl")
+			if err != nil {
+				t.Fatal(err)
+			}
+			hub := server.NewHub(uvim.NewProviderRegistry(provider), log, nil)
+			if err := hub.RunProviders(ctx); !errors.Is(err, context.Canceled) {
+				t.Fatalf("runner did not recover and emit before cancellation: %v", err)
+			}
+			events, err := log.ReadAfter(context.Background(), 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(events) != 1 {
+				t.Fatalf("events = %d, want 1", len(events))
+			}
+			event := events[0]
+			if event.Provider != "dingtalk" || event.Connector != "main" || event.ID != "m-stream" {
+				t.Fatalf("unexpected event identity: %#v", event)
+			}
+			if event.User.ID != "u1" || event.Channel.ID != "c1" || event.Message.Text != "/start JARVIS-IM-REAL-E2E-1" {
+				t.Fatalf("unexpected normalized event: %#v", event)
+			}
+			if event.Referrer.ReplyToken == "" {
+				t.Fatal("stream event lost session webhook reply token")
+			}
+		})
 	}
 }
 
@@ -363,6 +379,7 @@ func TestStreamRunDownloadsDownloadCodeThroughHub(t *testing.T) {
 }
 
 type fakeStreamClient struct {
+	startErr     error
 	handler      handler.IFrameHandler
 	data         string
 	afterMessage func()
@@ -376,6 +393,9 @@ func (f *fakeStreamClient) RegisterCallbackRouter(topic string, handler handler.
 }
 
 func (f *fakeStreamClient) Start(ctx context.Context) error {
+	if f.startErr != nil {
+		return f.startErr
+	}
 	if f.handler == nil {
 		return fmt.Errorf("chatbot handler was not registered")
 	}

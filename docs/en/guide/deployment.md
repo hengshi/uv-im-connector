@@ -2,6 +2,10 @@
 
 `uv-im-connector` runs as standalone IM infrastructure. Caller applications connect to it over HTTP/WebSocket and do not start, upgrade, or host provider long connections.
 
+During network outages, the process retries failed provider runners until recovery or shutdown; other providers and the HTTP API remain available. See [Architecture](../architecture.md#provider-contract) for the retry policy. Configuration parsing and HTTP listener startup failures still exit. Platform credential rejections keep retrying and require an operator to correct credentials and restart.
+
+`/health` proves HTTP process liveness; inspect each identity's `health` in `/v1/meta` for provider state. systemd, launchd, or container restart policies still own process crashes, kills, and startup after reboot; in-process reconnection cannot recover an already stopped process. If macOS launchd has suppressed KeepAlive respawns, an operator must run `launchctl kickstart` once for the verified service label. Ordinary network recovery does not depend on that operation or require a periodic watchdog.
+
 ## Release Artifacts
 
 Every `v*` tag publishes three artifact types:

@@ -164,7 +164,18 @@ func (p *Provider) Health(context.Context) uvim.Health {
 	return uvim.Health{Provider: p.ID(), Connector: p.ConnectorID(), State: state, CheckedAt: time.Now().UTC(), Capabilities: p.Capabilities()}
 }
 
-func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
+func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) (runErr error) {
+	p.setState("connecting")
+	defer func() {
+		switch {
+		case runErr != nil:
+			p.setState("error")
+		case ctx.Err() != nil:
+			p.setState("stopped")
+		default:
+			p.setState("disconnected")
+		}
+	}()
 	conn, _, err := p.config.Dialer.DialContext(ctx, p.config.WSURL, http.Header{})
 	if err != nil {
 		p.setState("error")

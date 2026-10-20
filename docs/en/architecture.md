@@ -29,6 +29,10 @@ Every provider implements the same Go interface:
 
 No provider defines the core protocol. Provider-specific behavior stays inside the provider package and is exposed only through capabilities.
 
+`Hub.RunProviders` supervises one serial `Run` per registered provider/connector identity. While the parent context is live, both errors and normal returns are retried; one failure does not close the HTTP API or stop other providers. Exponential backoff starts at 1 second with ±20% jitter and a hard 1-minute cap; a run lasting at least 1 minute resets the backoff. Cancellation interrupts backoff; the Hub waits for each `Run` to return before completing. Immediate cancellation of an active transport call depends on its provider or SDK. This restarts inbound runners only; it never replays outbound sends.
+
+The shared supervisor recovers WeCom and Lark WebSocket disconnects and DingTalk Stream startup failures. DingTalk's SDK still owns reconnection after an established Stream connection. Discord, KOOK, LINE, Mail, Matrix, OneBot, QQ, QQ Guild, Slack, Telegram, WeChat Official Account, WhatsApp, Zulip, and DingTalk webhook mode receive events through HTTP ingress; their `Run` waits for cancellation. Memory uses the same supervision entrypoint.
+
 ## Protocol
 
 The normalized protocol has these stable objects:

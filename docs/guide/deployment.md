@@ -2,6 +2,10 @@
 
 `uv-im-connector` 作为独立 IM infrastructure 服务运行。调用方应用通过 HTTP/WebSocket 连接它，不负责启动、升级或托管 provider 长连接。
 
+网络中断时，进程持续重试失败的 provider runner，直到恢复或服务停止；其他 provider 和 HTTP API 保持运行。重试策略见[架构](../architecture.md#provider-contract)。配置解析或 HTTP listener 启动失败仍会退出；平台拒绝凭据时持续重试，需要操作员修正凭据并重启。
+
+`/health` 只表示 HTTP 进程存活，provider 状态见 `/v1/meta` 中各 identity 的 `health`。systemd、launchd 或容器 restart policy 仍负责崩溃、被杀及重启后的启动；进程内重连不能恢复已停止的进程。macOS launchd 若已抑制 KeepAlive 拉起，需要操作员针对已核实的 service label 执行一次 `launchctl kickstart`。正常网络恢复不依赖该操作，也无需增加定时 watchdog。
+
 ## 发布产物
 
 每个 `v*` tag 发布三类产物：
