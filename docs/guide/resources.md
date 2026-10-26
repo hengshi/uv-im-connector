@@ -71,10 +71,11 @@ POST /v1/resource.download
 
 发送前必须从 `GET /v1/meta` 校验目标 provider + connector 的 `upload_resource` 和 `resource_kinds`，并把 `upload.create` 返回的完整 `ResourceRef` 原样放进 `OutboundMessage.resources`。不能自行拼装 `internal_url`，也不能拿另一个 uv-im-connector 进程的内部 URL 来用。
 
-standalone binary 中，WeCom、Lark / Feishu、Discord、KOOK、Telegram、Matrix、Slack、WhatsApp、Zulip、WeChat Official Account 和 Mail 与 HTTP upload endpoint 使用同一个 resource store，并真正声明 `upload_resource=true`。完整逐 provider 清单见 [Provider 能力矩阵](/architecture.html#provider-能力矩阵)。
+standalone binary 中，WeCom、Lark / Feishu、DingTalk（配置应用凭据）、Discord、KOOK、Telegram、Matrix、Slack、WhatsApp、Zulip、WeChat Official Account 和 Mail 与 HTTP upload endpoint 使用同一个 resource store，并真正声明 `upload_resource=true`。完整逐 provider 清单见 [Provider 能力矩阵](/architecture.html#provider-能力矩阵)。
 
 - WeCom：WebSocket 上传每片 512 KiB，总大小和分片数量由平台校验。
 - Lark / Feishu：支持格式的图片始终使用图片 API，不按大小转为文件；其他资源走文件上传，由平台校验大小。
+- DingTalk：使用应用凭据上传媒体，再向明确的用户或群发送。图片为图片消息，文件、音频和视频为可下载文件；无需保留有效的 session webhook。
 - Discord：资源随消息直接 multipart 上传，由平台校验大小。
 - KOOK：先上传 asset，再发送图片消息或附件卡片。
 - Telegram：Bot API multipart 上传；不符合原生格式时降级为 document。

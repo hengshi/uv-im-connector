@@ -160,7 +160,7 @@ The 16 external providers have the following conversation and outbound capabilit
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | WeCom | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `conversation` | AI Bot stream reply handles expire after 10 minutes; the inbound target supports proactive fallback. |
 | Lark / Feishu | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `conversation` | User targets are Open IDs; group/conversation targets are chat IDs. |
-| DingTalk | Yes | Yes | Yes | No | Conditional | `user`, `group` | Ingress supports Stream mode or a verified webhook. Replies use the inbound session webhook and its payload deadline; proactive fallback is available only for configured group webhooks. |
+| DingTalk | Yes | Yes | Yes | Conditional | Conditional | `user`, `group` | Application credentials enable proactive direct and group delivery. Session webhooks remain available for text replies; a legacy group webhook requires its own token. |
 | Discord | Yes | Yes | Yes | Yes | Yes | `user`, `channel`, `conversation` | A user target opens or reuses a Discord DM channel before sending. |
 | KOOK | Yes | Yes | Yes | Yes | Yes | `user`, `channel` | Direct messages use the KOOK direct-message API. |
 | LINE | Yes | Yes | Yes | Conditional | Conditional | `user`, `group`, `conversation` | Reply tokens are single-use and short-lived; push fallback targets must satisfy LINE friendship, recent-contact, or group-membership rules. |
@@ -181,7 +181,7 @@ The resource matrix is separate from text/conversation support. "Inbound" means 
 | --- | --- | --- | --- | --- |
 | WeCom | Yes | Yes | `file`, `image`, `audio`, `video` | AI Bot WebSocket upload in 512 KiB chunks; the provider validates total size and chunk count. |
 | Lark / Feishu | Yes | Yes | `file`, `image`, `audio`, `video` | Supported image formats use the image API regardless of size; other resources use file upload. The provider validates size. |
-| DingTalk | Yes | No | — | Current robot/session-webhook adapter has no internal-byte upload path. |
+| DingTalk | Yes | Yes | `file`, `image`, `audio`, `video` | Requires application credentials and the shared resource store. Images use image messages; files, audio and video are delivered as downloadable files. |
 | Discord | Yes | Yes | `file`, `image`, `audio`, `video` | Direct multipart message upload; the provider validates attachment size. |
 | KOOK | Yes | Yes | `file`, `image`, `audio`, `video` | Asset upload followed by an image or attachment-card message. |
 | LINE | Yes | No | — | LINE outbound media requires a provider-reachable HTTPS content URL; uv-im-connector has no public media origin. |
@@ -387,7 +387,7 @@ GET /v1/internal/<id>
 
 The Go client also exposes `ResolveInternalURL`.
 
-For outbound attachments, callers must first inspect the selected provider and connector in `GET /v1/meta`, require `upload_resource` plus the desired `resource_kinds`, call `POST /v1/upload.create`, and send the exact returned `ResourceRef`. The standalone WeCom, Lark / Feishu, Discord, KOOK, Telegram, Matrix, Slack, WhatsApp, Zulip, and Mail providers share the HTTP upload store and support `file`, `image`, `audio`, and `video`; WeChat Official Account shares the same store but only supports image, audio, and video. A send accepts text and multiple resources without a connector-imposed count limit. Discord, Mail, and Zulip combine them in one native message; the other upload-capable adapters send text first, then each resource in order (Slack also keeps its single-file caption form). Ordered sends return all IDs in `message_ids` and the last ID in `message_id`. On partial failure, `failure.delivered_count` and `failure.delivered_message_ids` identify completed messages; `retryable=false` and `delivery_state=unknown` prohibit replaying the whole sequence. The failed part may have an ambiguous outcome.
+For outbound attachments, callers must first inspect the selected provider and connector in `GET /v1/meta`, require `upload_resource` plus the desired `resource_kinds`, call `POST /v1/upload.create`, and send the exact returned `ResourceRef`. The standalone WeCom, Lark / Feishu, DingTalk (with application credentials), Discord, KOOK, Telegram, Matrix, Slack, WhatsApp, Zulip, and Mail providers share the HTTP upload store and support `file`, `image`, `audio`, and `video`; WeChat Official Account shares the same store but only supports image, audio, and video. A send accepts text and multiple resources without a connector-imposed count limit. Discord, Mail, and Zulip combine them in one native message; the other upload-capable adapters send text first, then each resource in order (Slack also keeps its single-file caption form). Ordered sends return all IDs in `message_ids` and the last ID in `message_id`. On partial failure, `failure.delivered_count` and `failure.delivered_message_ids` identify completed messages; `retryable=false` and `delivery_state=unknown` prohibit replaying the whole sequence. The failed part may have an ambiguous outcome.
 
 ## Go Client
 

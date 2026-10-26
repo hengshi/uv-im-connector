@@ -71,10 +71,11 @@ Use `POST /v1/upload.create` to create an internal resource from local bytes bef
 
 Before sending, inspect the exact provider and connector in `GET /v1/meta`, require `upload_resource` and the desired `resource_kinds`, and pass the complete `ResourceRef` returned by `upload.create` in `OutboundMessage.resources`. Do not construct an `internal_url` or reuse one from another uv-im-connector process.
 
-In the standalone binary, WeCom, Lark / Feishu, Discord, KOOK, Telegram, Matrix, Slack, WhatsApp, Zulip, WeChat Official Account, and Mail share the HTTP upload resource store and declare `upload_resource=true`. See the [provider capability matrix](/en/architecture.html#provider-capability-matrix) for every provider.
+In the standalone binary, WeCom, Lark / Feishu, DingTalk (with application credentials), Discord, KOOK, Telegram, Matrix, Slack, WhatsApp, Zulip, WeChat Official Account, and Mail share the HTTP upload resource store and declare `upload_resource=true`. See the [provider capability matrix](/en/architecture.html#provider-capability-matrix) for every provider.
 
 - WeCom: WebSocket upload uses 512 KiB chunks, and the provider validates total size and chunk count.
 - Lark / Feishu: Supported image formats use the image API regardless of size; other resources use file upload. The provider validates size.
+- DingTalk: Application credentials upload media and send to an explicit user or group. Images use image messages; files, audio and video use downloadable file messages. A current session webhook is not required.
 - Discord: Direct multipart message upload; the provider validates attachment size.
 - KOOK: Asset upload followed by an image or attachment-card message.
 - Telegram: Multipart Bot API upload; unsupported native formats fall back to documents.

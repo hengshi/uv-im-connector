@@ -57,7 +57,7 @@ WeCom、Lark WebSocket 断线及 DingTalk Stream 首次启动失败由共享监�
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | WeCom | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`group`、`conversation` | AI Bot stream reply handle 在 10 分钟后过期；入站 target 可用于主动发送 fallback。 |
 | Lark / Feishu | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`group`、`conversation` | 用户目标是 Open ID；群聊 / 会话目标是 chat ID。 |
-| DingTalk | 支持 | 支持 | 支持 | 不支持 | 有条件 | `user`、`group` | 入站支持 Stream 模式或经过验证的 webhook；回复使用入站 session webhook 及 payload 中的截止时间；主动 fallback 只适用于已配置的群机器人 webhook。 |
+| DingTalk | 支持 | 支持 | 支持 | 有条件 | 有条件 | `user`、`group` | 应用凭据启用主动单聊和群聊发送；文本回复仍可使用入站 session webhook，旧群机器人 webhook 需单独配置 token。 |
 | Discord | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`channel`、`conversation` | 用户目标会先创建或复用 Discord DM channel。 |
 | KOOK | 支持 | 支持 | 支持 | 支持 | 支持 | `user`、`channel` | 私聊使用 KOOK direct-message API。 |
 | LINE | 支持 | 支持 | 支持 | 有条件 | 有条件 | `user`、`group`、`conversation` | Reply token 单次且短效；push fallback target 必须满足 LINE 的好友、近期联系或群成员规则。 |
@@ -78,7 +78,7 @@ WeCom、Lark WebSocket 断线及 DingTalk Stream 首次启动失败由共享监�
 | --- | --- | --- | --- | --- |
 | WeCom | 支持 | 支持 | `file`、`image`、`audio`、`video` | AI Bot WebSocket 上传，每片 512 KiB；总大小和分片数量由平台校验。 |
 | Lark / Feishu | 支持 | 支持 | `file`、`image`、`audio`、`video` | 支持格式的图片始终使用图片 API，不按大小转为文件；其他资源走文件上传，由平台校验大小。 |
-| DingTalk | 支持 | 不支持 | — | 当前机器人 / session-webhook adapter 没有 internal bytes 上传路径。 |
+| DingTalk | 支持 | 支持 | `file`、`image`、`audio`、`video` | 需要应用凭据和共享资源存储；图片使用图片消息，文件、音频和视频作为可下载文件发送。 |
 | Discord | 支持 | 支持 | `file`、`image`、`audio`、`video` | 资源随消息直接 multipart 上传，由平台校验大小。 |
 | KOOK | 支持 | 支持 | `file`、`image`、`audio`、`video` | 先上传 asset，再发送图片消息或附件卡片。 |
 | LINE | 支持 | 不支持 | — | LINE 出站媒体要求 provider 可访问的 HTTPS 内容 URL；uv-im-connector 当前不提供公网 media origin。 |

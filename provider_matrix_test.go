@@ -47,7 +47,9 @@ func TestProviderMetadataForAllChannels(t *testing.T) {
 		{"lark", func() (providerMetadata, error) {
 			return lark.New(lark.Config{AppID: "app", AppSecret: "secret", ResourceStore: &uvim.ResourceStore{Dir: t.TempDir()}})
 		}, true, true, true, true, true, 0, []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation}},
-		{"dingtalk", func() (providerMetadata, error) { return dingtalk.New(dingtalk.Config{BaseURL: "http://127.0.0.1"}) }, true, true, true, false, true, 0, []string{uvim.TargetUser, uvim.TargetGroup}},
+		{"dingtalk", func() (providerMetadata, error) {
+			return dingtalk.New(dingtalk.Config{BaseURL: "http://127.0.0.1", ClientID: "app", ClientSecret: "secret", ResourceStore: &uvim.ResourceStore{Dir: t.TempDir()}})
+		}, true, true, true, true, true, 0, []string{uvim.TargetUser, uvim.TargetGroup}},
 		{"discord", func() (providerMetadata, error) {
 			return discord.New(discord.Config{BaseURL: "http://127.0.0.1", ResourceStore: &uvim.ResourceStore{Dir: t.TempDir()}})
 		}, true, true, true, true, true, 0, []string{uvim.TargetUser, uvim.TargetChannel, uvim.TargetConversation}},
@@ -81,7 +83,7 @@ func TestProviderMetadataForAllChannels(t *testing.T) {
 		}, true, true, true, true, true, 0, []string{uvim.TargetUser, uvim.TargetGroup}},
 	}
 	seen := map[string]bool{}
-	uploadProviders := map[string]bool{"memory": true, "wecom": true, "lark": true, "discord": true, "kook": true, "mail": true, "matrix": true, "slack": true, "telegram": true, "wechat-official": true, "whatsapp": true, "zulip": true}
+	uploadProviders := map[string]bool{"memory": true, "wecom": true, "lark": true, "dingtalk": true, "discord": true, "kook": true, "mail": true, "matrix": true, "slack": true, "telegram": true, "wechat-official": true, "whatsapp": true, "zulip": true}
 	for _, item := range providers {
 		t.Run(item.name, func(t *testing.T) {
 			provider, err := item.new()

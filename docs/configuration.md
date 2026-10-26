@@ -51,6 +51,8 @@ DINGTALK DISCORD KOOK LINE MATRIX ONEBOT QQ QQGUILD SLACK TELEGRAM WECHAT_OFFICI
 
 `UV_IM_PROVIDERS` 为空时，二进制只会自动加载检测到 credentials 或 webhook 配置的 provider。`memory` 不会在生产模式下自动加载。
 
-DingTalk 有两种入站模式。配置完整的 `UV_DINGTALK_CLIENT_ID` 和 `UV_DINGTALK_CLIENT_SECRET` 时使用 Stream 模式，并可下载含 `downloadCode` 的入站图片、文件、语音、视频和富文本资源；两者都不配置时保留原有 webhook 模式，并由 `UV_DINGTALK_WEBHOOK_SECRET` 验证入站请求。只配置其中一个会直接启动失败，不能静默降级。两种模式的回复都复用入站消息携带的 session webhook；`UV_DINGTALK_TOKEN` 仅用于已配置群机器人的主动群消息。
+DingTalk 有两种入站模式。配置完整的 `UV_DINGTALK_CLIENT_ID` 和 `UV_DINGTALK_CLIENT_SECRET` 时使用 Stream 模式，并可下载含 `downloadCode` 的入站图片、文件、语音、视频和富文本资源；两者都不配置时保留原有 webhook 模式，并由 `UV_DINGTALK_WEBHOOK_SECRET` 验证入站请求。只配置其中一个会直接启动失败，不能静默降级。
+
+配置应用凭据后，可通过机器人 OpenAPI 向明确的原生用户或群目标发送消息，无需有效的 session webhook；图片和文件使用同一凭据上传后发送，standalone 与 HTTP upload endpoint 共用资源存储。音频和视频作为可下载文件交付，不模拟原生播放器。普通文本回复仍可复用未过期的入站 session webhook。未配置应用凭据时不声明主动单聊或附件发送；`UV_DINGTALK_TOKEN` 仅支持已配置的旧群机器人主动群消息。应用需具有相应的机器人发消息和媒体 API 权限，目标用户/群须满足钉钉应用范围要求。
 
 connector 创建的 HTTP client 不设置请求总超时。企微/飞书 WebSocket 握手、读写/ACK 超时以及飞书分片过期默认关闭；Go 调用方显式传入的正值配置和自定义 client 仍生效。心跳/ping 周期和展示名缓存淘汰不会拒绝消息或附件。嵌入使用时应传入可取消的 context。

@@ -18,6 +18,7 @@ type Config struct {
 	WebhookSecret string
 	ClientID      string
 	ClientSecret  string
+	ResourceStore *uvim.ResourceStore
 }
 
 func New(config Config) (*Provider, error) {
@@ -39,6 +40,7 @@ func New(config Config) (*Provider, error) {
 		BaseURL:           baseURL,
 		Token:             config.Token,
 		WebhookSecret:     config.WebhookSecret,
+		ResourceStore:     config.ResourceStore,
 		Decode:            Decode,
 		Send:              Send,
 		ParseSendResponse: ParseSendResponse,
@@ -48,7 +50,9 @@ func New(config Config) (*Provider, error) {
 			DirectMessage:    true,
 			GroupMessage:     true,
 			ReplyMessage:     true,
-			ProactiveGroup:   true,
+			ProactiveDirect:  clientID != "",
+			ProactiveGroup:   clientID != "" || strings.TrimSpace(config.Token) != "",
+			UploadResource:   clientID != "" && config.ResourceStore != nil,
 			DownloadResource: true,
 			TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup},
 			ChannelTypes:     []string{uvim.ChannelDirect, uvim.ChannelGroup},
