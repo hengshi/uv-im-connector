@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -98,7 +97,10 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 }
 
 func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
-	return p.base.Send(ctx, msg)
+	if !p.streamEnabled() {
+		return p.base.Send(ctx, msg)
+	}
+	return p.send(ctx, msg)
 }
 
 func (p *Provider) Download(ctx context.Context, req uvim.ResourceDownloadRequest) (uvim.ResourceRef, error) {
@@ -209,14 +211,7 @@ func doDingTalkJSON(req *http.Request) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	return body, nil
+	return httpchannel.ReadSendResponse(resp, "dingtalk request")
 }
 
 func (p *Provider) Health(ctx context.Context) uvim.Health {

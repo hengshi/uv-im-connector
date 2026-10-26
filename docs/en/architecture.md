@@ -57,7 +57,7 @@ This table covers the 16 external providers and excludes `memory`, which is used
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | WeCom | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `conversation` | AI Bot stream reply handles expire after 10 minutes; the inbound target supports proactive fallback. |
 | Lark / Feishu | Yes | Yes | Yes | Yes | Yes | `user`, `group`, `conversation` | User targets are Open IDs; group/conversation targets are chat IDs. |
-| DingTalk | Yes | Yes | Yes | No | Conditional | `user`, `group` | Ingress supports Stream mode or a verified webhook. Replies use the inbound session webhook and its payload deadline; proactive fallback is available only for configured group webhooks. |
+| DingTalk | Yes | Yes | Yes | Conditional | Conditional | `user`, `group` | Application credentials enable proactive direct and group delivery. Session webhooks remain available for text replies; a legacy group webhook requires its own token. |
 | Discord | Yes | Yes | Yes | Yes | Yes | `user`, `channel`, `conversation` | A user target opens or reuses a Discord DM channel before sending. |
 | KOOK | Yes | Yes | Yes | Yes | Yes | `user`, `channel` | Direct messages use the KOOK direct-message API. |
 | LINE | Yes | Yes | Yes | Conditional | Conditional | `user`, `group`, `conversation` | Reply tokens are single-use and short-lived; push fallback targets must satisfy LINE friendship, recent-contact, or group-membership rules. |
@@ -78,7 +78,7 @@ The resource matrix is separate from text/conversation support. "Inbound" means 
 | --- | --- | --- | --- | --- |
 | WeCom | Yes | Yes | `file`, `image`, `audio`, `video` | AI Bot WebSocket upload in 512 KiB chunks; the provider validates total size and chunk count. |
 | Lark / Feishu | Yes | Yes | `file`, `image`, `audio`, `video` | Supported image formats use the image API regardless of size; other resources use file upload. The provider validates size. |
-| DingTalk | Yes | No | — | Current robot/session-webhook adapter has no internal-byte upload path. |
+| DingTalk | Yes | Yes | `file`, `image`, `audio`, `video` | Requires application credentials and the shared resource store. Images use image messages; files, audio and video are delivered as downloadable files. |
 | Discord | Yes | Yes | `file`, `image`, `audio`, `video` | Direct multipart message upload; the provider validates attachment size. |
 | KOOK | Yes | Yes | `file`, `image`, `audio`, `video` | Asset upload followed by an image or attachment-card message. |
 | LINE | Yes | No | — | LINE outbound media requires a provider-reachable HTTPS content URL; uv-im-connector has no public media origin. |

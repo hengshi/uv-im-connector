@@ -137,6 +137,7 @@ func buildProviders(providerList string, resourceDir string) ([]uvim.Provider, e
 				WebhookSecret: c.WebhookSecret,
 				ClientID:      os.Getenv("UV_DINGTALK_CLIENT_ID"),
 				ClientSecret:  os.Getenv("UV_DINGTALK_CLIENT_SECRET"),
+				ResourceStore: &uvim.ResourceStore{Dir: resourceDir},
 			})
 			if err != nil {
 				return nil, err
