@@ -41,6 +41,12 @@ func (p *Provider) sendOne(ctx context.Context, msg uvim.OutboundMessage) (uvim.
 	if target.ID == "" || (target.Kind != uvim.TargetUser && target.Kind != uvim.TargetGroup) {
 		return uvim.SendResult{}, fmt.Errorf("dingtalk send: user or group target is required")
 	}
+	if target.Kind == uvim.TargetUser && msg.Target == nil && msg.Referrer.Target == nil {
+		err := fmt.Errorf("dingtalk send: explicit native user target is required; a direct conversation ID is not a staff ID")
+		return uvim.SendResult{}, uvim.NewProviderSendFailure(uvim.SendFailure{
+			Category: uvim.SendFailureInvalidRequest, DeliveryState: uvim.DeliveryNotAttempted,
+		}, err.Error(), err)
+	}
 	key, param := "sampleText", map[string]string{"content": uvim.NormalizeOutboundText(msg.Text)}
 	if len(msg.Resources) == 1 {
 		var err error
