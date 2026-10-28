@@ -49,6 +49,8 @@ WeCom、Lark WebSocket 断线及 DingTalk Stream 首次启动失败由共享监�
 
 部分入站 `referrer` 带有短效或限次 reply handle。`referrer.expires_at` 表示 provider 给出或 adapter 推导的截止时间；`capabilities.reply_max_uses` 表示该 handle 最多可用于多少次出站尝试，字段缺失或为 `0` 表示没有声明有限次数。超过截止时间或次数后，调用方必须移除 message / reply handle，并且只能在对应主动发送能力和 target kind 可用时改用 `referrer.target`。不具备 reply-handle 语义的平台业务会话窗口仍属于 provider 限制，不能统一重试为同一条主动消息。
 
+`Channel`、`User` 和 `OutboundTarget` 可以携带可选的 `external_id`，用于关联企业通讯录或其他外部系统身份；值为空时不输出该字段。`id` 仍是 provider 原生 ID，继续用于 connector 路由和去重。目标解析会保留显式 `target` 或 `referrer.target` 的 `external_id`，不会用它替换发送目标的 `id`。WeCom 的映射配置与单聊回退规则见[配置说明](/configuration.html#wecom-外部身份)。
+
 ## Provider 能力矩阵
 
 下表只列 16 个外部 provider，不包含用于测试和本地开发的 `memory`。`有条件` 表示 adapter 已支持该操作，但必须满足“限制”列的平台条件。

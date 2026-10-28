@@ -61,7 +61,11 @@ func TestInboundAttachmentsReachCaller(t *testing.T) {
 					body["msgid"], body["chattype"], body["chatid"] = "message-1", chatType, "chat-1"
 					body["from"] = map[string]any{"userid": "user-1"}
 					store := &uvim.ResourceStore{Dir: t.TempDir()}
-					provider, err := New(Config{BotID: "bot", Secret: "secret", ResourceStore: store, HTTPClient: media.Client()})
+					provider, err := New(Config{
+						BotID: "bot", Secret: "secret", ResourceStore: store, HTTPClient: media.Client(),
+						UserExternalIDs:         map[string]string{"user-1": "directory-user"},
+						ConversationExternalIDs: map[string]string{"chat-1": "directory-chat"},
+					})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -94,6 +98,9 @@ func TestInboundAttachmentsReachCaller(t *testing.T) {
 					events, err := c.Events(context.Background(), 0)
 					if err != nil || len(events) != 1 {
 						t.Fatalf("events=%d err=%v", len(events), err)
+					}
+					if events[0].User.ExternalID != "directory-user" || events[0].Channel.ExternalID != "directory-chat" || events[0].Referrer.Target == nil || events[0].Referrer.Target.ExternalID != "directory-chat" {
+						t.Fatalf("public event lost external IDs: %+v", events[0])
 					}
 					ref := events[0].Message.Resources[0]
 					if !events[0].Addressed || ref.Kind != wantKind || ref.InternalURL == "" || ref.Error != "" || ref.URL != "" || ref.Secret != "" {
@@ -231,6 +238,48 @@ func TestDecodeMessageAddsConfiguredDisplayNames(t *testing.T) {
 	}
 	if event.User.DisplayName != "张三" || event.Channel.Name != "研发群" {
 		t.Fatalf("event = %+v", event)
+	}
+}
+
+func TestDecodeMessageExternalIDs(t *testing.T) {
+	tests := []struct {
+		name                    string
+		chatType                string
+		chatID                  string
+		userExternalIDs         map[string]string
+		conversationExternalIDs map[string]string
+		wantUser                string
+		wantChannel             string
+	}{
+		{name: "unconfigured", chatType: "single", chatID: "chat-1"},
+		{name: "unmapped", chatType: "single", chatID: "chat-1", userExternalIDs: map[string]string{"other-user": "directory-other"}, conversationExternalIDs: map[string]string{"other-chat": "directory-chat"}},
+		{name: "direct user fallback", chatType: "single", chatID: "chat-1", userExternalIDs: map[string]string{"CaoGuLiang": "directory-user"}, wantUser: "directory-user", wantChannel: "directory-user"},
+		{name: "direct without chat ID", chatType: "single", userExternalIDs: map[string]string{"CaoGuLiang": "directory-user"}, wantUser: "directory-user", wantChannel: "directory-user"},
+		{name: "explicit direct conversation", chatType: "single", chatID: "chat-1", userExternalIDs: map[string]string{"CaoGuLiang": "directory-user"}, conversationExternalIDs: map[string]string{"chat-1": "directory-chat"}, wantUser: "directory-user", wantChannel: "directory-chat"},
+		{name: "mapped group", chatType: "group", chatID: "chat-1", userExternalIDs: map[string]string{"CaoGuLiang": "directory-user"}, conversationExternalIDs: map[string]string{"chat-1": "directory-group"}, wantUser: "directory-user", wantChannel: "directory-group"},
+		{name: "group without conversation mapping", chatType: "group", chatID: "chat-1", userExternalIDs: map[string]string{"CaoGuLiang": "directory-user"}, wantUser: "directory-user"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, err := New(Config{BotID: "bot", Secret: "secret", UserExternalIDs: tt.userExternalIDs, ConversationExternalIDs: tt.conversationExternalIDs})
+			if err != nil {
+				t.Fatal(err)
+			}
+			event, ok := provider.decodeMessage(frame{Cmd: cmdCallback, Headers: headers{ReqID: "req-1"}, Body: map[string]any{
+				"msgid": "msg-1", "msgtype": "text", "chattype": tt.chatType, "chatid": tt.chatID,
+				"from": map[string]any{"userid": "CaoGuLiang"}, "text": map[string]any{"content": "hello"},
+			}})
+			if !ok {
+				t.Fatal("decode ok = false")
+			}
+			if event.User.ExternalID != tt.wantUser || event.Channel.ExternalID != tt.wantChannel || event.Referrer.Target.ExternalID != tt.wantChannel {
+				t.Fatalf("external IDs: user=%q channel=%q target=%q, want user=%q channel/target=%q", event.User.ExternalID, event.Channel.ExternalID, event.Referrer.Target.ExternalID, tt.wantUser, tt.wantChannel)
+			}
+			wantChannelID := uvim.FirstNonEmpty(tt.chatID, "CaoGuLiang")
+			if event.User.ID != "CaoGuLiang" || event.Channel.ID != wantChannelID || event.Referrer.Target.ID != wantChannelID {
+				t.Fatalf("native IDs changed: user=%+v channel=%+v target=%+v", event.User, event.Channel, event.Referrer.Target)
+			}
+		})
 	}
 }
 

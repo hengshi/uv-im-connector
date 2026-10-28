@@ -96,13 +96,15 @@ type Login struct {
 }
 
 type Channel struct {
-	ID   string `json:"id,omitempty"`
-	Type string `json:"type,omitempty"`
-	Name string `json:"name,omitempty"`
+	ID         string `json:"id,omitempty"`
+	ExternalID string `json:"external_id,omitempty"`
+	Type       string `json:"type,omitempty"`
+	Name       string `json:"name,omitempty"`
 }
 
 type User struct {
 	ID          string `json:"id,omitempty"`
+	ExternalID  string `json:"external_id,omitempty"`
 	Name        string `json:"name,omitempty"`
 	DisplayName string `json:"display_name,omitempty"`
 }
@@ -249,8 +251,9 @@ type Capabilities struct {
 }
 
 type OutboundTarget struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"`
+	ID         string `json:"id"`
+	ExternalID string `json:"external_id,omitempty"`
+	Kind       string `json:"kind"`
 }
 
 type OutboundMessage struct {
@@ -274,14 +277,16 @@ type OutboundMessage struct {
 func (m OutboundMessage) ResolvedTarget() OutboundTarget {
 	if m.Target != nil {
 		return OutboundTarget{
-			ID:   strings.TrimSpace(m.Target.ID),
-			Kind: strings.ToLower(strings.TrimSpace(m.Target.Kind)),
+			ID:         strings.TrimSpace(m.Target.ID),
+			ExternalID: m.Target.ExternalID,
+			Kind:       strings.ToLower(strings.TrimSpace(m.Target.Kind)),
 		}
 	}
 	if m.Referrer.Target != nil {
 		return OutboundTarget{
-			ID:   strings.TrimSpace(m.Referrer.Target.ID),
-			Kind: strings.ToLower(strings.TrimSpace(m.Referrer.Target.Kind)),
+			ID:         strings.TrimSpace(m.Referrer.Target.ID),
+			ExternalID: m.Referrer.Target.ExternalID,
+			Kind:       strings.ToLower(strings.TrimSpace(m.Referrer.Target.Kind)),
 		}
 	}
 	target := OutboundTarget{ID: strings.TrimSpace(FirstNonEmpty(m.ChannelID, m.Referrer.ChannelID))}

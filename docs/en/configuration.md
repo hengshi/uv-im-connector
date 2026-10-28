@@ -14,6 +14,8 @@ The standalone binary reads `UV_IM_*` variables.
 | `UV_WECOM_WS_URL` | Optional WeCom WebSocket endpoint override. |
 | `UV_WECOM_USER_NAMES` | Optional JSON object mapping AI Bot callback `userid` values to display names, for example `{"zhangsan":"Zhang San"}`. It never changes routing or authorization. |
 | `UV_WECOM_CONVERSATION_NAMES` | Optional JSON object mapping AI Bot group `chatid` values to display names, for example `{"wrxxxx":"Engineering"}`. It affects display metadata only. |
+| `UV_WECOM_USER_EXTERNAL_IDS` | Optional JSON object mapping AI Bot callback `userid` values to enterprise directory IDs, for example `{"CaoGuLiang":"enterprise-user-id"}`. |
+| `UV_WECOM_CONVERSATION_EXTERNAL_IDS` | Optional JSON object mapping AI Bot callback `chatid` values to external conversation IDs, for example `{"wrxxxx":"external-conversation-id"}`. |
 | `UV_LARK_CONNECTOR_ID` | Lark connector ID. Defaults to `lark`. |
 | `UV_LARK_APP_ID` | Lark app ID. |
 | `UV_LARK_APP_SECRET` | Lark app secret. |
@@ -56,3 +58,24 @@ DingTalk supports two ingress modes. A complete `UV_DINGTALK_CLIENT_ID` and `UV_
 Application credentials also enable robot OpenAPI delivery to an explicit native user or group without a current session webhook. Images and files are uploaded with the same credentials; the standalone adapter shares the HTTP upload resource store. Audio and video are delivered as downloadable files rather than native players. Ordinary text replies can still use an unexpired inbound session webhook. Without application credentials, proactive direct and resource delivery are not advertised; `UV_DINGTALK_TOKEN` only enables legacy group-robot proactive messages. The application needs the corresponding robot messaging and media API permissions, and recipients must satisfy DingTalk application visibility and membership rules.
 
 Connector-created HTTP clients have no total request timeout. WeCom/Lark WebSocket handshake, read/write/ACK timeouts and Lark chunk expiry are disabled by default; positive Go configuration values and caller-supplied clients remain explicit opt-ins. Heartbeat/ping scheduling and display-name cache eviction do not reject messages or attachments. Provide a cancellable context when embedding the connector.
+
+## WeCom external identities
+
+The AI Bot callback's `userid` can differ from the enterprise directory ID. Deployments can supply explicit mappings through `UV_WECOM_USER_EXTERNAL_IDS` and `UV_WECOM_CONVERSATION_EXTERNAL_IDS`. Embedded Go callers use the corresponding configuration fields:
+
+```go
+provider, err := wecom.New(wecom.Config{
+    BotID: "bot-id",
+    Secret: "bot-secret",
+    UserExternalIDs: map[string]string{
+        "CaoGuLiang": "enterprise-user-id",
+    },
+    ConversationExternalIDs: map[string]string{
+        "wrxxxx": "external-conversation-id",
+    },
+})
+```
+
+The user mapping populates `user.external_id`; the conversation mapping populates `channel.external_id` and `referrer.target.external_id`. Direct conversations without a conversation mapping fall back to the user's external identity. Groups use only the conversation mapping. Unconfigured or unmatched identities remain empty and are omitted from JSON. Native `id` values are preserved for connector routing and deduplication. Mappings do not perform directory lookups or replace send destination IDs.
+
+Environment values must be JSON objects mapping IDs to strings. Keys and values are trimmed, and empty entries are ignored. Invalid JSON, non-string values, or `null` cause startup to fail.

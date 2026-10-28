@@ -22,35 +22,41 @@ func TestBuildProvidersRejectsPartialDingTalkStreamCredentials(t *testing.T) {
 	}
 }
 
-func TestEnvNameMapParsesJSON(t *testing.T) {
+func TestEnvStringMapParsesJSON(t *testing.T) {
 	t.Setenv("UV_TEST_NAMES", `{"u1":"张三"," u2 ":" 李四 "}`)
-	got, err := envNameMap("UV_TEST_NAMES")
+	got, err := envStringMap("UV_TEST_NAMES")
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]string{"u1": "张三", "u2": "李四"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("envNameMap() = %#v, want %#v", got, want)
+		t.Fatalf("envStringMap() = %#v, want %#v", got, want)
 	}
 }
 
-func TestEnvNameMapRejectsMalformedJSON(t *testing.T) {
+func TestEnvStringMapRejectsMalformedJSON(t *testing.T) {
 	t.Setenv("UV_TEST_NAMES", `{not-json}`)
-	if _, err := envNameMap("UV_TEST_NAMES"); err == nil {
-		t.Fatal("envNameMap() error = nil")
+	if _, err := envStringMap("UV_TEST_NAMES"); err == nil {
+		t.Fatal("envStringMap() error = nil")
 	}
 }
 
-func TestEnvNameMapRejectsJSONNull(t *testing.T) {
+func TestEnvStringMapRejectsJSONNull(t *testing.T) {
 	t.Setenv("UV_TEST_NAMES", `null`)
-	if _, err := envNameMap("UV_TEST_NAMES"); err == nil {
-		t.Fatal("envNameMap() accepted JSON null")
+	if _, err := envStringMap("UV_TEST_NAMES"); err == nil {
+		t.Fatal("envStringMap() accepted JSON null")
 	}
 }
 
-func TestBuildProvidersRejectsJSONNullNameMapMember(t *testing.T) {
-	t.Setenv("UV_WECOM_USER_NAMES", `{"u1":null}`)
-	if _, err := buildProviders("wecom", t.TempDir()); err == nil {
-		t.Fatal("buildProviders() accepted a JSON null name-map member")
+func TestBuildProvidersRejectsJSONNullMapMember(t *testing.T) {
+	for _, key := range []string{"UV_WECOM_USER_NAMES", "UV_WECOM_CONVERSATION_NAMES", "UV_WECOM_USER_EXTERNAL_IDS", "UV_WECOM_CONVERSATION_EXTERNAL_IDS"} {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv("UV_WECOM_BOT_ID", "bot")
+			t.Setenv("UV_WECOM_BOT_SECRET", "secret")
+			t.Setenv(key, `{"u1":null}`)
+			if _, err := buildProviders("wecom", t.TempDir()); err == nil {
+				t.Fatal("buildProviders() accepted a JSON null map member")
+			}
+		})
 	}
 }

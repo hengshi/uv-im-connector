@@ -91,22 +91,32 @@ func buildProviders(providerList string, resourceDir string) ([]uvim.Provider, e
 		case "memory":
 			providers = append(providers, memory.New("memory"))
 		case "wecom":
-			userNames, err := envNameMap("UV_WECOM_USER_NAMES")
+			userNames, err := envStringMap("UV_WECOM_USER_NAMES")
 			if err != nil {
 				return nil, err
 			}
-			conversationNames, err := envNameMap("UV_WECOM_CONVERSATION_NAMES")
+			conversationNames, err := envStringMap("UV_WECOM_CONVERSATION_NAMES")
+			if err != nil {
+				return nil, err
+			}
+			userExternalIDs, err := envStringMap("UV_WECOM_USER_EXTERNAL_IDS")
+			if err != nil {
+				return nil, err
+			}
+			conversationExternalIDs, err := envStringMap("UV_WECOM_CONVERSATION_EXTERNAL_IDS")
 			if err != nil {
 				return nil, err
 			}
 			provider, err := wecom.New(wecom.Config{
-				ConnectorID:       env("UV_WECOM_CONNECTOR_ID", "wecom"),
-				BotID:             os.Getenv("UV_WECOM_BOT_ID"),
-				Secret:            os.Getenv("UV_WECOM_BOT_SECRET"),
-				UserNames:         userNames,
-				ConversationNames: conversationNames,
-				WSURL:             os.Getenv("UV_WECOM_WS_URL"),
-				ResourceStore:     &uvim.ResourceStore{Dir: resourceDir},
+				ConnectorID:             env("UV_WECOM_CONNECTOR_ID", "wecom"),
+				BotID:                   os.Getenv("UV_WECOM_BOT_ID"),
+				Secret:                  os.Getenv("UV_WECOM_BOT_SECRET"),
+				UserNames:               userNames,
+				ConversationNames:       conversationNames,
+				UserExternalIDs:         userExternalIDs,
+				ConversationExternalIDs: conversationExternalIDs,
+				WSURL:                   os.Getenv("UV_WECOM_WS_URL"),
+				ResourceStore:           &uvim.ResourceStore{Dir: resourceDir},
 			})
 			if err != nil {
 				return nil, err
@@ -378,27 +388,27 @@ func env(key, fallback string) string {
 	return fallback
 }
 
-func envNameMap(key string) (map[string]string, error) {
+func envStringMap(key string) (map[string]string, error) {
 	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
 		return nil, nil
 	}
 	values := map[string]*string{}
 	if err := json.Unmarshal([]byte(raw), &values); err != nil {
-		return nil, fmt.Errorf("%s must be a JSON object of ID-to-name strings: %w", key, err)
+		return nil, fmt.Errorf("%s must be a JSON object mapping IDs to strings: %w", key, err)
 	}
 	if values == nil {
-		return nil, fmt.Errorf("%s must be a JSON object of ID-to-name strings", key)
+		return nil, fmt.Errorf("%s must be a JSON object mapping IDs to strings", key)
 	}
 	normalized := make(map[string]string, len(values))
-	for id, rawName := range values {
-		if rawName == nil {
-			return nil, fmt.Errorf("%s must be a JSON object of ID-to-name strings", key)
+	for id, rawValue := range values {
+		if rawValue == nil {
+			return nil, fmt.Errorf("%s must be a JSON object mapping IDs to strings", key)
 		}
 		id = strings.TrimSpace(id)
-		name := strings.TrimSpace(*rawName)
-		if id != "" && name != "" {
-			normalized[id] = name
+		value := strings.TrimSpace(*rawValue)
+		if id != "" && value != "" {
+			normalized[id] = value
 		}
 	}
 	return normalized, nil

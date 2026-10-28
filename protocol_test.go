@@ -166,8 +166,8 @@ func TestOutboundMessageResolvesExplicitAndLegacyTargets(t *testing.T) {
 	}{
 		{
 			name: "explicit user",
-			msg:  OutboundMessage{Target: &OutboundTarget{ID: " ou_user ", Kind: " USER "}, ChannelID: "legacy"},
-			want: OutboundTarget{ID: "ou_user", Kind: TargetUser},
+			msg:  OutboundMessage{Target: &OutboundTarget{ID: " ou_user ", ExternalID: "directory-user", Kind: " USER "}, ChannelID: "legacy"},
+			want: OutboundTarget{ID: "ou_user", ExternalID: "directory-user", Kind: TargetUser},
 		},
 		{
 			name: "legacy direct",
@@ -186,14 +186,44 @@ func TestOutboundMessageResolvesExplicitAndLegacyTargets(t *testing.T) {
 		},
 		{
 			name: "referrer explicit target",
-			msg:  OutboundMessage{Referrer: Referrer{ChannelID: "legacy", Target: &OutboundTarget{ID: " C1 ", Kind: " CHANNEL "}}},
-			want: OutboundTarget{ID: "C1", Kind: TargetChannel},
+			msg:  OutboundMessage{Referrer: Referrer{ChannelID: "legacy", Target: &OutboundTarget{ID: " C1 ", ExternalID: "directory-channel", Kind: " CHANNEL "}}},
+			want: OutboundTarget{ID: "C1", ExternalID: "directory-channel", Kind: TargetChannel},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.msg.ResolvedTarget(); got != tt.want {
 				t.Fatalf("ResolvedTarget() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExternalIDsJSON(t *testing.T) {
+	for _, externalID := range []string{"", "directory-id"} {
+		t.Run("external_id="+externalID, func(t *testing.T) {
+			event := Event{
+				Channel:  Channel{ID: "chat-1", ExternalID: externalID},
+				User:     User{ID: "user-1", ExternalID: externalID},
+				Referrer: Referrer{Target: &OutboundTarget{ID: "chat-1", ExternalID: externalID, Kind: TargetUser}},
+			}
+			raw, err := json.Marshal(event.Sanitized())
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantFields := 0
+			if externalID != "" {
+				wantFields = 3
+			}
+			if got := strings.Count(string(raw), `"external_id":`); got != wantFields {
+				t.Fatalf("external_id fields = %d, want %d: %s", got, wantFields, raw)
+			}
+			var decoded Event
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if decoded.Channel != event.Channel || decoded.User != event.User || decoded.Referrer.Target == nil || *decoded.Referrer.Target != *event.Referrer.Target {
+				t.Fatalf("identity round trip changed: %+v", decoded)
 			}
 		})
 	}

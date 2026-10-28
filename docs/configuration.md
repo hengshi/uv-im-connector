@@ -14,6 +14,8 @@
 | `UV_WECOM_WS_URL` | 可选 WeCom WebSocket endpoint override。 |
 | `UV_WECOM_USER_NAMES` | 可选 JSON 对象，把 AI Bot 回调中的 `userid` 映射为展示名，例如 `{"zhangsan":"张三"}`。只影响事件展示字段，不影响路由或授权。 |
 | `UV_WECOM_CONVERSATION_NAMES` | 可选 JSON 对象，把 AI Bot 回调中的群 `chatid` 映射为展示名，例如 `{"wrxxxx":"研发群"}`。只影响事件展示字段。 |
+| `UV_WECOM_USER_EXTERNAL_IDS` | 可选 JSON 对象，把 AI Bot 回调中的 `userid` 映射为企业通讯录 ID，例如 `{"CaoGuLiang":"enterprise-user-id"}`。 |
+| `UV_WECOM_CONVERSATION_EXTERNAL_IDS` | 可选 JSON 对象，把 AI Bot 回调中的 `chatid` 映射为外部会话 ID，例如 `{"wrxxxx":"external-conversation-id"}`。 |
 | `UV_LARK_CONNECTOR_ID` | Lark connector ID，默认 `lark`。 |
 | `UV_LARK_APP_ID` | Lark app ID。 |
 | `UV_LARK_APP_SECRET` | Lark app secret。 |
@@ -56,3 +58,24 @@ DingTalk 有两种入站模式。配置完整的 `UV_DINGTALK_CLIENT_ID` 和 `UV
 配置应用凭据后，可通过机器人 OpenAPI 向明确的原生用户或群目标发送消息，无需有效的 session webhook；图片和文件使用同一凭据上传后发送，standalone 与 HTTP upload endpoint 共用资源存储。音频和视频作为可下载文件交付，不模拟原生播放器。普通文本回复仍可复用未过期的入站 session webhook。未配置应用凭据时不声明主动单聊或附件发送；`UV_DINGTALK_TOKEN` 仅支持已配置的旧群机器人主动群消息。应用需具有相应的机器人发消息和媒体 API 权限，目标用户/群须满足钉钉应用范围要求。
 
 connector 创建的 HTTP client 不设置请求总超时。企微/飞书 WebSocket 握手、读写/ACK 超时以及飞书分片过期默认关闭；Go 调用方显式传入的正值配置和自定义 client 仍生效。心跳/ping 周期和展示名缓存淘汰不会拒绝消息或附件。嵌入使用时应传入可取消的 context。
+
+## WeCom 外部身份
+
+AI Bot 回调中的 `userid` 可能与企业通讯录 ID 不同。部署方可以通过 `UV_WECOM_USER_EXTERNAL_IDS` 和 `UV_WECOM_CONVERSATION_EXTERNAL_IDS` 提供显式映射；嵌入 Go 程序时使用相同的配置字段：
+
+```go
+provider, err := wecom.New(wecom.Config{
+    BotID: "bot-id",
+    Secret: "bot-secret",
+    UserExternalIDs: map[string]string{
+        "CaoGuLiang": "enterprise-user-id",
+    },
+    ConversationExternalIDs: map[string]string{
+        "wrxxxx": "external-conversation-id",
+    },
+})
+```
+
+用户映射填入 `user.external_id`；会话映射填入 `channel.external_id` 和 `referrer.target.external_id`。单聊没有会话映射时，后两者回退到用户的外部身份；群聊只使用会话映射。没有配置或没有匹配项时，对应的 `external_id` 保持为空并从 JSON 省略。原生 `id` 始终保留，connector 仍使用它进行路由和去重；映射不会自动查询通讯录，也不会替换发送目标 ID。
+
+环境变量必须是 ID 到字符串的 JSON 对象；键和值会去除首尾空白，空条目被忽略。无效 JSON、非字符串值或 `null` 会导致启动报错。

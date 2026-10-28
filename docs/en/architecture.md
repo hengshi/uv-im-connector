@@ -49,6 +49,8 @@ The normalized protocol has these stable objects:
 
 Some inbound `referrer` values contain short-lived or limited-use reply handles. `referrer.expires_at` is the provider-supplied or adapter-derived deadline, and `capabilities.reply_max_uses` is the maximum number of outbound attempts that may carry the handle; an omitted or zero maximum means that no finite use limit is declared. After the deadline or use limit, callers must remove the message/reply handle and may use `referrer.target` only when the corresponding proactive capability and target kind are available. Provider business windows without reply-handle semantics remain provider constraints and must not be treated as a generic retry of the same proactive message.
 
+`Channel`, `User`, and `OutboundTarget` can carry an optional `external_id` to associate an identity with an enterprise directory or another external system. Empty values are omitted. The native `id` continues to drive connector routing and deduplication. Target resolution preserves the `external_id` from an explicit `target` or `referrer.target` without substituting it for the send destination's `id`. See [Configuration](/en/configuration.html#wecom-external-identities) for WeCom mapping and direct-conversation fallback rules.
+
 ## Provider Capability Matrix
 
 This table covers the 16 external providers and excludes `memory`, which is used for tests and local development. `Conditional` means the adapter supports the operation when the platform condition in the last column is met.
