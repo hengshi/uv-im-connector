@@ -8,14 +8,13 @@ The standalone binary reads `UV_IM_*` variables.
 | `UV_IM_STATE_DIR` | Event log and resource directory. Defaults to `.uv-im-connector`. |
 | `UV_IM_PROVIDERS` | Comma-separated provider list. Supported values: `memory`, `wecom`, `lark`, `dingtalk`, `discord`, `kook`, `line`, `mail`, `matrix`, `onebot`, `qq`, `qqguild`, `slack`, `telegram`, `wechat-official`, `whatsapp`, `zulip`. |
 | `UV_IM_AUTH_TOKEN` | Optional bearer token required by all HTTP/WS endpoints except `/health`. |
+| `UV_IM_USER_IDENTITIES_FILE` | Optional JSON file of [verified account bindings](./identities.md#verified-account-bindings), selected by exact provider, connector and native user_id. Adds identity metadata only; validated and read at startup. |
 | `UV_WECOM_CONNECTOR_ID` | WeCom connector ID. Defaults to `wecom`. |
 | `UV_WECOM_BOT_ID` | WeCom bot ID. |
 | `UV_WECOM_BOT_SECRET` | WeCom bot secret. |
 | `UV_WECOM_WS_URL` | Optional WeCom WebSocket endpoint override. |
 | `UV_WECOM_USER_NAMES` | Optional JSON object mapping AI Bot callback `userid` values to display names, for example `{"zhangsan":"Zhang San"}`. It never changes routing or authorization. |
 | `UV_WECOM_CONVERSATION_NAMES` | Optional JSON object mapping AI Bot group `chatid` values to display names, for example `{"wrxxxx":"Engineering"}`. It affects display metadata only. |
-| `UV_WECOM_USER_EXTERNAL_IDS` | Optional JSON object mapping AI Bot callback `userid` values to enterprise directory IDs, for example `{"CaoGuLiang":"enterprise-user-id"}`. |
-| `UV_WECOM_CONVERSATION_EXTERNAL_IDS` | Optional JSON object mapping AI Bot callback `chatid` values to external conversation IDs, for example `{"wrxxxx":"external-conversation-id"}`. |
 | `UV_LARK_CONNECTOR_ID` | Lark connector ID. Defaults to `lark`. |
 | `UV_LARK_APP_ID` | Lark app ID. |
 | `UV_LARK_APP_SECRET` | Lark app secret. |
@@ -43,7 +42,7 @@ Lark identity discovery calls `GET /open-apis/bot/v3/info` with the existing app
 
 Upgrade note: with both bot IDs empty, this API is a new startup prerequisite. Unknown identity does not fall back to receiving group messages. The shared supervisor retries that provider with backoff while the HTTP API and other providers remain available. To bypass identity discovery, set `UV_LARK_BOT_OPEN_ID` for the current application (or a verified union ID) and restart. This does not bypass credential validation or other startup APIs.
 
-After acknowledging an inbound callback, Lark makes best-effort cached lookups for sender and group-chat names with the existing application credentials. The application needs OpenAPI permission to read basic user and chat information. Permission or API errors omit names. Lookups have no default timeout; an unresponsive request needs caller-context cancellation or an explicitly configured HTTPClient timeout. The WeCom AI Bot callback and Bot secret provide IDs but no contact/chat-name lookup, so deployments that need names should use the explicit maps above; without them, provider-native IDs remain the fallback.
+After acknowledging an inbound callback, Lark makes best-effort cached lookups for sender and group-chat names with the existing application credentials and preserves returned open_id, user_id and union_id. Basic user/chat OpenAPI permissions apply. Errors retain callback identities and omit lookup information. Lookups have no default timeout; cancellation needs caller context or an explicit HTTPClient timeout. A WeCom Bot secret alone provides no contact/chat-name lookup; display names can use explicit name maps. Enterprise application ID conversion requires a different token. See [platform identities, conversion APIs and permissions](./identities.md).
 
 For the generic provider variables, replace `<PROVIDER>` with one of:
 
@@ -58,24 +57,3 @@ DingTalk supports two ingress modes. A complete `UV_DINGTALK_CLIENT_ID` and `UV_
 Application credentials also enable robot OpenAPI delivery to an explicit native user or group without a current session webhook. Images and files are uploaded with the same credentials; the standalone adapter shares the HTTP upload resource store. Audio and video are delivered as downloadable files rather than native players. Ordinary text replies can still use an unexpired inbound session webhook. Without application credentials, proactive direct and resource delivery are not advertised; `UV_DINGTALK_TOKEN` only enables legacy group-robot proactive messages. The application needs the corresponding robot messaging and media API permissions, and recipients must satisfy DingTalk application visibility and membership rules.
 
 Connector-created HTTP clients have no total request timeout. WeCom/Lark WebSocket handshake, read/write/ACK timeouts and Lark chunk expiry are disabled by default; positive Go configuration values and caller-supplied clients remain explicit opt-ins. Heartbeat/ping scheduling and display-name cache eviction do not reject messages or attachments. Provide a cancellable context when embedding the connector.
-
-## WeCom external identities
-
-The AI Bot callback's `userid` can differ from the enterprise directory ID. Deployments can supply explicit mappings through `UV_WECOM_USER_EXTERNAL_IDS` and `UV_WECOM_CONVERSATION_EXTERNAL_IDS`. Embedded Go callers use the corresponding configuration fields:
-
-```go
-provider, err := wecom.New(wecom.Config{
-    BotID: "bot-id",
-    Secret: "bot-secret",
-    UserExternalIDs: map[string]string{
-        "CaoGuLiang": "enterprise-user-id",
-    },
-    ConversationExternalIDs: map[string]string{
-        "wrxxxx": "external-conversation-id",
-    },
-})
-```
-
-The user mapping populates `user.external_id`; the conversation mapping populates `channel.external_id` and `referrer.target.external_id`. Direct conversations without a conversation mapping fall back to the user's external identity. Groups use only the conversation mapping. Unconfigured or unmatched identities remain empty and are omitted from JSON. Native `id` values are preserved for connector routing and deduplication. Mappings do not perform directory lookups or replace send destination IDs.
-
-Environment values must be JSON objects mapping IDs to strings. Keys and values are trimmed, and empty entries are ignored. Invalid JSON, non-string values, or `null` cause startup to fail.

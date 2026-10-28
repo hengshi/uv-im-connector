@@ -62,10 +62,12 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		ID        string `json:"id"`
 		ChannelID string `json:"channel_id"`
 		GuildID   string `json:"guild_id"`
+		WebhookID string `json:"webhook_id"`
 		Content   string `json:"content"`
 		Author    struct {
 			ID       string `json:"id"`
 			Username string `json:"username"`
+			Bot      bool   `json:"bot"`
 		} `json:"author"`
 		Attachments []struct {
 			ID          string `json:"id"`
@@ -100,13 +102,22 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	if msg.GuildID == "" {
 		channelType = uvim.ChannelDirect
 	}
+	user := uvim.User{ID: msg.Author.ID, Name: msg.Author.Username}
+	identity := uvim.UserIdentity{Type: "discord.user_id", ID: user.ID}
+	if msg.WebhookID != "" {
+		user.Kind = uvim.UserKindWebhook
+		identity = uvim.UserIdentity{Type: "discord.webhook_id", ID: msg.WebhookID}
+	} else if msg.Author.Bot {
+		user.Kind = uvim.UserKindBot
+	}
+	user.Identities = uvim.NormalizeUserIdentities(identity)
 	return uvim.Event{
 		ID:        msg.ID,
 		Type:      uvim.EventMessageCreate,
 		Provider:  "discord",
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: msg.ChannelID, Type: channelType},
-		User:      uvim.User{ID: msg.Author.ID, Name: msg.Author.Username},
+		User:      user,
 		Message:   uvim.Message{ID: msg.ID, Text: msg.Content, Type: "message", Resources: refs},
 		Referrer:  uvim.Referrer{MessageID: msg.ID, ChannelID: msg.ChannelID, Target: &uvim.OutboundTarget{ID: msg.ChannelID, Kind: uvim.TargetChannel}},
 		Addressed: true,

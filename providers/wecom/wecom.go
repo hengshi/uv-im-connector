@@ -51,10 +51,6 @@ type Config struct {
 	AckTimeout        time.Duration
 	Now               func() time.Time
 	Logger            *slog.Logger
-	// UserExternalIDs maps AI Bot callback user IDs to enterprise directory IDs.
-	UserExternalIDs map[string]string
-	// ConversationExternalIDs maps AI Bot chat IDs to external conversation IDs.
-	ConversationExternalIDs map[string]string
 }
 
 type Provider struct {
@@ -630,11 +626,6 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 	channelID := uvim.FirstNonEmpty(uvim.StringValue(body["chatid"]), userID)
 	userName := uvim.FirstNonEmpty(uvim.StringValue(from["display_name"]), uvim.StringValue(from["name"]), p.config.UserNames[userID])
 	channelName := uvim.FirstNonEmpty(uvim.StringValue(body["chat_name"]), uvim.StringValue(body["chatname"]), p.config.ConversationNames[channelID])
-	userExternalID := uvim.FirstNonEmpty(p.config.UserExternalIDs[userID])
-	channelExternalID := uvim.FirstNonEmpty(p.config.ConversationExternalIDs[channelID])
-	if channelType == uvim.ChannelDirect {
-		channelExternalID = uvim.FirstNonEmpty(channelExternalID, userExternalID)
-	}
 	messageID := uvim.FirstNonEmpty(uvim.StringValue(body["msgid"]), in.Headers.ReqID)
 	now := p.now().UTC()
 	expiresAt := now.Add(10 * time.Minute)
@@ -649,8 +640,10 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 		Connector: p.ConnectorID(),
 		Time:      now,
 		Login:     uvim.Login{Platform: p.ID(), Connector: p.ConnectorID(), ID: p.config.BotID},
-		Channel:   uvim.Channel{ID: channelID, ExternalID: channelExternalID, Type: channelType, Name: channelName},
-		User:      uvim.User{ID: userID, ExternalID: userExternalID, DisplayName: userName},
+		Channel:   uvim.Channel{ID: channelID, Type: channelType, Name: channelName},
+		User: uvim.User{ID: userID, DisplayName: userName, Identities: uvim.NormalizeUserIdentities(
+			uvim.UserIdentity{Type: "wecom.callback_userid", ID: userID},
+		)},
 		Message: uvim.Message{
 			ID:        messageID,
 			Type:      msgType,
@@ -658,7 +651,7 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 			Elements:  elementsFromTextAndResources(text, resources),
 			Resources: resources,
 		},
-		Referrer: uvim.Referrer{MessageID: messageID, ChannelID: channelID, ReplyToken: in.Headers.ReqID, ExpiresAt: &expiresAt, Target: &uvim.OutboundTarget{ID: channelID, ExternalID: channelExternalID, Kind: targetKind}},
+		Referrer: uvim.Referrer{MessageID: messageID, ChannelID: channelID, ReplyToken: in.Headers.ReqID, ExpiresAt: &expiresAt, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
 		// AI Bot callbacks are interactions delivered to this bot, including group @mentions.
 		Addressed: true,
 	}, true

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -165,9 +166,19 @@ func TestOutboundMessageResolvesExplicitAndLegacyTargets(t *testing.T) {
 		want OutboundTarget
 	}{
 		{
+			name: "typed explicit target takes precedence",
+			msg:  OutboundMessage{Target: &OutboundTarget{ID: "bsuid", Kind: TargetUser, IDType: "whatsapp.bsuid"}, Referrer: Referrer{Target: &OutboundTarget{ID: "other", Kind: TargetUser}}},
+			want: OutboundTarget{ID: "bsuid", Kind: TargetUser, IDType: "whatsapp.bsuid"},
+		},
+		{
+			name: "typed referrer",
+			msg:  OutboundMessage{Referrer: Referrer{Target: &OutboundTarget{ID: "bsuid", Kind: TargetUser, IDType: "whatsapp.bsuid"}}},
+			want: OutboundTarget{ID: "bsuid", Kind: TargetUser, IDType: "whatsapp.bsuid"},
+		},
+		{
 			name: "explicit user",
-			msg:  OutboundMessage{Target: &OutboundTarget{ID: " ou_user ", ExternalID: "directory-user", Kind: " USER "}, ChannelID: "legacy"},
-			want: OutboundTarget{ID: "ou_user", ExternalID: "directory-user", Kind: TargetUser},
+			msg:  OutboundMessage{Target: &OutboundTarget{ID: " ou_user ", Kind: " USER "}, ChannelID: "legacy"},
+			want: OutboundTarget{ID: "ou_user", Kind: TargetUser},
 		},
 		{
 			name: "legacy direct",
@@ -186,8 +197,8 @@ func TestOutboundMessageResolvesExplicitAndLegacyTargets(t *testing.T) {
 		},
 		{
 			name: "referrer explicit target",
-			msg:  OutboundMessage{Referrer: Referrer{ChannelID: "legacy", Target: &OutboundTarget{ID: " C1 ", ExternalID: "directory-channel", Kind: " CHANNEL "}}},
-			want: OutboundTarget{ID: "C1", ExternalID: "directory-channel", Kind: TargetChannel},
+			msg:  OutboundMessage{Referrer: Referrer{ChannelID: "legacy", Target: &OutboundTarget{ID: " C1 ", Kind: " CHANNEL "}}},
+			want: OutboundTarget{ID: "C1", Kind: TargetChannel},
 		},
 	}
 	for _, tt := range tests {
@@ -199,33 +210,89 @@ func TestOutboundMessageResolvesExplicitAndLegacyTargets(t *testing.T) {
 	}
 }
 
-func TestExternalIDsJSON(t *testing.T) {
-	for _, externalID := range []string{"", "directory-id"} {
-		t.Run("external_id="+externalID, func(t *testing.T) {
-			event := Event{
-				Channel:  Channel{ID: "chat-1", ExternalID: externalID},
-				User:     User{ID: "user-1", ExternalID: externalID},
-				Referrer: Referrer{Target: &OutboundTarget{ID: "chat-1", ExternalID: externalID, Kind: TargetUser}},
+func TestUserIdentityMapperPreservesScopeAndNativeRouting(t *testing.T) {
+	mapping := UserIdentityMapping{Provider: "wecom", Connector: "main", UserID: "native", Identities: []UserIdentity{
+		{Type: "company.employee_id", ID: "Employee-A", Scope: "company-a"},
+		{Type: "wecom.callback_userid", ID: "must-not-replace"},
+	}}
+	mapper, err := NewUserIdentityMapper([]UserIdentityMapping{mapping})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Configuration and returned events cannot mutate the shared immutable map.
+	mapping.Identities[0].ID = "changed-after-construction"
+	base := Event{Provider: "wecom", Connector: "main", User: User{ID: "native", Identities: NormalizeUserIdentities(UserIdentity{Type: "wecom.callback_userid", ID: "native"})},
+		Channel: Channel{ID: "group", Type: ChannelGroup}, Message: Message{ID: "m1"}, Referrer: Referrer{Target: &OutboundTarget{ID: "group", Kind: TargetGroup}}}
+	for _, tt := range []struct {
+		name, provider, connector, userID, kind string
+		want                                    int
+	}{
+		{"exact account", "wecom", "main", "native", "", 2},
+		{"other provider", "lark", "main", "native", "", 1},
+		{"other connector", "wecom", "sandbox", "native", "", 1},
+		{"other account", "wecom", "main", "other", "", 1},
+		{"anonymous", "wecom", "main", "native", UserKindAnonymous, 1},
+		{"webhook", "wecom", "main", "native", UserKindWebhook, 1},
+		{"chat", "wecom", "main", "native", UserKindChat, 1},
+		{"system", "wecom", "main", "native", UserKindSystem, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			event := base
+			event.Provider, event.Connector, event.User.ID, event.User.Kind = tt.provider, tt.connector, tt.userID, tt.kind
+			got := mapper.Apply(event)
+			if len(got.User.Identities) != tt.want || got.User.ID != event.User.ID || got.Channel != event.Channel || *got.Referrer.Target != *event.Referrer.Target || got.DedupeKey() != event.DedupeKey() {
+				t.Fatalf("mapped event = %+v", got)
 			}
-			raw, err := json.Marshal(event.Sanitized())
-			if err != nil {
-				t.Fatal(err)
+			if got.User.Identities[0].ID != "native" || got.User.Identities[0].Source != IdentitySourceCallback {
+				t.Fatalf("platform assertion replaced: %+v", got.User.Identities)
 			}
-			wantFields := 0
-			if externalID != "" {
-				wantFields = 3
-			}
-			if got := strings.Count(string(raw), `"external_id":`); got != wantFields {
-				t.Fatalf("external_id fields = %d, want %d: %s", got, wantFields, raw)
-			}
-			var decoded Event
-			if err := json.Unmarshal(raw, &decoded); err != nil {
-				t.Fatal(err)
-			}
-			if decoded.Channel != event.Channel || decoded.User != event.User || decoded.Referrer.Target == nil || *decoded.Referrer.Target != *event.Referrer.Target {
-				t.Fatalf("identity round trip changed: %+v", decoded)
+			if tt.want == 2 {
+				want := UserIdentity{Type: "company.employee_id", ID: "Employee-A", Scope: "company-a", Source: IdentitySourceConfigured}
+				if got.User.Identities[1] != want {
+					t.Fatalf("mapped identity = %+v", got.User.Identities[1])
+				}
+				got.User.Identities[1].ID = "caller-change"
+				if next := mapper.Apply(event); next.User.Identities[1] != want {
+					t.Fatalf("shared mappings changed: %+v", next.User.Identities)
+				}
 			}
 		})
+	}
+}
+
+func TestUserIdentitiesJSONAndValidation(t *testing.T) {
+	identities := NormalizeUserIdentities(
+		UserIdentity{Type: "platform.user_id", ID: "CaseSensitive", Scope: "tenant-a"},
+		UserIdentity{Type: "platform.user_id", ID: "conflict", Scope: "tenant-a", Source: IdentitySourceLookup},
+		UserIdentity{Type: "platform.user_id", ID: "Other", Scope: "tenant-b"},
+		UserIdentity{Type: "platform.union_id", ID: ""},
+	)
+	if len(identities) != 2 || identities[0].ID != "CaseSensitive" || identities[1].Scope != "tenant-b" {
+		t.Fatalf("identities = %+v", identities)
+	}
+	for _, user := range []User{{ID: "native"}, {ID: "native", Identities: identities}} {
+		raw, err := json.Marshal(user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), `"identities"`) != (len(user.Identities) != 0) {
+			t.Fatalf("JSON = %s", raw)
+		}
+		var decoded User
+		if err := json.Unmarshal(raw, &decoded); err != nil || !reflect.DeepEqual(decoded, user) {
+			t.Fatalf("round trip = %+v, err=%v", decoded, err)
+		}
+	}
+	valid := UserIdentityMapping{Provider: "p", Connector: "c", UserID: "u", Identities: []UserIdentity{{Type: "directory.user", ID: "external"}}}
+	for _, mappings := range [][]UserIdentityMapping{
+		{{Provider: "p"}},
+		{valid, valid},
+		{{Provider: "p", Connector: "c", UserID: "u", Identities: []UserIdentity{{Type: "directory.user"}}}},
+		{{Provider: "p", Connector: "c", UserID: "u", Identities: []UserIdentity{{Type: "directory.user", ID: "a"}, {Type: "directory.user", ID: "b"}}}},
+	} {
+		if _, err := NewUserIdentityMapper(mappings); err == nil {
+			t.Fatalf("accepted invalid mappings: %+v", mappings)
+		}
 	}
 }
 
@@ -289,6 +356,7 @@ func TestValidateOutboundTarget(t *testing.T) {
 		{Target: &OutboundTarget{ID: "u1"}},
 		{Target: &OutboundTarget{ID: "u1", Kind: "unknown"}},
 		{Target: &OutboundTarget{ID: "g1", Kind: TargetGroup}},
+		{Target: &OutboundTarget{ID: "u1", Kind: TargetUser, IDType: "business.employee_id"}},
 	} {
 		if err := ValidateOutboundTarget(msg, caps); err == nil {
 			t.Fatalf("ValidateOutboundTarget(%+v) error = nil", msg.Target)
@@ -313,6 +381,14 @@ func TestValidateOutboundTarget(t *testing.T) {
 	replyCaps := Capabilities{ReplyMessage: true, TargetKinds: []string{TargetUser}}
 	if err := ValidateOutboundTarget(OutboundMessage{Referrer: Referrer{MessageID: "m1"}}, replyCaps); err != nil {
 		t.Fatalf("legacy reply handle rejected: %v", err)
+	}
+	typed := OutboundMessage{Referrer: Referrer{MessageID: "m1", Target: &OutboundTarget{ID: "opaque", Kind: TargetUser, IDType: "whatsapp.bsuid"}}}
+	if err := ValidateOutboundTarget(typed, replyCaps); err == nil {
+		t.Fatal("undeclared native address type accepted on reply")
+	}
+	replyCaps.TargetIDTypes = []string{"whatsapp.bsuid"}
+	if err := ValidateOutboundTarget(typed, replyCaps); err != nil {
+		t.Fatalf("declared native address type rejected: %v", err)
 	}
 }
 

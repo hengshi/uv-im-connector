@@ -20,10 +20,11 @@ import (
 )
 
 type Hub struct {
-	registry  *uvim.ProviderRegistry
-	eventLog  *uvim.EventLog
-	resources *uvim.ResourceStore
-	authToken string
+	registry       *uvim.ProviderRegistry
+	eventLog       *uvim.EventLog
+	resources      *uvim.ResourceStore
+	authToken      string
+	identityMapper *uvim.UserIdentityMapper
 
 	mu          sync.Mutex
 	subscribers map[chan uvim.Event]struct{}
@@ -57,7 +58,13 @@ func (h *Hub) SetAuthToken(token string) {
 	}
 }
 
+// SetUserIdentityMapper configures optional account associations before serving.
+func (h *Hub) SetUserIdentityMapper(mapper *uvim.UserIdentityMapper) {
+	h.identityMapper = mapper
+}
+
 func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
+	event = h.identityMapper.Apply(event)
 	if event.Time.IsZero() {
 		event.Time = time.Now().UTC()
 	}

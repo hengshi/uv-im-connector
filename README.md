@@ -12,6 +12,7 @@ caller application -> OutboundMessage -> HTTP API -> provider adapter -> IM prov
 The core contract treats every channel equally:
 
 - Providers emit normalized events through the same event model.
+- [Typed user identities](docs/en/identities.md) preserve platform namespaces and scopes across all 16 external providers, independently of native send addresses.
 - Providers send outbound messages through the same API.
 - Files, images, audio, and video use one resource reference model.
 - Provider differences are exposed through capabilities, not product hierarchy.
@@ -307,7 +308,6 @@ Important fields:
 - `provider`: the IM platform adapter, such as `wecom`, `lark`, or `slack`.
 - `connector`: the concrete configured account identity for that provider.
 - `channel.id`: the provider-native conversation ID.
-- `channel.external_id`, `user.external_id`, and `referrer.target.external_id`: optional external-system identities. WeCom deployments can map AI Bot user IDs to enterprise directory IDs and chat IDs to external conversation IDs; direct conversations fall back to the mapped user identity. Empty values are omitted. Native `id` values continue to drive connector routing and deduplication. See [Configuration](docs/en/configuration.md#wecom-external-identities).
 - `channel.type`: normalized conversation type, such as `direct`, `group`, `thread`, or `room`.
 - `channel.name`, `user.name`, and `user.display_name`: optional display metadata. For direct messages, a missing `channel.name` falls back to `user.display_name` and then `user.name`; explicit channel names and group channels are preserved. IDs remain authoritative for routing, dedupe, and authorization. Lark resolves names best-effort through tenant OpenAPIs; WeCom AI Bot deployments can supply the optional ID-to-name maps because the callback credentials expose IDs but no directory lookup.
 - `addressed`: whether the message is addressed to the bot when the provider can tell.

@@ -8,14 +8,13 @@
 | `UV_IM_STATE_DIR` | 事件日志和资源目录，默认 `.uv-im-connector`。 |
 | `UV_IM_PROVIDERS` | 逗号分隔的 provider 列表。支持值：`memory`、`wecom`、`lark`、`dingtalk`、`discord`、`kook`、`line`、`mail`、`matrix`、`onebot`、`qq`、`qqguild`、`slack`、`telegram`、`wechat-official`、`whatsapp`、`zulip`。 |
 | `UV_IM_AUTH_TOKEN` | 可选 bearer token。配置后，除 `/health` 外所有公共 HTTP/WS endpoint 都需要该 token。 |
+| `UV_IM_USER_IDENTITIES_FILE` | 可选的[已确认账户绑定](./identities.md#经确认的账户绑定) JSON 文件；按 provider、connector、原生 user_id 精确选择，只添加身份元数据。启动时校验和读取。 |
 | `UV_WECOM_CONNECTOR_ID` | WeCom connector ID，默认 `wecom`。 |
 | `UV_WECOM_BOT_ID` | WeCom bot ID。 |
 | `UV_WECOM_BOT_SECRET` | WeCom bot secret。 |
 | `UV_WECOM_WS_URL` | 可选 WeCom WebSocket endpoint override。 |
 | `UV_WECOM_USER_NAMES` | 可选 JSON 对象，把 AI Bot 回调中的 `userid` 映射为展示名，例如 `{"zhangsan":"张三"}`。只影响事件展示字段，不影响路由或授权。 |
 | `UV_WECOM_CONVERSATION_NAMES` | 可选 JSON 对象，把 AI Bot 回调中的群 `chatid` 映射为展示名，例如 `{"wrxxxx":"研发群"}`。只影响事件展示字段。 |
-| `UV_WECOM_USER_EXTERNAL_IDS` | 可选 JSON 对象，把 AI Bot 回调中的 `userid` 映射为企业通讯录 ID，例如 `{"CaoGuLiang":"enterprise-user-id"}`。 |
-| `UV_WECOM_CONVERSATION_EXTERNAL_IDS` | 可选 JSON 对象，把 AI Bot 回调中的 `chatid` 映射为外部会话 ID，例如 `{"wrxxxx":"external-conversation-id"}`。 |
 | `UV_LARK_CONNECTOR_ID` | Lark connector ID，默认 `lark`。 |
 | `UV_LARK_APP_ID` | Lark app ID。 |
 | `UV_LARK_APP_SECRET` | Lark app secret。 |
@@ -43,7 +42,7 @@ Lark 身份自动查询通过现有应用凭据调用 `GET /open-apis/bot/v3/inf
 
 升级注意：两个 bot ID 都留空时，该 API 是新的启动前置依赖。身份无法确认时不会降级接收群消息；共享监督器会退避重试该 provider，HTTP API 和其他 provider 保持运行。若需跳过身份查询，可设置与当前应用对应的 `UV_LARK_BOT_OPEN_ID`（或已核实的 union ID），再重启服务；这不会绕过应用凭据校验或其他启动 API。
 
-Lark 入站事件会在确认回调后，使用现有应用凭据对发送人和群聊名称做可失败的缓存查询。应用需要具备读取用户基本信息和群聊信息的 OpenAPI 权限；权限缺失或 API 返回错误时，事件省略名称；查询没有默认超时，无响应的请求需由调用方 context 或显式 HTTPClient 超时取消。企业微信 AI Bot 长连接回调及其 Bot secret 不提供通讯录或群聊名称查询能力，因此需要名称时使用上面的显式映射；未配置时保留 provider-native ID。
+Lark 入站事件会在确认回调后，使用现有应用凭据对发送人和群聊名称做可失败的缓存查询，并保留实际返回的 open_id、user_id、union_id。应用需要具备读取用户基本信息和群聊信息的 OpenAPI 权限；权限缺失或 API 返回错误时保留回调身份，省略查询所得信息；查询没有默认超时，无响应的请求需由调用方 context 或显式 HTTPClient 超时取消。企业微信 Bot secret 本身不提供通讯录或群聊名称查询，因此展示名可使用显式名称映射；企业自建应用的 ID 转换需要另一种 token，详见[各平台身份、转换接口和权限](./identities.md)。
 
 通用 provider 变量中的 `<PROVIDER>` 替换为以下值之一：
 
@@ -58,24 +57,3 @@ DingTalk 有两种入站模式。配置完整的 `UV_DINGTALK_CLIENT_ID` 和 `UV
 配置应用凭据后，可通过机器人 OpenAPI 向明确的原生用户或群目标发送消息，无需有效的 session webhook；图片和文件使用同一凭据上传后发送，standalone 与 HTTP upload endpoint 共用资源存储。音频和视频作为可下载文件交付，不模拟原生播放器。普通文本回复仍可复用未过期的入站 session webhook。未配置应用凭据时不声明主动单聊或附件发送；`UV_DINGTALK_TOKEN` 仅支持已配置的旧群机器人主动群消息。应用需具有相应的机器人发消息和媒体 API 权限，目标用户/群须满足钉钉应用范围要求。
 
 connector 创建的 HTTP client 不设置请求总超时。企微/飞书 WebSocket 握手、读写/ACK 超时以及飞书分片过期默认关闭；Go 调用方显式传入的正值配置和自定义 client 仍生效。心跳/ping 周期和展示名缓存淘汰不会拒绝消息或附件。嵌入使用时应传入可取消的 context。
-
-## WeCom 外部身份
-
-AI Bot 回调中的 `userid` 可能与企业通讯录 ID 不同。部署方可以通过 `UV_WECOM_USER_EXTERNAL_IDS` 和 `UV_WECOM_CONVERSATION_EXTERNAL_IDS` 提供显式映射；嵌入 Go 程序时使用相同的配置字段：
-
-```go
-provider, err := wecom.New(wecom.Config{
-    BotID: "bot-id",
-    Secret: "bot-secret",
-    UserExternalIDs: map[string]string{
-        "CaoGuLiang": "enterprise-user-id",
-    },
-    ConversationExternalIDs: map[string]string{
-        "wrxxxx": "external-conversation-id",
-    },
-})
-```
-
-用户映射填入 `user.external_id`；会话映射填入 `channel.external_id` 和 `referrer.target.external_id`。单聊没有会话映射时，后两者回退到用户的外部身份；群聊只使用会话映射。没有配置或没有匹配项时，对应的 `external_id` 保持为空并从 JSON 省略。原生 `id` 始终保留，connector 仍使用它进行路由和去重；映射不会自动查询通讯录，也不会替换发送目标 ID。
-
-环境变量必须是 ID 到字符串的 JSON 对象；键和值会去除首尾空白，空条目被忽略。无效 JSON、非字符串值或 `null` 会导致启动报错。

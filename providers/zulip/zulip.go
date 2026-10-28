@@ -209,7 +209,10 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Provider:  "zulip",
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: channelID, Type: channelType, Name: msg.Subject},
-		User:      uvim.User{ID: num(msg.SenderID), Name: msg.DisplayName},
+		User: uvim.User{ID: num(msg.SenderID), Name: msg.DisplayName, Identities: uvim.NormalizeUserIdentities(
+			uvim.UserIdentity{Type: "zulip.user_id", ID: num(msg.SenderID)},
+			uvim.UserIdentity{Type: "zulip.api_email", ID: msg.SenderEmail},
+		)},
 		Message:   uvim.Message{ID: num(msg.ID), Text: msg.Content, Type: msg.Type, Resources: refs},
 		Referrer:  uvim.Referrer{MessageID: num(msg.ID), ChannelID: channelID, ThreadID: msg.Subject, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
 		Addressed: true,

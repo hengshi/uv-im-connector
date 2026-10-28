@@ -170,6 +170,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 				Author      struct {
 					Username string `json:"username"`
 					Nickname string `json:"nickname"`
+					Bot      bool   `json:"bot"`
 				} `json:"author"`
 			} `json:"extra"`
 		} `json:"d"`
@@ -189,13 +190,22 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		channelID = env.D.AuthorID
 		target = uvim.OutboundTarget{ID: env.D.AuthorID, Kind: uvim.TargetUser}
 	}
+	user := uvim.User{ID: env.D.AuthorID, Name: firstNonEmpty(env.D.Extra.Author.Nickname, env.D.Extra.Author.Username)}
+	identityType := "kook.user_id"
+	if env.D.AuthorID == "1" {
+		user.Kind = uvim.UserKindSystem
+		identityType = "kook.system_id"
+	} else if env.D.Extra.Author.Bot {
+		user.Kind = uvim.UserKindBot
+	}
+	user.Identities = uvim.NormalizeUserIdentities(uvim.UserIdentity{Type: identityType, ID: user.ID})
 	return uvim.Event{
 		ID:        env.D.MsgID,
 		Type:      uvim.EventMessageCreate,
 		Provider:  "kook",
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: channelID, Type: channelType, Name: env.D.Extra.ChannelName},
-		User:      uvim.User{ID: env.D.AuthorID, Name: firstNonEmpty(env.D.Extra.Author.Nickname, env.D.Extra.Author.Username)},
+		User:      user,
 		Message:   uvim.Message{ID: env.D.MsgID, Text: env.D.Content, Type: "message", Resources: refs},
 		Referrer:  uvim.Referrer{MessageID: env.D.MsgID, ChannelID: channelID, Target: &target},
 		Addressed: true,

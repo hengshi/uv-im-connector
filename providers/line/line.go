@@ -147,7 +147,9 @@ func eventFromWebhookItem(item lineWebhookEvent, config httpchannel.Config) uvim
 		Provider:  "line",
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: channelID, Type: channelType},
-		User:      uvim.User{ID: item.Source.UserID},
+		User: uvim.User{ID: item.Source.UserID, Identities: uvim.NormalizeUserIdentities(
+			uvim.UserIdentity{Type: "line.user_id", ID: item.Source.UserID},
+		)},
 		Message:   uvim.Message{ID: item.Message.ID, Text: item.Message.Text, Type: item.Message.Type, Resources: refs},
 		Referrer:  uvim.Referrer{MessageID: item.Message.ID, ChannelID: channelID, ReplyToken: item.ReplyToken, ExpiresAt: &expiresAt, Target: &target},
 		Addressed: true,

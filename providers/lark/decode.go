@@ -53,6 +53,19 @@ func DecodePayload(payload []byte, config DecoderConfig) (uvim.Event, bool, erro
 		resources[i].Metadata["message_id"] = messageID
 	}
 	createdAt := parseMillis(evt.Message.CreateTime)
+	appID := uvim.FirstNonEmpty(config.AppID, env.Header.AppID)
+	tenantKey := uvim.FirstNonEmpty(evt.Sender.TenantKey, env.Header.TenantKey)
+	user := uvim.User{
+		ID: uvim.FirstNonEmpty(evt.Sender.SenderID.OpenID, evt.Sender.SenderID.UserID, evt.Sender.SenderID.UnionID),
+		Identities: uvim.NormalizeUserIdentities(
+			uvim.UserIdentity{Type: "lark.open_id", ID: evt.Sender.SenderID.OpenID, Scope: appID},
+			uvim.UserIdentity{Type: "lark.user_id", ID: evt.Sender.SenderID.UserID, Scope: tenantKey},
+			uvim.UserIdentity{Type: "lark.union_id", ID: evt.Sender.SenderID.UnionID},
+		),
+	}
+	if evt.Sender.SenderType == "bot" {
+		user.Kind = uvim.UserKindBot
+	}
 	return uvim.Event{
 		ID:        env.Header.EventID,
 		Type:      uvim.EventMessageCreate,
@@ -61,9 +74,7 @@ func DecodePayload(payload []byte, config DecoderConfig) (uvim.Event, bool, erro
 		Time:      time.Now().UTC(),
 		Login:     uvim.Login{Platform: "lark", Connector: config.Connector, ID: config.AppID},
 		Channel:   uvim.Channel{ID: channelID, Type: channelType},
-		User: uvim.User{
-			ID: uvim.FirstNonEmpty(evt.Sender.SenderID.OpenID, evt.Sender.SenderID.UserID, evt.Sender.SenderID.UnionID),
-		},
+		User:      user,
 		Message: uvim.Message{
 			ID:        messageID,
 			Type:      evt.Message.MessageType,

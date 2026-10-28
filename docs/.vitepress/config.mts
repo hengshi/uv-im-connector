@@ -72,6 +72,7 @@ const zhTheme = {
       text: '参考',
       items: [
         { text: '架构', link: '/architecture' },
+        { text: '用户身份与地址', link: '/identities' },
         { text: '配置', link: '/configuration' },
       ],
     },
@@ -130,6 +131,7 @@ const enTheme = {
       text: 'Reference',
       items: [
         { text: 'Architecture', link: '/en/architecture' },
+        { text: 'User Identities and Addresses', link: '/en/identities' },
         { text: 'Configuration', link: '/en/configuration' },
       ],
     },

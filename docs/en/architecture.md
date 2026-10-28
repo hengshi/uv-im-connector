@@ -38,6 +38,7 @@ The shared supervisor recovers WeCom and Lark WebSocket disconnects and DingTalk
 The normalized protocol has these stable objects:
 
 - `Event`: inbound event envelope with provider, connector, channel, user, message, and referrer.
+- `User.Identities`: account identifiers with type, scope and provenance, separate from conversation/send addresses; see [User identities and native addresses](./identities.md).
 - `Message`: text, structured elements, and resource references.
 - `ResourceRef`: file/image/audio/video reference with sanitized internal URL and private provider fields.
 - `OutboundMessage`: explicit target, text/elements/resources, and optional referrer for replies or threads.
@@ -49,7 +50,7 @@ The normalized protocol has these stable objects:
 
 Some inbound `referrer` values contain short-lived or limited-use reply handles. `referrer.expires_at` is the provider-supplied or adapter-derived deadline, and `capabilities.reply_max_uses` is the maximum number of outbound attempts that may carry the handle; an omitted or zero maximum means that no finite use limit is declared. After the deadline or use limit, callers must remove the message/reply handle and may use `referrer.target` only when the corresponding proactive capability and target kind are available. Provider business windows without reply-handle semantics remain provider constraints and must not be treated as a generic retry of the same proactive message.
 
-`Channel`, `User`, and `OutboundTarget` can carry an optional `external_id` to associate an identity with an enterprise directory or another external system. Empty values are omitted. The native `id` continues to drive connector routing and deduplication. Target resolution preserves the `external_id` from an explicit `target` or `referrer.target` without substituting it for the send destination's `id`. See [Configuration](/en/configuration.html#wecom-external-identities) for WeCom mapping and direct-conversation fallback rules.
+Optional `target.id_type` distinguishes native address schemes and must be advertised in `capabilities.target_id_types`. Preserve it with the referrer. User identity lists do not choose destinations; see [typed native send addresses](./identities.md#typed-native-send-addresses).
 
 ## Provider Capability Matrix
 

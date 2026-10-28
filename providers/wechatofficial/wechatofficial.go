@@ -186,7 +186,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		return uvim.Event{}, false, nil
 	}
 	refs := wechatResources(msg.MsgType, msg.MediaID, msg.PicURL, msg.Format, config)
-	return uvim.Event{ID: msg.MsgID, Type: uvim.EventMessageCreate, Provider: "wechat-official", Connector: config.ConnectorID, Channel: uvim.Channel{ID: msg.FromUserName, Type: uvim.ChannelDirect}, User: uvim.User{ID: msg.FromUserName}, Message: uvim.Message{ID: msg.MsgID, Text: msg.Content, Type: msg.MsgType, Resources: refs}, Referrer: uvim.Referrer{MessageID: msg.MsgID, ChannelID: msg.FromUserName, Target: &uvim.OutboundTarget{ID: msg.FromUserName, Kind: uvim.TargetUser}}, Addressed: true}, true, nil
+	return uvim.Event{ID: msg.MsgID, Type: uvim.EventMessageCreate, Provider: "wechat-official", Connector: config.ConnectorID, Channel: uvim.Channel{ID: msg.FromUserName, Type: uvim.ChannelDirect}, User: uvim.User{ID: msg.FromUserName, Identities: uvim.NormalizeUserIdentities(uvim.UserIdentity{Type: "wechat-official.openid", ID: msg.FromUserName, Scope: msg.ToUserName})}, Message: uvim.Message{ID: msg.MsgID, Text: msg.Content, Type: msg.MsgType, Resources: refs}, Referrer: uvim.Referrer{MessageID: msg.MsgID, ChannelID: msg.FromUserName, Target: &uvim.OutboundTarget{ID: msg.FromUserName, Kind: uvim.TargetUser}}, Addressed: true}, true, nil
 }
 
 func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Request, error) {

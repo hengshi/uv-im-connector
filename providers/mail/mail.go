@@ -228,13 +228,17 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		})
 	}
 	text := firstNonEmpty(msg.Text, msg.HTML)
+	var identities []uvim.UserIdentity
+	if address, err := mail.ParseAddress(msg.From); err == nil {
+		identities = uvim.NormalizeUserIdentities(uvim.UserIdentity{Type: "mail.mailbox", ID: address.Address})
+	}
 	return uvim.Event{
 		ID:        id,
 		Type:      uvim.EventMessageCreate,
 		Provider:  "mail",
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: msg.From, Type: uvim.ChannelDirect, Name: msg.Subject},
-		User:      uvim.User{ID: msg.From, Name: msg.FromName},
+		User:      uvim.User{ID: msg.From, Name: msg.FromName, Identities: identities},
 		Message:   uvim.Message{ID: id, Text: text, Type: "email", Resources: refs},
 		Referrer:  uvim.Referrer{MessageID: id, ChannelID: msg.From, Target: &uvim.OutboundTarget{ID: msg.From, Kind: uvim.TargetUser}},
 		Addressed: true,

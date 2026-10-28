@@ -59,6 +59,7 @@ func New(config Config) (*Provider, error) {
 			ProactiveDirect: true,
 			ProactiveGroup:  true,
 			TargetKinds:     []string{uvim.TargetUser, uvim.TargetGroup},
+			TargetIDTypes:   []string{"whatsapp.wa_id", "whatsapp.bsuid", "whatsapp.parent_bsuid", "whatsapp.group_id"},
 			ChannelTypes:    []string{uvim.ChannelDirect, uvim.ChannelGroup},
 		},
 	})
@@ -160,6 +161,10 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	defer func() {
 		err = uvim.NewProviderSendOperationError("whatsapp upload", err)
 	}()
+	addressField, err := recipientField(msg.ResolvedTarget())
+	if err != nil {
+		return uvim.SendResult{}, err
+	}
 	phoneNumberID := strings.TrimSpace(p.config.PhoneNumberID)
 	if phoneNumberID == "" {
 		return uvim.SendResult{}, fmt.Errorf("whatsapp send: phone_number_id is required")
@@ -241,7 +246,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	messageBody := map[string]any{
 		"messaging_product": "whatsapp",
 		"recipient_type":    recipientType,
-		"to":                target.ID,
+		addressField:        target.ID,
 		"type":              mediaType,
 		mediaType:           media,
 	}
@@ -309,8 +314,10 @@ func DecodeEvents(raw []byte, config httpchannel.Config) ([]uvim.Event, error) {
 				Value struct {
 					Messages []whatsappWebhookMessage `json:"messages"`
 					Contacts []struct {
-						WAID    string `json:"wa_id"`
-						Profile struct {
+						WAID         string `json:"wa_id"`
+						UserID       string `json:"user_id"`
+						ParentUserID string `json:"parent_user_id"`
+						Profile      struct {
 							Name string `json:"name"`
 						} `json:"profile"`
 					} `json:"contacts"`
@@ -324,10 +331,15 @@ func DecodeEvents(raw []byte, config httpchannel.Config) ([]uvim.Event, error) {
 	var events []uvim.Event
 	for _, entry := range env.Entry {
 		for _, change := range entry.Changes {
-			contactNames := make(map[string]string, len(change.Value.Contacts))
+			contacts := make(map[[2]string]uvim.User, len(change.Value.Contacts))
 			for _, contact := range change.Value.Contacts {
-				if waID, name := strings.TrimSpace(contact.WAID), strings.TrimSpace(contact.Profile.Name); waID != "" && name != "" {
-					contactNames[waID] = name
+				user := uvim.User{Name: strings.TrimSpace(contact.Profile.Name), Identities: uvim.NormalizeUserIdentities(
+					uvim.UserIdentity{Type: "whatsapp.wa_id", ID: contact.WAID},
+					uvim.UserIdentity{Type: "whatsapp.bsuid", ID: contact.UserID},
+					uvim.UserIdentity{Type: "whatsapp.parent_bsuid", ID: contact.ParentUserID},
+				)}
+				for _, identity := range user.Identities {
+					contacts[[2]string{identity.Type, identity.ID}] = user
 				}
 			}
 			for _, msg := range change.Value.Messages {
@@ -335,7 +347,13 @@ func DecodeEvents(raw []byte, config httpchannel.Config) ([]uvim.Event, error) {
 					continue
 				}
 				event := eventFromWebhookMessage(msg, config)
-				event.User.Name = contactNames[strings.TrimSpace(msg.From)]
+				if len(event.User.Identities) != 0 {
+					primary := event.User.Identities[0]
+					if contact, ok := contacts[[2]string{primary.Type, primary.ID}]; ok {
+						event.User.Name = contact.Name
+						event.User.Identities = uvim.NormalizeUserIdentities(append(event.User.Identities, contact.Identities...)...)
+					}
+				}
 				events = append(events, event)
 			}
 		}
@@ -345,11 +363,20 @@ func DecodeEvents(raw []byte, config httpchannel.Config) ([]uvim.Event, error) {
 
 func eventFromWebhookMessage(msg whatsappWebhookMessage, config httpchannel.Config) uvim.Event {
 	refs := whatsappResources(msg.Image, msg.Audio, msg.Video, msg.Document, config)
-	channelID := msg.From
+	userID := firstNonEmpty(msg.From, msg.FromUserID, msg.FromParentUserID)
+	channelID := userID
+	idType := ""
+	if strings.TrimSpace(msg.From) == "" {
+		idType = "whatsapp.bsuid"
+		if strings.TrimSpace(msg.FromUserID) == "" {
+			idType = "whatsapp.parent_bsuid"
+		}
+	}
 	channelType := uvim.ChannelDirect
-	if msg.Context.GroupID != "" {
-		channelID = msg.Context.GroupID
+	if groupID := firstNonEmpty(msg.GroupID, msg.Context.GroupID); groupID != "" {
+		channelID = groupID
 		channelType = uvim.ChannelGroup
+		idType = ""
 	}
 	targetKind := uvim.TargetUser
 	if channelType == uvim.ChannelGroup {
@@ -361,18 +388,25 @@ func eventFromWebhookMessage(msg whatsappWebhookMessage, config httpchannel.Conf
 		Provider:  "whatsapp",
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: channelID, Type: channelType, Name: msg.Context.GroupSubject},
-		User:      uvim.User{ID: msg.From},
+		User: uvim.User{ID: userID, Identities: uvim.NormalizeUserIdentities(
+			uvim.UserIdentity{Type: "whatsapp.wa_id", ID: msg.From},
+			uvim.UserIdentity{Type: "whatsapp.bsuid", ID: msg.FromUserID},
+			uvim.UserIdentity{Type: "whatsapp.parent_bsuid", ID: msg.FromParentUserID},
+		)},
 		Message:   uvim.Message{ID: msg.ID, Text: msg.Text.Body, Type: msg.Type, Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: msg.ID, ParentMessageID: msg.Context.ID, ChannelID: channelID, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
+		Referrer:  uvim.Referrer{MessageID: msg.ID, ParentMessageID: msg.Context.ID, ChannelID: channelID, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind, IDType: idType}},
 		Addressed: true,
 	}
 }
 
 type whatsappWebhookMessage struct {
-	ID   string `json:"id"`
-	From string `json:"from"`
-	Type string `json:"type"`
-	Text struct {
+	ID               string `json:"id"`
+	From             string `json:"from"`
+	FromUserID       string `json:"from_user_id"`
+	FromParentUserID string `json:"from_parent_user_id"`
+	GroupID          string `json:"group_id"`
+	Type             string `json:"type"`
+	Text             struct {
 		Body string `json:"body"`
 	} `json:"text"`
 	Context struct {
@@ -399,6 +433,10 @@ func Send(msg uvim.OutboundMessage, _ httpchannel.Config, phoneNumberID string) 
 		return httpchannel.Request{}, fmt.Errorf("whatsapp send: phone_number_id is required")
 	}
 	target := msg.ResolvedTarget()
+	addressField, err := recipientField(target)
+	if err != nil {
+		return httpchannel.Request{}, err
+	}
 	if target.ID == "" {
 		return httpchannel.Request{}, fmt.Errorf("whatsapp send: target user id is required")
 	}
@@ -409,7 +447,7 @@ func Send(msg uvim.OutboundMessage, _ httpchannel.Config, phoneNumberID string) 
 	body := map[string]any{
 		"messaging_product": "whatsapp",
 		"recipient_type":    recipientType,
-		"to":                target.ID,
+		addressField:        target.ID,
 		"type":              "text",
 		"text":              map[string]string{"body": msg.Text},
 	}
@@ -417,6 +455,27 @@ func Send(msg uvim.OutboundMessage, _ httpchannel.Config, phoneNumberID string) 
 		body["context"] = map[string]string{"message_id": msg.Referrer.MessageID}
 	}
 	return httpchannel.Request{Path: "/" + phoneNumberID + "/messages", Body: body}, nil
+}
+
+// recipientField follows the explicit native address type, never an ID prefix.
+func recipientField(target uvim.OutboundTarget) (string, error) {
+	switch target.IDType {
+	case "":
+		return "to", nil
+	case "whatsapp.wa_id":
+		if target.Kind == uvim.TargetUser {
+			return "to", nil
+		}
+	case "whatsapp.group_id":
+		if target.Kind == uvim.TargetGroup {
+			return "to", nil
+		}
+	case "whatsapp.bsuid", "whatsapp.parent_bsuid":
+		if target.Kind == uvim.TargetUser {
+			return "recipient", nil
+		}
+	}
+	return "", fmt.Errorf("whatsapp send: id_type %q is invalid for target kind %q", target.IDType, target.Kind)
 }
 
 func ParseSendResponse(raw []byte) (string, error) {

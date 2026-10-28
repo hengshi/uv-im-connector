@@ -44,6 +44,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	var msg struct {
 		PostType    string          `json:"post_type"`
 		MessageType string          `json:"message_type"`
+		SubType     string          `json:"sub_type"`
 		MessageID   int64           `json:"message_id"`
 		UserID      int64           `json:"user_id"`
 		GroupID     int64           `json:"group_id"`
@@ -69,6 +70,15 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		targetKind = uvim.TargetGroup
 	}
 	messageID := fmt.Sprint(msg.MessageID)
+	user := uvim.User{Name: firstNonEmpty(msg.Sender.Card, msg.Sender.Nickname)}
+	if msg.SubType == "anonymous" {
+		user.Kind = uvim.UserKindAnonymous
+	} else if msg.SubType == "notice" {
+		user.Kind = uvim.UserKindSystem
+	} else if msg.UserID != 0 {
+		user.ID = fmt.Sprint(msg.UserID)
+		user.Identities = uvim.NormalizeUserIdentities(uvim.UserIdentity{Type: "onebot.v11.qq_user_id", ID: user.ID})
+	}
 	refs := qqResources(msg.Message, config)
 	return uvim.Event{
 		ID:        messageID,
@@ -76,7 +86,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Provider:  "qq",
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: channelID, Type: channelType},
-		User:      uvim.User{ID: fmt.Sprint(msg.UserID), Name: firstNonEmpty(msg.Sender.Card, msg.Sender.Nickname)},
+		User:      user,
 		Message:   uvim.Message{ID: messageID, Text: msg.RawMessage, Type: msg.MessageType, Resources: refs},
 		Referrer:  uvim.Referrer{MessageID: messageID, ChannelID: channelID, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
 		Addressed: true,
