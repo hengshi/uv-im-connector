@@ -35,7 +35,7 @@
 
 | Provider | 发布的 identity type 与字段 | 作用域与主体 | 原生回复目标 |
 | --- | --- | --- | --- |
-| WeCom | `wecom.callback_userid` ← `from.userid` | 官方回调可能为明文或企业内加密 ID；字段本身不足以判断是哪种。 | 单聊原生 userid；群聊 chatid。 |
+| WeCom | `wecom.callback_userid` ← `from.userid`；可选应用查询增加 `wecom.userid`。 | 回调可能已是企业明文账号或企业内加密 ID；经官方核验的 `wecom.userid` 使用配置的企业 ID 作为 scope。 | 单聊原生 userid；群聊 chatid。 |
 | Lark / 飞书 | `lark.open_id`、`lark.user_id`、`lark.union_id` ← sender ID；已有用户查询也保留这三项。 | open_id 为应用 scope；user_id 为 tenant scope；union_id 属于开发者组织，其发行组织不在普通回调中，scope 留空。 | chat_id，保留会话目标。 |
 | DingTalk | `dingtalk.userid` ← senderStaffId；`dingtalk.unionid` ← senderUnionId；`dingtalk.sender_id` ← senderId。 | userid 使用实际 senderCorpId；加密 senderId 不是 unionid。主 ID 优先 staff、sender、union。 | 群 conversationId；单聊仅已知 staff ID 可作用户地址；缺少 staff 时仍保留 session webhook。 |
 | Discord | `discord.user_id` ← author.id；webhook 消息改为 `discord.webhook_id` ← webhook_id。 | Snowflake 原样保留；bot/webhook 区分主体，不用名称关联账户。 | 接收消息的 channel_id。 |
@@ -54,11 +54,11 @@
 
 ## 官方转换、查询与权限
 
-平台回调已提供的身份直接保留。Lark 复用已有的用户资料请求和有界缓存；按真实主 ID 类型设置 `user_id_type`，并保留回调中的已知 scope。该查询失败时保留基础事件。其他 provider 不增加每条消息必需的身份查询；下列接口是需要额外身份时的官方依据，不能据此假定 adapter 已自动调用。
+平台回调已提供的身份直接保留。WeCom 配置自建应用凭据后自动核验企业账号，未配置时不调用应用接口；[配置与验证指南](./guide/wecom.md)说明所有值的来源。Lark 复用已有用户资料请求和有界缓存，按真实主 ID 类型设置 `user_id_type`，保留已知 scope。两者查询失败都保留基础事件。其余 provider 没有新增必需的身份查询；表中的接口不代表 adapter 已自动集成。
 
 | Provider | 官方文档与可用路径 | 条件与边界 |
 | --- | --- | --- |
-| WeCom | [长连接回调](https://developer.work.weixin.qq.com/document/path/101463)；[open_userid 转 userid](https://developer.work.weixin.qq.com/document/path/101521)。 | Bot 创建人为企业超管时回调为明文，否则为企业内加密 ID。转换 `POST /cgi-bin/batch/openuserid_to_userid` 要求**自建应用 access_token**、成员在应用可见范围内，每批最多 1000；已是明文的值也可能进入 invalid 列表。Bot Secret、机器人通讯录授权不等同于该 token。转换后可显式绑定为 `wecom.userid`，scope 为已知企业；本实现不自动取自建应用 token 或转换。 |
+| WeCom | [长连接回调](https://developer.work.weixin.qq.com/document/path/101463)；[转换](https://developer.work.weixin.qq.com/document/path/101521)；[读取成员](https://developer.work.weixin.qq.com/document/path/90196)。 | 可选 `UV_WECOM_CORP_ID` + `UV_WECOM_CORP_SECRET` 自动获取应用 token、转换并核验企业成员；需应用可见范围和服务器可信出口 IP。已是明文的输入也会进入 invalid 列表，须由成员查询进一步证明。短回调账号可能已经正确，CLI 目录标识可能才是需转换的一端；不按外观判断，不做反向生成或姓名绑定。 |
 | Lark | [用户标识](https://open.feishu.cn/document/platform-overveiw/basic-concepts/user-identity-introduction/introduction)、[消息事件](https://open.feishu.cn/document/server-docs/im-v1/message/events/receive)、[获取用户](https://open.feishu.cn/document/server-docs/contact-v3/user/get)。 | 使用应用 token、基本用户读取权限和可见范围；user_id 字段涉及 `contact:user.employee_id:readonly`。未返回的标识不补造，union_id 不当作跨开发者全局 ID。 |
 | DingTalk | [消息回调](https://open.dingtalk.com/document/development/robot-message-type)、[用户详情](https://open.dingtalk.com/document/development/query-user-details)、[unionid 转 userid](https://open.dingtalk.com/document/development/query-a-user-by-the-union-id)。 | `/topapi/v2/user/get`、`/topapi/user/getbyunionid` 需要相应应用 token、通讯录权限（如 `qyapi_get_member`）及范围。外部用户/未发布机器人可能没有 senderStaffId，不能拿 senderId 充当 userid。 |
 | Discord | [User](https://docs.discord.com/developers/resources/user)、[Message](https://docs.discord.com/developers/resources/message)。 | bot 的 User 查询不提供另一套普通稳定账户 ID；OAuth identify/email 针对授权用户，不是任意人的企业目录。webhook author 不作为个人。 |

@@ -92,3 +92,17 @@ func TestBuildProvidersRejectsJSONNullNameMapMember(t *testing.T) {
 		t.Fatal("buildProviders() accepted a JSON null name-map member")
 	}
 }
+
+func TestBuildProvidersRequiresCompleteWeComApplicationCredentials(t *testing.T) {
+	t.Setenv("UV_WECOM_BOT_ID", "bot")
+	t.Setenv("UV_WECOM_BOT_SECRET", "secret")
+	t.Setenv("UV_WECOM_CORP_ID", "corp")
+	t.Setenv("UV_WECOM_CORP_SECRET", "")
+	if _, err := buildProviders("wecom", t.TempDir()); err == nil {
+		t.Fatal("partial WeCom application credentials accepted")
+	}
+	t.Setenv("UV_WECOM_CORP_SECRET", "app")
+	if _, err := buildProviders("wecom", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -12,6 +12,8 @@
 | `UV_WECOM_CONNECTOR_ID` | WeCom connector ID，默认 `wecom`。 |
 | `UV_WECOM_BOT_ID` | WeCom bot ID。 |
 | `UV_WECOM_BOT_SECRET` | WeCom bot secret。 |
+| `UV_WECOM_CORP_ID` | 可选企业 ID，来自管理后台「我的企业 → 企业信息」，不是 AgentId；必须与 `UV_WECOM_CORP_SECRET` 同时配置。启用[企微企业身份查询](./guide/wecom.md)。 |
+| `UV_WECOM_CORP_SECRET` | 同企业**自建应用的 Secret**，来自「应用管理 → 自建 → 应用详情」，不是机器人 Secret。程序自动申请/刷新 token；需应用可见范围和运行服务器的可信出口 IP。 |
 | `UV_WECOM_WS_URL` | 可选 WeCom WebSocket endpoint override。 |
 | `UV_WECOM_USER_NAMES` | 可选 JSON 对象，把 AI Bot 回调中的 `userid` 映射为展示名，例如 `{"zhangsan":"张三"}`。只影响事件展示字段，不影响路由或授权。 |
 | `UV_WECOM_CONVERSATION_NAMES` | 可选 JSON 对象，把 AI Bot 回调中的群 `chatid` 映射为展示名，例如 `{"wrxxxx":"研发群"}`。只影响事件展示字段。 |
@@ -37,6 +39,8 @@
 | `UV_MAIL_WEBHOOK_SECRET` | Mail inbound webhook secret。 |
 
 Provider credentials 是独占 deployment identity。Production、E2E、development 和临时 debug worker 不应共用同一套 provider credentials。
+
+企微 BotID/Secret 与自建应用凭据属于两套身份。仅收发消息时无需配置自建应用；企业账号查询是可选能力，查询失败仍发布基础事件。完整的取值位置、可信 IP、环境注入、CLI 标识关系和验证步骤见[企微接入与通讯录](./guide/wecom.md)。
 
 Lark 身份自动查询通过现有应用凭据调用 `GET /open-apis/bot/v3/info`，在打开 WebSocket 前完成；身份查询及所需 token 请求共用 15 秒启动时限（调用方更短的 context 或 HTTPClient 超时仍生效）。成功日志记录身份来源和 bot ID，失败日志保留安全的阶段、错误码或传输原因。
 

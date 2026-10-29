@@ -137,6 +137,8 @@ func buildProviders(providerList string, resourceDir string) ([]uvim.Provider, e
 				ConnectorID:       env("UV_WECOM_CONNECTOR_ID", "wecom"),
 				BotID:             os.Getenv("UV_WECOM_BOT_ID"),
 				Secret:            os.Getenv("UV_WECOM_BOT_SECRET"),
+				CorpID:            os.Getenv("UV_WECOM_CORP_ID"),
+				CorpSecret:        os.Getenv("UV_WECOM_CORP_SECRET"),
 				UserNames:         userNames,
 				ConversationNames: conversationNames,
 				WSURL:             os.Getenv("UV_WECOM_WS_URL"),

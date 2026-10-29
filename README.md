@@ -32,6 +32,8 @@ The site defaults to Simplified Chinese. English documentation is served under:
 https://hengshi.github.io/uv-im-connector/en/
 ```
 
+For WeCom, start with the [setup and directory identity guide](docs/en/guide/wecom.md) ([中文](docs/guide/wecom.md)): it distinguishes BotID, CorpID, AgentId and the two Secrets, and explains application visibility, trusted IPs and verification.
+
 Run the site locally with:
 
 ```bash

@@ -52,6 +52,8 @@ WeCom、Lark WebSocket 断线及 DingTalk Stream 首次启动失败由共享监�
 
 可选的 `target.id_type` 区分实际原生地址方案，只接受 `capabilities.target_id_types` 声明的值；必须随 referrer 一起保留。用户身份列表不用于自动选路，详见[带类型的原生发送地址](./identities.md#带类型的原生发送地址)。
 
+WeCom 的可选企业身份查询在事件发送 worker 中完成；应用 token 和成员查询有界缓存，查询失败仍发布原始消息，不阻塞 socket ACK 调度。配置和账号核验规则见[企微接入与通讯录](./guide/wecom.md)。
+
 ## Provider 能力矩阵
 
 下表只列 16 个外部 provider，不包含用于测试和本地开发的 `memory`。`有条件` 表示 adapter 已支持该操作，但必须满足“限制”列的平台条件。

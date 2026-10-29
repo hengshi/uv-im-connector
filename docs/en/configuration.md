@@ -12,6 +12,8 @@ The standalone binary reads `UV_IM_*` variables.
 | `UV_WECOM_CONNECTOR_ID` | WeCom connector ID. Defaults to `wecom`. |
 | `UV_WECOM_BOT_ID` | WeCom bot ID. |
 | `UV_WECOM_BOT_SECRET` | WeCom bot secret. |
+| `UV_WECOM_CORP_ID` | Optional enterprise ID from My Enterprise → Enterprise Information, not AgentId. Configure with `UV_WECOM_CORP_SECRET` to enable [enterprise identity lookup](./guide/wecom.md). |
+| `UV_WECOM_CORP_SECRET` | The same enterprise's **self-built application Secret**, from Application Management → Self-built → application details, not the bot Secret. Token acquisition/refresh is automatic; application visibility and the server's trusted outbound IP are required. |
 | `UV_WECOM_WS_URL` | Optional WeCom WebSocket endpoint override. |
 | `UV_WECOM_USER_NAMES` | Optional JSON object mapping AI Bot callback `userid` values to display names, for example `{"zhangsan":"Zhang San"}`. It never changes routing or authorization. |
 | `UV_WECOM_CONVERSATION_NAMES` | Optional JSON object mapping AI Bot group `chatid` values to display names, for example `{"wrxxxx":"Engineering"}`. It affects display metadata only. |
@@ -37,6 +39,8 @@ The standalone binary reads `UV_IM_*` variables.
 | `UV_MAIL_WEBHOOK_SECRET` | Mail inbound webhook secret. |
 
 Provider credentials are exclusive deployment identity. Production, E2E, development, and temporary debug workers must not share the same provider credential set.
+
+WeCom bot credentials and self-built application credentials have separate roles. Messaging alone does not require an application. Enterprise lookup is optional, and failures preserve the base event. See [WeCom setup and directory identities](./guide/wecom.md) for exact value locations, trusted IPs, environment injection, CLI identifier relationships and verification.
 
 Lark identity discovery calls `GET /open-apis/bot/v3/info` with the existing application credentials before opening the WebSocket. Discovery and its token request share a 15-second startup deadline; a shorter caller context or HTTPClient timeout still applies. Success logs record the identity source and bot ID; failure logs retain safe stage, error-code or transport diagnostics.
 

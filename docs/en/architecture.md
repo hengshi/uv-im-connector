@@ -52,6 +52,8 @@ Some inbound `referrer` values contain short-lived or limited-use reply handles.
 
 Optional `target.id_type` distinguishes native address schemes and must be advertised in `capabilities.target_id_types`. Preserve it with the referrer. User identity lists do not choose destinations; see [typed native send addresses](./identities.md#typed-native-send-addresses).
 
+Optional WeCom enterprise lookup runs in the event-emission worker, with bounded token/member caching. Failures preserve the original message and do not block socket ACK dispatch. See [WeCom setup and directory identities](./guide/wecom.md) for configuration and account-verification rules.
+
 ## Provider Capability Matrix
 
 This table covers the 16 external providers and excludes `memory`, which is used for tests and local development. `Conditional` means the adapter supports the operation when the platform condition in the last column is met.
