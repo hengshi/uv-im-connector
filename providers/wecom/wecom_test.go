@@ -198,6 +198,9 @@ func TestDecodeMessageFile(t *testing.T) {
 	if event.Type != uvim.EventMessageCreate || event.Channel.Type != uvim.ChannelGroup {
 		t.Fatalf("event = %+v", event)
 	}
+	if event.User.ID != "u1" || len(event.User.Identities) != 1 || event.User.Identities[0] != (uvim.UserIdentity{Type: "wecom.callback_userid", ID: "u1", Source: uvim.IdentitySourceCallback}) {
+		t.Fatalf("callback user identity = %+v", event.User)
+	}
 	if event.Referrer.Target == nil || event.Referrer.Target.ID != "chat-1" || event.Referrer.Target.Kind != uvim.TargetGroup {
 		t.Fatalf("reply target = %+v", event.Referrer.Target)
 	}

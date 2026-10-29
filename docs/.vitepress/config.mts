@@ -63,6 +63,7 @@ const zhTheme = {
         { text: '为什么存在', link: '/guide/why-uv' },
         { text: '核心概念', link: '/guide/concepts' },
         { text: '应用接入', link: '/guide/application-integration' },
+        { text: '企微接入与通讯录', link: '/guide/wecom' },
         { text: '部署与发布', link: '/guide/deployment' },
         { text: '资源与文件', link: '/guide/resources' },
         { text: '参与贡献', link: '/guide/contributing' },
@@ -72,6 +73,7 @@ const zhTheme = {
       text: '参考',
       items: [
         { text: '架构', link: '/architecture' },
+        { text: '用户身份与地址', link: '/identities' },
         { text: '配置', link: '/configuration' },
       ],
     },
@@ -121,6 +123,7 @@ const enTheme = {
         { text: 'Why It Exists', link: '/en/guide/why-uv' },
         { text: 'Concepts', link: '/en/guide/concepts' },
         { text: 'App Integration', link: '/en/guide/application-integration' },
+        { text: 'WeCom Setup and Directory', link: '/en/guide/wecom' },
         { text: 'Deployment', link: '/en/guide/deployment' },
         { text: 'Resources', link: '/en/guide/resources' },
         { text: 'Contributing', link: '/en/guide/contributing' },
@@ -130,6 +133,7 @@ const enTheme = {
       text: 'Reference',
       items: [
         { text: 'Architecture', link: '/en/architecture' },
+        { text: 'User Identities and Addresses', link: '/en/identities' },
         { text: 'Configuration', link: '/en/configuration' },
       ],
     },

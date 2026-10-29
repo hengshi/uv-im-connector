@@ -230,7 +230,9 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Provider:  "matrix",
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: event.RoomID, Type: uvim.ChannelRoom},
-		User:      uvim.User{ID: event.Sender},
+		User: uvim.User{ID: event.Sender, Identities: uvim.NormalizeUserIdentities(
+			uvim.UserIdentity{Type: "matrix.mxid", ID: event.Sender},
+		)},
 		Message:   uvim.Message{ID: event.EventID, Text: event.Content.Body, Type: event.Content.MsgType, Resources: refs},
 		Referrer:  uvim.Referrer{MessageID: event.EventID, ChannelID: event.RoomID, Target: &uvim.OutboundTarget{ID: event.RoomID, Kind: uvim.TargetConversation}},
 		Addressed: true,

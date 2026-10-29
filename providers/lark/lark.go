@@ -67,8 +67,9 @@ type Provider struct {
 }
 
 type displayNameEntry struct {
-	name      string
-	expiresAt time.Time
+	name       string
+	identities []uvim.UserIdentity
+	expiresAt  time.Time
 }
 
 type WSDialer interface {
@@ -345,44 +346,65 @@ func (p *Provider) enrichEventDisplayNames(ctx context.Context, event *uvim.Even
 		return
 	}
 	if event.Channel.Type == uvim.ChannelGroup && strings.TrimSpace(event.Channel.ID) != "" && strings.TrimSpace(event.Channel.Name) == "" {
-		name, err := p.cachedDisplayName(ctx, "chat:"+event.Channel.ID, func(ctx context.Context) (string, error) {
-			return p.larkChatName(ctx, event.Channel.ID)
+		entry, err := p.cachedDisplayMetadata(ctx, "chat:"+event.Channel.ID, func(ctx context.Context) (displayNameEntry, error) {
+			name, err := p.larkChatName(ctx, event.Channel.ID)
+			return displayNameEntry{name: name}, err
 		})
 		if err != nil {
 			p.config.Logger.Debug("lark chat display-name lookup failed", "err", err.Error())
 		} else {
-			event.Channel.Name = name
+			event.Channel.Name = entry.name
 		}
 	}
 	if strings.TrimSpace(event.User.ID) != "" && strings.TrimSpace(uvim.FirstNonEmpty(event.User.DisplayName, event.User.Name)) == "" {
-		name, err := p.cachedDisplayName(ctx, "user:"+event.User.ID, func(ctx context.Context) (string, error) {
-			return p.larkUserName(ctx, event.User.ID)
+		idType := "open_id"
+		for _, identity := range event.User.Identities {
+			if identity.ID == event.User.ID {
+				switch identity.Type {
+				case "lark.open_id", "lark.user_id", "lark.union_id":
+					idType = strings.TrimPrefix(identity.Type, "lark.")
+				}
+				break
+			}
+		}
+		entry, err := p.cachedDisplayMetadata(ctx, "user:"+idType+":"+event.User.ID, func(ctx context.Context) (displayNameEntry, error) {
+			return p.larkUserProfile(ctx, event.User.ID, idType)
 		})
 		if err != nil {
 			p.config.Logger.Debug("lark user display-name lookup failed", "err", err.Error())
 		} else {
-			event.User.DisplayName = name
+			event.User.DisplayName = entry.name
+			identities := append([]uvim.UserIdentity(nil), entry.identities...)
+			for i := range identities {
+				for _, known := range event.User.Identities {
+					if known.Type == identities[i].Type {
+						identities[i].Scope = known.Scope
+						break
+					}
+				}
+			}
+			event.User.Identities = uvim.NormalizeUserIdentities(append(event.User.Identities, identities...)...)
 		}
 	}
 }
 
-func (p *Provider) cachedDisplayName(ctx context.Context, key string, lookup func(context.Context) (string, error)) (string, error) {
+func (p *Provider) cachedDisplayMetadata(ctx context.Context, key string, lookup func(context.Context) (displayNameEntry, error)) (displayNameEntry, error) {
 	now := p.now()
 	p.displayNameMu.Lock()
 	entry, ok := p.displayNameCache[key]
 	if ok && now.Before(entry.expiresAt) {
 		p.displayNameMu.Unlock()
-		return entry.name, nil
+		return entry, nil
 	}
 	if ok {
 		delete(p.displayNameCache, key)
 	}
 	p.displayNameMu.Unlock()
 
-	name, err := lookup(ctx)
-	name = strings.TrimSpace(name)
-	if err != nil || name == "" {
-		return name, err
+	entry, err := lookup(ctx)
+	entry.name = strings.TrimSpace(entry.name)
+	if err != nil || (entry.name == "" && len(entry.identities) == 0) {
+		return entry, err
 	}
 	p.displayNameMu.Lock()
 	if len(p.displayNameCache) >= displayNameMax {
@@ -398,9 +420,10 @@ func (p *Provider) cachedDisplayName(ctx context.Context, key string, lookup fun
 			break
 		}
 	}
-	p.displayNameCache[key] = displayNameEntry{name: name, expiresAt: now.Add(displayNameTTL)}
+	entry.expiresAt = now.Add(displayNameTTL)
+	p.displayNameCache[key] = entry
 	p.displayNameMu.Unlock()
-	return name, err
+	return entry, err
 }
 
 func (p *Provider) larkChatName(ctx context.Context, chatID string) (string, error) {
@@ -433,43 +456,55 @@ func (p *Provider) larkChatName(ctx context.Context, chatID string) (string, err
 	return strings.TrimSpace(decoded.Data.Name), nil
 }
 
-func (p *Provider) larkUserName(ctx context.Context, userID string) (string, error) {
+func (p *Provider) larkUserProfile(ctx context.Context, userID, idType string) (displayNameEntry, error) {
 	token, err := p.tenantAccessToken(ctx)
 	if err != nil {
-		return "", err
+		return displayNameEntry{}, err
 	}
 	reqURL, err := url.Parse(p.baseURL() + "/open-apis/contact/v3/users/" + url.PathEscape(userID))
 	if err != nil {
-		return "", err
+		return displayNameEntry{}, err
 	}
 	query := reqURL.Query()
-	query.Set("user_id_type", "open_id")
+	query.Set("user_id_type", idType)
 	reqURL.RawQuery = query.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL.String(), nil)
 	if err != nil {
-		return "", err
+		return displayNameEntry{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	raw, err := p.doJSON(req, "lark user display name")
 	if err != nil {
-		return "", err
+		return displayNameEntry{}, err
 	}
 	var decoded struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 		Data struct {
 			User struct {
-				Name string `json:"name"`
+				Name    string `json:"name"`
+				OpenID  string `json:"open_id"`
+				UserID  string `json:"user_id"`
+				UnionID string `json:"union_id"`
 			} `json:"user"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return "", fmt.Errorf("decode user display name: %w", err)
+		return displayNameEntry{}, fmt.Errorf("decode user display name: %w", err)
 	}
 	if decoded.Code != 0 {
-		return "", fmt.Errorf("lark user display name: code=%d msg=%q", decoded.Code, decoded.Msg)
+		return displayNameEntry{}, fmt.Errorf("lark user display name: code=%d msg=%q", decoded.Code, decoded.Msg)
 	}
-	return strings.TrimSpace(decoded.Data.User.Name), nil
+	user := decoded.Data.User
+	selected := map[string]string{"open_id": user.OpenID, "user_id": user.UserID, "union_id": user.UnionID}[idType]
+	if selected != "" && selected != userID {
+		return displayNameEntry{}, fmt.Errorf("lark user profile identity mismatch")
+	}
+	return displayNameEntry{name: strings.TrimSpace(user.Name), identities: uvim.NormalizeUserIdentities(
+		uvim.UserIdentity{Type: "lark.open_id", ID: user.OpenID, Scope: p.config.AppID, Source: uvim.IdentitySourceLookup},
+		uvim.UserIdentity{Type: "lark.user_id", ID: user.UserID, Source: uvim.IdentitySourceLookup},
+		uvim.UserIdentity{Type: "lark.union_id", ID: user.UnionID, Source: uvim.IdentitySourceLookup},
+	)}, nil
 }
 
 func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {

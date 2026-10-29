@@ -257,12 +257,17 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 				Type  string `json:"type"`
 				Title string `json:"title"`
 			} `json:"chat"`
-			From struct {
+			From *struct {
 				ID        int64  `json:"id"`
 				Username  string `json:"username"`
 				FirstName string `json:"first_name"`
 				LastName  string `json:"last_name"`
+				IsBot     bool   `json:"is_bot"`
 			} `json:"from"`
+			SenderChat *struct {
+				ID    int64  `json:"id"`
+				Title string `json:"title"`
+			} `json:"sender_chat"`
 			Document *telegramFile `json:"document"`
 			Audio    *telegramFile `json:"audio"`
 			Video    *telegramFile `json:"video"`
@@ -289,13 +294,28 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	}
 	refs := telegramResources(msg.Document, msg.Audio, msg.Video, msg.Photo, config)
 	text := firstNonEmpty(msg.Text, msg.Caption)
+	user := uvim.User{}
+	if msg.SenderChat != nil {
+		user.ID = fmt.Sprint(msg.SenderChat.ID)
+		user.Name = msg.SenderChat.Title
+		user.Kind = uvim.UserKindChat
+		user.Identities = uvim.NormalizeUserIdentities(uvim.UserIdentity{Type: "telegram.chat_id", ID: user.ID})
+	} else if msg.From != nil && msg.From.ID != 0 {
+		user.ID = fmt.Sprint(msg.From.ID)
+		user.Name = strings.TrimSpace(msg.From.FirstName + " " + msg.From.LastName)
+		user.DisplayName = msg.From.Username
+		if msg.From.IsBot {
+			user.Kind = uvim.UserKindBot
+		}
+		user.Identities = uvim.NormalizeUserIdentities(uvim.UserIdentity{Type: "telegram.user_id", ID: user.ID})
+	}
 	return uvim.Event{
 		ID:        fmt.Sprint(update.UpdateID),
 		Type:      uvim.EventMessageCreate,
 		Provider:  "telegram",
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: chatID, Type: channelType, Name: msg.Chat.Title},
-		User:      uvim.User{ID: fmt.Sprint(msg.From.ID), Name: strings.TrimSpace(msg.From.FirstName + " " + msg.From.LastName), DisplayName: msg.From.Username},
+		User:      user,
 		Message:   uvim.Message{ID: messageID, Text: text, Type: "message", Resources: refs},
 		Referrer:  uvim.Referrer{MessageID: messageID, ChannelID: chatID, Target: &uvim.OutboundTarget{ID: chatID, Kind: targetKind}},
 		Addressed: true,

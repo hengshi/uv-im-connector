@@ -39,6 +39,8 @@ type Config struct {
 	ConnectorID       string
 	BotID             string
 	Secret            string
+	CorpID            string
+	CorpSecret        string
 	UserNames         map[string]string
 	ConversationNames map[string]string
 	WSURL             string
@@ -66,6 +68,11 @@ type Provider struct {
 	activeConn  WSConn
 	activeWrite *sync.Mutex
 	state       string
+
+	directoryMu      sync.Mutex
+	directoryToken   string
+	directoryExpires time.Time
+	directoryUsers   map[string]directoryEntry
 }
 
 type replyLock struct {
@@ -113,6 +120,11 @@ func New(config Config) (*Provider, error) {
 	if strings.TrimSpace(config.BotID) == "" || strings.TrimSpace(config.Secret) == "" {
 		return nil, fmt.Errorf("wecom provider: bot_id and secret are required")
 	}
+	config.CorpID = strings.TrimSpace(config.CorpID)
+	config.CorpSecret = strings.TrimSpace(config.CorpSecret)
+	if (config.CorpID == "") != (config.CorpSecret == "") {
+		return nil, fmt.Errorf("wecom provider: corp_id and corp_secret must be configured together")
+	}
 	if config.ConnectorID == "" {
 		config.ConnectorID = "wecom"
 	}
@@ -134,7 +146,7 @@ func New(config Config) (*Provider, error) {
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
-	return &Provider{config: config, now: config.Now, pending: map[string]chan frame{}, replyLocks: map[string]*replyLock{}, state: "configured"}, nil
+	return &Provider{config: config, now: config.Now, pending: map[string]chan frame{}, replyLocks: map[string]*replyLock{}, directoryUsers: map[string]directoryEntry{}, state: "configured"}, nil
 }
 
 func (p *Provider) ID() string          { return "wecom" }
@@ -236,6 +248,7 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) (runErr error) 
 				if runCtx.Err() != nil {
 					return
 				}
+				p.enrichDirectoryUser(runCtx, &event)
 				if err := sink.Emit(runCtx, event); err != nil {
 					emitErr <- err
 					return
@@ -641,7 +654,9 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 		Time:      now,
 		Login:     uvim.Login{Platform: p.ID(), Connector: p.ConnectorID(), ID: p.config.BotID},
 		Channel:   uvim.Channel{ID: channelID, Type: channelType, Name: channelName},
-		User:      uvim.User{ID: userID, DisplayName: userName},
+		User: uvim.User{ID: userID, DisplayName: userName, Identities: uvim.NormalizeUserIdentities(
+			uvim.UserIdentity{Type: "wecom.callback_userid", ID: userID},
+		)},
 		Message: uvim.Message{
 			ID:        messageID,
 			Type:      msgType,

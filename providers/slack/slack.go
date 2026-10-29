@@ -253,9 +253,11 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	var env struct {
 		Type      string `json:"type"`
 		Challenge string `json:"challenge"`
+		TeamID    string `json:"team_id"`
 		Event     struct {
 			Type        string `json:"type"`
 			User        string `json:"user"`
+			BotID       string `json:"bot_id"`
 			Channel     string `json:"channel"`
 			ChannelType string `json:"channel_type"`
 			Text        string `json:"text"`
@@ -295,13 +297,23 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	if env.Event.ChannelType == "im" || strings.HasPrefix(env.Event.Channel, "D") {
 		channelType = uvim.ChannelDirect
 	}
+	user := uvim.User{ID: env.Event.User}
+	identityType := "slack.user_id"
+	if env.Event.BotID != "" {
+		user.Kind = uvim.UserKindBot
+		if user.ID == "" {
+			user.ID = env.Event.BotID
+			identityType = "slack.bot_id"
+		}
+	}
+	user.Identities = uvim.NormalizeUserIdentities(uvim.UserIdentity{Type: identityType, ID: user.ID, Scope: env.TeamID})
 	return uvim.Event{
 		ID:        id,
 		Type:      uvim.EventMessageCreate,
 		Provider:  "slack",
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: env.Event.Channel, Type: channelType},
-		User:      uvim.User{ID: env.Event.User},
+		User:      user,
 		Message:   uvim.Message{ID: id, Text: env.Event.Text, Type: "message", Resources: refs},
 		Referrer:  uvim.Referrer{MessageID: id, ChannelID: env.Event.Channel, ThreadID: env.Event.ThreadTS, Target: &uvim.OutboundTarget{ID: env.Event.Channel, Kind: uvim.TargetChannel}},
 		Addressed: true,

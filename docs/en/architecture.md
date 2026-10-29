@@ -38,6 +38,7 @@ The shared supervisor recovers WeCom and Lark WebSocket disconnects and DingTalk
 The normalized protocol has these stable objects:
 
 - `Event`: inbound event envelope with provider, connector, channel, user, message, and referrer.
+- `User.Identities`: account identifiers with type, scope and provenance, separate from conversation/send addresses; see [User identities and native addresses](./identities.md).
 - `Message`: text, structured elements, and resource references.
 - `ResourceRef`: file/image/audio/video reference with sanitized internal URL and private provider fields.
 - `OutboundMessage`: explicit target, text/elements/resources, and optional referrer for replies or threads.
@@ -48,6 +49,10 @@ The normalized protocol has these stable objects:
 `reply_message` means that an outbound message can carry an inbound event's `referrer` to reply to an existing message. `proactive_direct` and `proactive_group` mean the server can send to a direct or group target without a current inbound message. Callers should read these capabilities from `/v1/meta` instead of inferring them from a provider name.
 
 Some inbound `referrer` values contain short-lived or limited-use reply handles. `referrer.expires_at` is the provider-supplied or adapter-derived deadline, and `capabilities.reply_max_uses` is the maximum number of outbound attempts that may carry the handle; an omitted or zero maximum means that no finite use limit is declared. After the deadline or use limit, callers must remove the message/reply handle and may use `referrer.target` only when the corresponding proactive capability and target kind are available. Provider business windows without reply-handle semantics remain provider constraints and must not be treated as a generic retry of the same proactive message.
+
+Optional `target.id_type` distinguishes native address schemes and must be advertised in `capabilities.target_id_types`. Preserve it with the referrer. User identity lists do not choose destinations; see [typed native send addresses](./identities.md#typed-native-send-addresses).
+
+Optional WeCom enterprise lookup runs in the event-emission worker, with bounded token/member caching. Failures preserve the original message and do not block socket ACK dispatch. See [WeCom setup and directory identities](./guide/wecom.md) for configuration and account-verification rules.
 
 ## Provider Capability Matrix
 

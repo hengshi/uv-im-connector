@@ -472,12 +472,15 @@ func TestWhatsAppSendUploadsInternalResource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	expectedField := "to"
+	var uploads int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Header.Get("Authorization") != "Bearer token" {
 			t.Fatalf("authorization = %q", req.Header.Get("Authorization"))
 		}
 		switch req.URL.Path {
 		case "/phone1/media":
+			uploads++
 			if err := req.ParseMultipartForm(110 << 20); err != nil {
 				t.Fatal(err)
 			}
@@ -501,8 +504,11 @@ func TestWhatsAppSendUploadsInternalResource(t *testing.T) {
 			}
 			document, _ := body["document"].(map[string]any)
 			contextBody, _ := body["context"].(map[string]any)
-			if body["type"] != "document" || body["to"] != "user1" || document["id"] != "MEDIA1" || document["filename"] != "report.txt" || contextBody["message_id"] != "original" {
+			if body["type"] != "document" || body[expectedField] != "user1" || document["id"] != "MEDIA1" || document["filename"] != "report.txt" || contextBody["message_id"] != "original" {
 				t.Fatalf("message body = %+v", body)
+			}
+			if expectedField == "recipient" && body["to"] != nil {
+				t.Fatalf("BSUID also sent as phone: %+v", body)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"messages": []map[string]string{{"id": "MESSAGE1"}}})
 		default:
@@ -514,12 +520,58 @@ func TestWhatsAppSendUploadsInternalResource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := provider.Send(context.Background(), uvim.OutboundMessage{ChannelID: "user1", Resources: []uvim.ResourceRef{ref}, Referrer: uvim.Referrer{MessageID: "original"}})
-	if err != nil {
-		t.Fatal(err)
+	for _, idType := range []string{"", "whatsapp.wa_id", "whatsapp.bsuid", "whatsapp.parent_bsuid"} {
+		t.Run("resource "+idType, func(t *testing.T) {
+			expectedField = "to"
+			if idType == "whatsapp.bsuid" || idType == "whatsapp.parent_bsuid" {
+				expectedField = "recipient"
+			}
+			msg := uvim.OutboundMessage{ChannelID: "user1", Resources: []uvim.ResourceRef{ref}, Referrer: uvim.Referrer{MessageID: "original"}}
+			if idType != "" {
+				msg.Target = &uvim.OutboundTarget{ID: "user1", Kind: uvim.TargetUser, IDType: idType}
+			}
+			result, err := provider.Send(context.Background(), msg)
+			if err != nil || result.MessageID != "MESSAGE1" {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+		})
 	}
-	if result.MessageID != "MESSAGE1" {
-		t.Fatalf("result = %+v", result)
+	before := uploads
+	for _, target := range []uvim.OutboundTarget{{ID: "user1", Kind: uvim.TargetUser, IDType: "unknown"}, {ID: "group", Kind: uvim.TargetGroup, IDType: "whatsapp.bsuid"}} {
+		if _, err := provider.Send(context.Background(), uvim.OutboundMessage{Target: &target, Resources: []uvim.ResourceRef{ref}}); err == nil {
+			t.Fatal("invalid native address accepted")
+		}
+	}
+	if uploads != before {
+		t.Fatal("invalid target uploaded resource before rejection")
+	}
+}
+
+func TestWhatsAppTypedTextAddressing(t *testing.T) {
+	for _, tt := range []struct{ idType, kind, field string }{
+		{"", uvim.TargetUser, "to"}, {"whatsapp.wa_id", uvim.TargetUser, "to"},
+		{"whatsapp.bsuid", uvim.TargetUser, "recipient"}, {"whatsapp.parent_bsuid", uvim.TargetUser, "recipient"},
+		{"whatsapp.group_id", uvim.TargetGroup, "to"}, {"whatsapp.bsuid", uvim.TargetGroup, ""},
+		{"whatsapp.group_id", uvim.TargetUser, ""}, {"unknown", uvim.TargetUser, ""},
+	} {
+		t.Run(tt.idType+"/"+tt.kind, func(t *testing.T) {
+			// Use the same opaque address to prove dispatch uses the declared type.
+			msg := uvim.OutboundMessage{Referrer: uvim.Referrer{Target: &uvim.OutboundTarget{ID: "opaque", Kind: tt.kind, IDType: tt.idType}}, Text: "hi"}
+			req, err := whatsapp.Send(msg, httpchannel.Config{}, "phone1")
+			if tt.field == "" {
+				if err == nil {
+					t.Fatal("invalid kind/type accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := req.Body.(map[string]any)
+			if body[tt.field] != "opaque" || (tt.field == "recipient" && body["to"] != nil) || (tt.field == "to" && body["recipient"] != nil) {
+				t.Fatalf("body=%+v", body)
+			}
+		})
 	}
 }
 

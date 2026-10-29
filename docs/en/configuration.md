@@ -8,9 +8,12 @@ The standalone binary reads `UV_IM_*` variables.
 | `UV_IM_STATE_DIR` | Event log and resource directory. Defaults to `.uv-im-connector`. |
 | `UV_IM_PROVIDERS` | Comma-separated provider list. Supported values: `memory`, `wecom`, `lark`, `dingtalk`, `discord`, `kook`, `line`, `mail`, `matrix`, `onebot`, `qq`, `qqguild`, `slack`, `telegram`, `wechat-official`, `whatsapp`, `zulip`. |
 | `UV_IM_AUTH_TOKEN` | Optional bearer token required by all HTTP/WS endpoints except `/health`. |
+| `UV_IM_USER_IDENTITIES_FILE` | Optional JSON file of [verified account bindings](./identities.md#verified-account-bindings), selected by exact provider, connector and native user_id. Adds identity metadata only; validated and read at startup. |
 | `UV_WECOM_CONNECTOR_ID` | WeCom connector ID. Defaults to `wecom`. |
 | `UV_WECOM_BOT_ID` | WeCom bot ID. |
 | `UV_WECOM_BOT_SECRET` | WeCom bot secret. |
+| `UV_WECOM_CORP_ID` | Optional enterprise ID from My Enterprise → Enterprise Information, not AgentId. Configure with `UV_WECOM_CORP_SECRET` to enable [enterprise identity lookup](./guide/wecom.md). |
+| `UV_WECOM_CORP_SECRET` | The same enterprise's **self-built application Secret**, from Application Management → Self-built → application details, not the bot Secret. Token acquisition/refresh is automatic; application visibility and the server's trusted outbound IP are required. |
 | `UV_WECOM_WS_URL` | Optional WeCom WebSocket endpoint override. |
 | `UV_WECOM_USER_NAMES` | Optional JSON object mapping AI Bot callback `userid` values to display names, for example `{"zhangsan":"Zhang San"}`. It never changes routing or authorization. |
 | `UV_WECOM_CONVERSATION_NAMES` | Optional JSON object mapping AI Bot group `chatid` values to display names, for example `{"wrxxxx":"Engineering"}`. It affects display metadata only. |
@@ -37,11 +40,13 @@ The standalone binary reads `UV_IM_*` variables.
 
 Provider credentials are exclusive deployment identity. Production, E2E, development, and temporary debug workers must not share the same provider credential set.
 
+WeCom bot credentials and self-built application credentials have separate roles. Messaging alone does not require an application. Enterprise lookup is optional, and failures preserve the base event. See [WeCom setup and directory identities](./guide/wecom.md) for exact value locations, trusted IPs, environment injection, CLI identifier relationships and verification.
+
 Lark identity discovery calls `GET /open-apis/bot/v3/info` with the existing application credentials before opening the WebSocket. Discovery and its token request share a 15-second startup deadline; a shorter caller context or HTTPClient timeout still applies. Success logs record the identity source and bot ID; failure logs retain safe stage, error-code or transport diagnostics.
 
 Upgrade note: with both bot IDs empty, this API is a new startup prerequisite. Unknown identity does not fall back to receiving group messages. The shared supervisor retries that provider with backoff while the HTTP API and other providers remain available. To bypass identity discovery, set `UV_LARK_BOT_OPEN_ID` for the current application (or a verified union ID) and restart. This does not bypass credential validation or other startup APIs.
 
-After acknowledging an inbound callback, Lark makes best-effort cached lookups for sender and group-chat names with the existing application credentials. The application needs OpenAPI permission to read basic user and chat information. Permission or API errors omit names. Lookups have no default timeout; an unresponsive request needs caller-context cancellation or an explicitly configured HTTPClient timeout. The WeCom AI Bot callback and Bot secret provide IDs but no contact/chat-name lookup, so deployments that need names should use the explicit maps above; without them, provider-native IDs remain the fallback.
+After acknowledging an inbound callback, Lark makes best-effort cached lookups for sender and group-chat names with the existing application credentials and preserves returned open_id, user_id and union_id. Basic user/chat OpenAPI permissions apply. Errors retain callback identities and omit lookup information. Lookups have no default timeout; cancellation needs caller context or an explicit HTTPClient timeout. A WeCom Bot secret alone provides no contact/chat-name lookup; display names can use explicit name maps. Enterprise application ID conversion requires a different token. See [platform identities, conversion APIs and permissions](./identities.md).
 
 For the generic provider variables, replace `<PROVIDER>` with one of:
 

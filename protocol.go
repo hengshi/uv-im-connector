@@ -102,10 +102,33 @@ type Channel struct {
 }
 
 type User struct {
-	ID          string `json:"id,omitempty"`
-	Name        string `json:"name,omitempty"`
-	DisplayName string `json:"display_name,omitempty"`
+	ID          string         `json:"id,omitempty"`
+	Name        string         `json:"name,omitempty"`
+	DisplayName string         `json:"display_name,omitempty"`
+	Kind        string         `json:"kind,omitempty"`
+	Identities  []UserIdentity `json:"identities,omitempty"`
 }
+
+// UserIdentity is an identifier in a documented namespace. Without Scope it
+// must be interpreted within the event's provider and connector, never globally.
+type UserIdentity struct {
+	Type   string `json:"type"`
+	ID     string `json:"id"`
+	Scope  string `json:"scope,omitempty"`
+	Source string `json:"source,omitempty"`
+}
+
+const (
+	UserKindUser             = "user"
+	UserKindBot              = "bot"
+	UserKindChat             = "chat"
+	UserKindWebhook          = "webhook"
+	UserKindSystem           = "system"
+	UserKindAnonymous        = "anonymous"
+	IdentitySourceCallback   = "callback"
+	IdentitySourceLookup     = "lookup"
+	IdentitySourceConfigured = "configured"
+)
 
 type Message struct {
 	ID        string        `json:"id,omitempty"`
@@ -240,6 +263,7 @@ type Capabilities struct {
 	ProactiveDirect  bool     `json:"proactive_direct,omitempty"`
 	ProactiveGroup   bool     `json:"proactive_group,omitempty"`
 	TargetKinds      []string `json:"target_kinds,omitempty"`
+	TargetIDTypes    []string `json:"target_id_types,omitempty"`
 	EditMessage      bool     `json:"edit_message,omitempty"`
 	DeleteMessage    bool     `json:"delete_message,omitempty"`
 	UploadResource   bool     `json:"upload_resource,omitempty"`
@@ -249,8 +273,9 @@ type Capabilities struct {
 }
 
 type OutboundTarget struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"`
+	ID     string `json:"id"`
+	Kind   string `json:"kind"`
+	IDType string `json:"id_type,omitempty"`
 }
 
 type OutboundMessage struct {
@@ -274,14 +299,16 @@ type OutboundMessage struct {
 func (m OutboundMessage) ResolvedTarget() OutboundTarget {
 	if m.Target != nil {
 		return OutboundTarget{
-			ID:   strings.TrimSpace(m.Target.ID),
-			Kind: strings.ToLower(strings.TrimSpace(m.Target.Kind)),
+			ID:     strings.TrimSpace(m.Target.ID),
+			Kind:   strings.ToLower(strings.TrimSpace(m.Target.Kind)),
+			IDType: m.Target.IDType,
 		}
 	}
 	if m.Referrer.Target != nil {
 		return OutboundTarget{
-			ID:   strings.TrimSpace(m.Referrer.Target.ID),
-			Kind: strings.ToLower(strings.TrimSpace(m.Referrer.Target.Kind)),
+			ID:     strings.TrimSpace(m.Referrer.Target.ID),
+			Kind:   strings.ToLower(strings.TrimSpace(m.Referrer.Target.Kind)),
+			IDType: m.Referrer.Target.IDType,
 		}
 	}
 	target := OutboundTarget{ID: strings.TrimSpace(FirstNonEmpty(m.ChannelID, m.Referrer.ChannelID))}
@@ -319,6 +346,18 @@ func ValidateOutboundTarget(m OutboundMessage, capabilities Capabilities) error 
 		}
 	}
 	target := m.ResolvedTarget()
+	if target.IDType != "" {
+		supported := false
+		for _, idType := range capabilities.TargetIDTypes {
+			if idType == target.IDType {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			return fmt.Errorf("target id_type %q is not supported", target.IDType)
+		}
+	}
 	if target.ID == "" {
 		return fmt.Errorf("target id is required")
 	}

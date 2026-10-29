@@ -12,6 +12,7 @@ caller application -> OutboundMessage -> HTTP API -> provider adapter -> IM prov
 The core contract treats every channel equally:
 
 - Providers emit normalized events through the same event model.
+- [Typed user identities](docs/en/identities.md) preserve platform namespaces and scopes across all 16 external providers, independently of native send addresses.
 - Providers send outbound messages through the same API.
 - Files, images, audio, and video use one resource reference model.
 - Provider differences are exposed through capabilities, not product hierarchy.
@@ -30,6 +31,8 @@ The site defaults to Simplified Chinese. English documentation is served under:
 ```text
 https://hengshi.github.io/uv-im-connector/en/
 ```
+
+For WeCom, start with the [setup and directory identity guide](docs/en/guide/wecom.md) ([中文](docs/guide/wecom.md)): it distinguishes BotID, CorpID, AgentId and the two Secrets, and explains application visibility, trusted IPs and verification.
 
 Run the site locally with:
 

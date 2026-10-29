@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -318,7 +319,12 @@ func TestHubEventsAndOutbound(t *testing.T) {
 	}
 	provider := memory.New("test")
 	hub := NewHub(uvim.NewProviderRegistry(provider), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
-	if err := hub.Emit(context.Background(), uvim.Event{ID: "evt-1", Type: uvim.EventMessageCreate, Provider: "test", Message: uvim.Message{ID: "m1", Text: "hello"}}); err != nil {
+	mapper, err := uvim.NewUserIdentityMapper([]uvim.UserIdentityMapping{{Provider: "test", Connector: "main", UserID: "native", Identities: []uvim.UserIdentity{{Type: "company.employee_id", ID: "employee", Scope: "company"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.SetUserIdentityMapper(mapper)
+	if err := hub.Emit(context.Background(), uvim.Event{ID: "evt-1", Type: uvim.EventMessageCreate, Provider: "test", Connector: "main", User: uvim.User{ID: "native", Identities: []uvim.UserIdentity{{Type: "test.native", ID: "native", Source: uvim.IdentitySourceCallback}}}, Message: uvim.Message{ID: "m1", Text: "hello"}}); err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(hub.Handler())
@@ -337,6 +343,18 @@ func TestHubEventsAndOutbound(t *testing.T) {
 	}
 	if len(events.Events) != 1 || events.Events[0].Message.Text != "hello" {
 		t.Fatalf("events = %+v", events.Events)
+	}
+	wantIdentities := []uvim.UserIdentity{{Type: "test.native", ID: "native", Source: uvim.IdentitySourceCallback}, {Type: "company.employee_id", ID: "employee", Scope: "company", Source: uvim.IdentitySourceConfigured}}
+	if !reflect.DeepEqual(events.Events[0].User.Identities, wantIdentities) {
+		t.Fatalf("HTTP identities=%+v", events.Events[0].User)
+	}
+	reopened, err := uvim.NewEventLog(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := reopened.ReadAfter(context.Background(), 0)
+	if err != nil || len(replayed) != 1 || !reflect.DeepEqual(replayed[0].User.Identities, wantIdentities) {
+		t.Fatalf("persisted identities=%+v err=%v", replayed, err)
 	}
 
 	raw, _ := json.Marshal(uvim.OutboundMessage{Provider: "test", ChannelID: "c1", Text: "reply"})

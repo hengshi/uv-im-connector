@@ -8,9 +8,12 @@
 | `UV_IM_STATE_DIR` | 事件日志和资源目录，默认 `.uv-im-connector`。 |
 | `UV_IM_PROVIDERS` | 逗号分隔的 provider 列表。支持值：`memory`、`wecom`、`lark`、`dingtalk`、`discord`、`kook`、`line`、`mail`、`matrix`、`onebot`、`qq`、`qqguild`、`slack`、`telegram`、`wechat-official`、`whatsapp`、`zulip`。 |
 | `UV_IM_AUTH_TOKEN` | 可选 bearer token。配置后，除 `/health` 外所有公共 HTTP/WS endpoint 都需要该 token。 |
+| `UV_IM_USER_IDENTITIES_FILE` | 可选的[已确认账户绑定](./identities.md#经确认的账户绑定) JSON 文件；按 provider、connector、原生 user_id 精确选择，只添加身份元数据。启动时校验和读取。 |
 | `UV_WECOM_CONNECTOR_ID` | WeCom connector ID，默认 `wecom`。 |
 | `UV_WECOM_BOT_ID` | WeCom bot ID。 |
 | `UV_WECOM_BOT_SECRET` | WeCom bot secret。 |
+| `UV_WECOM_CORP_ID` | 可选企业 ID，来自管理后台「我的企业 → 企业信息」，不是 AgentId；必须与 `UV_WECOM_CORP_SECRET` 同时配置。启用[企微企业身份查询](./guide/wecom.md)。 |
+| `UV_WECOM_CORP_SECRET` | 同企业**自建应用的 Secret**，来自「应用管理 → 自建 → 应用详情」，不是机器人 Secret。程序自动申请/刷新 token；需应用可见范围和运行服务器的可信出口 IP。 |
 | `UV_WECOM_WS_URL` | 可选 WeCom WebSocket endpoint override。 |
 | `UV_WECOM_USER_NAMES` | 可选 JSON 对象，把 AI Bot 回调中的 `userid` 映射为展示名，例如 `{"zhangsan":"张三"}`。只影响事件展示字段，不影响路由或授权。 |
 | `UV_WECOM_CONVERSATION_NAMES` | 可选 JSON 对象，把 AI Bot 回调中的群 `chatid` 映射为展示名，例如 `{"wrxxxx":"研发群"}`。只影响事件展示字段。 |
@@ -37,11 +40,13 @@
 
 Provider credentials 是独占 deployment identity。Production、E2E、development 和临时 debug worker 不应共用同一套 provider credentials。
 
+企微 BotID/Secret 与自建应用凭据属于两套身份。仅收发消息时无需配置自建应用；企业账号查询是可选能力，查询失败仍发布基础事件。完整的取值位置、可信 IP、环境注入、CLI 标识关系和验证步骤见[企微接入与通讯录](./guide/wecom.md)。
+
 Lark 身份自动查询通过现有应用凭据调用 `GET /open-apis/bot/v3/info`，在打开 WebSocket 前完成；身份查询及所需 token 请求共用 15 秒启动时限（调用方更短的 context 或 HTTPClient 超时仍生效）。成功日志记录身份来源和 bot ID，失败日志保留安全的阶段、错误码或传输原因。
 
 升级注意：两个 bot ID 都留空时，该 API 是新的启动前置依赖。身份无法确认时不会降级接收群消息；共享监督器会退避重试该 provider，HTTP API 和其他 provider 保持运行。若需跳过身份查询，可设置与当前应用对应的 `UV_LARK_BOT_OPEN_ID`（或已核实的 union ID），再重启服务；这不会绕过应用凭据校验或其他启动 API。
 
-Lark 入站事件会在确认回调后，使用现有应用凭据对发送人和群聊名称做可失败的缓存查询。应用需要具备读取用户基本信息和群聊信息的 OpenAPI 权限；权限缺失或 API 返回错误时，事件省略名称；查询没有默认超时，无响应的请求需由调用方 context 或显式 HTTPClient 超时取消。企业微信 AI Bot 长连接回调及其 Bot secret 不提供通讯录或群聊名称查询能力，因此需要名称时使用上面的显式映射；未配置时保留 provider-native ID。
+Lark 入站事件会在确认回调后，使用现有应用凭据对发送人和群聊名称做可失败的缓存查询，并保留实际返回的 open_id、user_id、union_id。应用需要具备读取用户基本信息和群聊信息的 OpenAPI 权限；权限缺失或 API 返回错误时保留回调身份，省略查询所得信息；查询没有默认超时，无响应的请求需由调用方 context 或显式 HTTPClient 超时取消。企业微信 Bot secret 本身不提供通讯录或群聊名称查询，因此展示名可使用显式名称映射；企业自建应用的 ID 转换需要另一种 token，详见[各平台身份、转换接口和权限](./identities.md)。
 
 通用 provider 变量中的 `<PROVIDER>` 替换为以下值之一：
 

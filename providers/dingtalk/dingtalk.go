@@ -69,6 +69,9 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		MsgID            string `json:"msgId"`
 		MsgType          string `json:"msgtype"`
 		SenderStaffID    string `json:"senderStaffId"`
+		SenderUnionID    string `json:"senderUnionId"`
+		SenderID         string `json:"senderId"`
+		SenderCorpID     string `json:"senderCorpId"`
 		SenderNick       string `json:"senderNick"`
 		ConversationID   string `json:"conversationId"`
 		ConversationType string `json:"conversationType"`
@@ -96,6 +99,17 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		channelType = uvim.ChannelDirect
 		target = uvim.OutboundTarget{ID: msg.SenderStaffID, Kind: uvim.TargetUser}
 	}
+	var replyTarget *uvim.OutboundTarget
+	if target.ID != "" {
+		replyTarget = &target
+	}
+	user := uvim.User{ID: firstNonEmpty(msg.SenderStaffID, msg.SenderID, msg.SenderUnionID), Name: msg.SenderNick,
+		Identities: uvim.NormalizeUserIdentities(
+			uvim.UserIdentity{Type: "dingtalk.userid", ID: msg.SenderStaffID, Scope: msg.SenderCorpID},
+			uvim.UserIdentity{Type: "dingtalk.unionid", ID: msg.SenderUnionID},
+			uvim.UserIdentity{Type: "dingtalk.sender_id", ID: msg.SenderID},
+		),
+	}
 	text := firstNonEmpty(msg.Text.Content, dingtalkContentText(msg.MsgType, msg.Content))
 	refs := dingtalkResources(config, msg.RobotCode, msg.MsgType, msg.Content, msg.Image, msg.File, msg.Video, msg.Voice)
 	var expiresAt *time.Time
@@ -109,9 +123,9 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Provider:  "dingtalk",
 		Connector: config.ConnectorID,
 		Channel:   uvim.Channel{ID: msg.ConversationID, Type: channelType},
-		User:      uvim.User{ID: msg.SenderStaffID, Name: msg.SenderNick},
+		User:      user,
 		Message:   uvim.Message{ID: msg.MsgID, Text: strings.TrimSpace(text), Type: uvim.FirstNonEmpty(msg.MsgType, "text"), Resources: refs},
-		Referrer:  uvim.Referrer{MessageID: msg.MsgID, ChannelID: msg.ConversationID, ReplyToken: msg.SessionWebhook, ExpiresAt: expiresAt, Target: &target},
+		Referrer:  uvim.Referrer{MessageID: msg.MsgID, ChannelID: msg.ConversationID, ReplyToken: msg.SessionWebhook, ExpiresAt: expiresAt, Target: replyTarget},
 		Addressed: true,
 	}, true, nil
 }

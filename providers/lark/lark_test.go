@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -302,7 +303,7 @@ func TestEnrichEventDisplayNamesUsesLarkAPIsAndCache(t *testing.T) {
 			if req.URL.Query().Get("user_id_type") != "open_id" {
 				t.Errorf("user_id_type = %q", req.URL.Query().Get("user_id_type"))
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"user": map[string]any{"name": "张三"}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"user": map[string]any{"name": "张三", "open_id": "ou_sender", "user_id": "staff", "union_id": "union"}}})
 		default:
 			t.Errorf("unexpected path %s", req.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -320,6 +321,11 @@ func TestEnrichEventDisplayNamesUsesLarkAPIsAndCache(t *testing.T) {
 		if event.Channel.Name != "研发群" || event.User.DisplayName != "张三" {
 			t.Fatalf("event = %+v", event)
 		}
+		want := []uvim.UserIdentity{{Type: "lark.open_id", ID: "ou_sender", Scope: "app", Source: uvim.IdentitySourceLookup}, {Type: "lark.user_id", ID: "staff", Source: uvim.IdentitySourceLookup}, {Type: "lark.union_id", ID: "union", Source: uvim.IdentitySourceLookup}}
+		if !reflect.DeepEqual(event.User.Identities, want) {
+			t.Fatalf("profile/cache identities=%+v", event.User.Identities)
+		}
+		event.User.Identities[0].ID = "caller-mutation"
 	}
 	direct := uvim.Event{Channel: uvim.Channel{ID: "oc_direct", Type: uvim.ChannelDirect}, User: uvim.User{ID: "ou_sender"}}
 	provider.enrichEventDisplayNames(context.Background(), &direct)
@@ -329,6 +335,52 @@ func TestEnrichEventDisplayNamesUsesLarkAPIsAndCache(t *testing.T) {
 	}
 	if tokenRequests != 1 || chatRequests != 1 || userRequests != 1 {
 		t.Fatalf("requests token=%d chat=%d user=%d", tokenRequests, chatRequests, userRequests)
+	}
+}
+
+func TestDecodePayloadPreservesIdentityNamespacesAndScopes(t *testing.T) {
+	raw := []byte(`{"header":{"event_id":"evt","event_type":"im.message.receive_v1","app_id":"app","tenant_key":"tenant"},"event":{"sender":{"sender_type":"user","sender_id":{"open_id":"open","user_id":"staff","union_id":"union"}},"message":{"message_id":"m","chat_id":"chat","chat_type":"p2p","message_type":"text","content":"{\"text\":\"hi\"}"}}}`)
+	want := []uvim.UserIdentity{{Type: "lark.open_id", ID: "open", Scope: "app", Source: uvim.IdentitySourceCallback}, {Type: "lark.user_id", ID: "staff", Scope: "tenant", Source: uvim.IdentitySourceCallback}, {Type: "lark.union_id", ID: "union", Source: uvim.IdentitySourceCallback}}
+	for _, tt := range []struct{ senderType, kind string }{{"user", ""}, {"bot", uvim.UserKindBot}} {
+		t.Run(tt.senderType, func(t *testing.T) {
+			payload := bytes.Replace(raw, []byte(`"sender_type":"user"`), []byte(`"sender_type":"`+tt.senderType+`"`), 1)
+			event, ok, err := DecodePayload(payload, DecoderConfig{Connector: "main"})
+			if err != nil || !ok {
+				t.Fatalf("decode ok=%v err=%v", ok, err)
+			}
+			if event.User.ID != "open" || event.User.Kind != tt.kind || !reflect.DeepEqual(event.User.Identities, want) || event.Referrer.Target.ID != "chat" {
+				t.Fatalf("event user=%+v target=%+v, want kind=%q", event.User, event.Referrer.Target, tt.kind)
+			}
+		})
+	}
+}
+
+func TestLarkProfileLookupUsesExplicitIDTypeAndIsolatesCache(t *testing.T) {
+	requests := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+			return
+		}
+		idType := req.URL.Query().Get("user_id_type")
+		requests[idType]++
+		// Identical opaque strings in different namespaces are separate lookups.
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"user": map[string]any{"name": idType, idType: "same", "open_id": "open-" + idType}}})
+	}))
+	defer server.Close()
+	provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, idType := range []string{"user_id", "union_id", "user_id"} {
+		event := uvim.Event{User: uvim.User{ID: "same", Identities: []uvim.UserIdentity{{Type: "lark." + idType, ID: "same", Scope: "issuer", Source: uvim.IdentitySourceCallback}}}}
+		provider.enrichEventDisplayNames(context.Background(), &event)
+		if event.User.DisplayName != idType || event.User.ID != "same" || event.User.Identities[0].Scope != "issuer" || len(event.User.Identities) != 2 {
+			t.Fatalf("user=%+v", event.User)
+		}
+	}
+	if requests["user_id"] != 1 || requests["union_id"] != 1 || requests["open_id"] != 0 {
+		t.Fatalf("requests=%v", requests)
 	}
 }
 

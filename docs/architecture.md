@@ -38,6 +38,7 @@ WeCom、Lark WebSocket 断线及 DingTalk Stream 首次启动失败由共享监�
 标准协议包含这些稳定对象：
 
 - `Event`：入站事件 envelope，包含 provider、connector、channel、user、message 和 referrer。
+- `User.Identities`：带类型、作用域和来源的账户身份，详见 [用户身份与原生地址](./identities.md)；与会话、发送地址分别建模。
 - `Message`：文本、结构化 elements 和 resource references。
 - `ResourceRef`：文件 / 图片 / 音频 / 视频引用，包含 sanitized internal URL 和 provider-private 字段。
 - `OutboundMessage`：显式 `target`、text/elements/resources，以及用于 reply/thread 的可选 referrer。
@@ -48,6 +49,10 @@ WeCom、Lark WebSocket 断线及 DingTalk Stream 首次启动失败由共享监�
 `reply_message` 表示可以携带入站事件的 `referrer` 回复已有消息；`proactive_direct` 和 `proactive_group` 表示没有当前入站消息时，Server 能否主动发送私聊或群聊消息。调用方应从 `/v1/meta` 读取这些能力，不应根据 provider 名称推断。
 
 部分入站 `referrer` 带有短效或限次 reply handle。`referrer.expires_at` 表示 provider 给出或 adapter 推导的截止时间；`capabilities.reply_max_uses` 表示该 handle 最多可用于多少次出站尝试，字段缺失或为 `0` 表示没有声明有限次数。超过截止时间或次数后，调用方必须移除 message / reply handle，并且只能在对应主动发送能力和 target kind 可用时改用 `referrer.target`。不具备 reply-handle 语义的平台业务会话窗口仍属于 provider 限制，不能统一重试为同一条主动消息。
+
+可选的 `target.id_type` 区分实际原生地址方案，只接受 `capabilities.target_id_types` 声明的值；必须随 referrer 一起保留。用户身份列表不用于自动选路，详见[带类型的原生发送地址](./identities.md#带类型的原生发送地址)。
+
+WeCom 的可选企业身份查询在事件发送 worker 中完成；应用 token 和成员查询有界缓存，查询失败仍发布原始消息，不阻塞 socket ACK 调度。配置和账号核验规则见[企微接入与通讯录](./guide/wecom.md)。
 
 ## Provider 能力矩阵
 
