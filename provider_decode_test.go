@@ -32,9 +32,11 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 		channelType string
 		wantText    string
 		wantRefs    int
+		wantIDs     [3]string
 	}{
 		{
 			name:        "dingtalk",
+			wantIDs:     [3]string{"u1", "c1", "m1"},
 			decode:      dingtalk.Decode,
 			raw:         `{"msgId":"m1","msgtype":"image","senderStaffId":"u1","senderNick":"Ada","conversationId":"c1","conversationType":"2","text":{"content":" hello "},"image":{"url":"https://cdn.test/pic.png","mime":"image/png","fileName":"pic.png","size":3}}`,
 			want:        "dingtalk",
@@ -44,6 +46,7 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 		},
 		{
 			name:        "discord",
+			wantIDs:     [3]string{"u1", "c1", "m1"},
 			decode:      discord.Decode,
 			raw:         `{"id":"m1","channel_id":"c1","guild_id":"g1","content":"hello","author":{"id":"u1","username":"Ada"},"attachments":[{"id":"a1","filename":"pic.png","url":"https://cdn.test/pic.png","content_type":"image/png","size":3}]}`,
 			want:        "discord",
@@ -53,6 +56,7 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 		},
 		{
 			name:        "kook",
+			wantIDs:     [3]string{"u1", "c1", "m1"},
 			decode:      kook.Decode,
 			raw:         `{"s":0,"d":{"msg_id":"m1","target_id":"c1","author_id":"u1","content":"https://cdn.test/pic.png","type":2}}`,
 			want:        "kook",
@@ -62,6 +66,7 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 		},
 		{
 			name:        "line",
+			wantIDs:     [3]string{"u1", "c1", "m1"},
 			decode:      line.Decode,
 			raw:         `{"events":[{"replyToken":"r1","source":{"type":"group","userId":"u1","groupId":"c1"},"message":{"id":"m1","type":"image","text":"hello","fileName":"pic.png","fileSize":3}}]}`,
 			want:        "line",
@@ -71,6 +76,7 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 		},
 		{
 			name:        "mail",
+			wantIDs:     [3]string{"ada@example.test", "ada@example.test", "m1"},
 			decode:      mailprovider.Decode,
 			raw:         `{"id":"m1","from":"ada@example.test","from_name":"Ada","to":"bot@example.test","subject":"Hi","text":"hello","attachments":[{"id":"a1","name":"pic.png","url":"https://cdn.test/pic.png","mime":"image/png","size":3}]}`,
 			want:        "mail",
@@ -80,6 +86,7 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 		},
 		{
 			name:        "matrix",
+			wantIDs:     [3]string{"@ada:matrix.test", "!room:matrix.test", "m1"},
 			decode:      matrix.Decode,
 			config:      httpchannel.Config{BaseURL: "https://matrix.test"},
 			raw:         `{"event_id":"m1","room_id":"!room:matrix.test","sender":"@ada:matrix.test","type":"m.room.message","content":{"body":"pic.png","msgtype":"m.image","url":"mxc://matrix.test/media","info":{"mimetype":"image/png","size":3}}}`,
@@ -90,6 +97,7 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 		},
 		{
 			name:        "onebot",
+			wantIDs:     [3]string{"2", "3", "1"},
 			decode:      onebot.Decode,
 			raw:         `{"post_type":"message","message_type":"group","message_id":1,"user_id":2,"group_id":3,"raw_message":"hello","message":[{"type":"image","data":{"url":"https://cdn.test/pic.png","file":"pic.png"}}]}`,
 			want:        "onebot",
@@ -99,6 +107,7 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 		},
 		{
 			name:        "qq",
+			wantIDs:     [3]string{"2", "3", "1"},
 			decode:      qq.Decode,
 			raw:         `{"post_type":"message","message_type":"group","message_id":1,"user_id":2,"group_id":3,"raw_message":"hello","sender":{"nickname":"Ada"},"message":[{"type":"image","data":{"url":"https://cdn.test/pic.png","file":"pic.png"}}]}`,
 			want:        "qq",
@@ -108,6 +117,7 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 		},
 		{
 			name:        "qqguild",
+			wantIDs:     [3]string{"u1", "c1", "m1"},
 			decode:      qqguild.Decode,
 			raw:         `{"id":"m1","channel_id":"c1","content":"hello","author":{"id":"u1","username":"Ada"},"attachments":[{"id":"a1","filename":"pic.png","url":"https://cdn.test/pic.png","content_type":"image/png","size":3}]}`,
 			want:        "qqguild",
@@ -117,6 +127,7 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 		},
 		{
 			name:        "slack",
+			wantIDs:     [3]string{"u1", "c1", "m1"},
 			decode:      slack.Decode,
 			raw:         `{"type":"event_callback","event":{"type":"message","user":"u1","channel":"c1","text":"hello","ts":"m1","files":[{"id":"a1","name":"pic.png","url_private_download":"https://cdn.test/pic.png","mimetype":"image/png","size":3}]}}`,
 			want:        "slack",
@@ -126,6 +137,7 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 		},
 		{
 			name:        "telegram",
+			wantIDs:     [3]string{"3", "2", "1"},
 			decode:      telegram.Decode,
 			raw:         `{"update_id":99,"message":{"message_id":1,"text":"hello","chat":{"id":2,"type":"private"},"from":{"id":3,"first_name":"Ada"}}}`,
 			want:        "telegram",
@@ -134,6 +146,7 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 		},
 		{
 			name:        "wechat-official",
+			wantIDs:     [3]string{"u1", "u1", "m1"},
 			decode:      wechatofficial.Decode,
 			raw:         `<xml><ToUserName>bot</ToUserName><FromUserName>u1</FromUserName><CreateTime>1</CreateTime><MsgType>image</MsgType><PicUrl>https://cdn.test/pic.png</PicUrl><MediaId>media1</MediaId><MsgId>m1</MsgId></xml>`,
 			want:        "wechat-official",
@@ -142,6 +155,7 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 		},
 		{
 			name:        "whatsapp",
+			wantIDs:     [3]string{"u1", "u1", "m1"},
 			decode:      whatsapp.Decode,
 			raw:         `{"entry":[{"changes":[{"value":{"messages":[{"id":"m1","from":"u1","type":"image","text":{"body":"hello"},"image":{"id":"media1","mime_type":"image/png","caption":"pic"}}]}}]}]}`,
 			want:        "whatsapp",
@@ -151,6 +165,7 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 		},
 		{
 			name:        "whatsapp group",
+			wantIDs:     [3]string{"u1", "g1", "m1"},
 			decode:      whatsapp.Decode,
 			raw:         `{"entry":[{"changes":[{"value":{"messages":[{"id":"m1","from":"u1","type":"text","text":{"body":"hello"},"context":{"group_id":"g1","group_subject":"Team"}}]}}]}]}`,
 			want:        "whatsapp",
@@ -159,6 +174,7 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 		},
 		{
 			name:        "zulip",
+			wantIDs:     [3]string{"2", "3", "1"},
 			decode:      zulip.Decode,
 			config:      httpchannel.Config{BaseURL: "https://zulip.test"},
 			raw:         `{"id":1,"sender_id":2,"sender_full_name":"Ada","stream_id":3,"subject":"general","content":"hello","type":"stream","attachments":[{"id":"a1","name":"pic.png","path":"/user_uploads/pic.png","mime_type":"image/png","size":3}]}`,
@@ -199,10 +215,10 @@ func TestProviderDecodersNormalizeInboundMessages(t *testing.T) {
 			if event.Message.Text != tt.wantText {
 				t.Fatalf("message text = %q", event.Message.Text)
 			}
-			if event.Referrer.MessageID == "" || event.Referrer.ChannelID == "" {
+			if event.User.ID != tt.wantIDs[0] || event.Channel.ID != tt.wantIDs[1] || event.Message.ID != tt.wantIDs[2] || event.Referrer.MessageID != tt.wantIDs[2] || event.Referrer.ChannelID != tt.wantIDs[1] {
 				t.Fatalf("referrer missing: %+v", event.Referrer)
 			}
-			if event.Referrer.Target == nil || event.Referrer.Target.ID == "" || event.Referrer.Target.Kind == "" {
+			if event.Referrer.Target == nil || event.Referrer.Target.ID != tt.wantIDs[1] || event.Referrer.Target.Kind == "" {
 				t.Fatalf("reply target missing: event=%+v referrer=%+v", event.Channel, event.Referrer)
 			}
 			if len(event.Message.Resources) != tt.wantRefs {
@@ -320,20 +336,21 @@ func TestProviderDecodersNormalizeDirectMessages(t *testing.T) {
 		decode   httpchannel.DecodeFunc
 		raw      string
 		wantName string
+		wantIDs  [4]string
 	}{
-		{name: "dingtalk", decode: dingtalk.Decode, raw: `{"msgId":"m1","msgtype":"text","senderStaffId":"u1","senderNick":"Ada","conversationId":"c1","conversationType":"1","text":{"content":"hello"}}`, wantName: "Ada"},
-		{name: "discord", decode: discord.Decode, raw: `{"id":"m1","channel_id":"D1","content":"hello","author":{"id":"u1","username":"Ada"}}`, wantName: "Ada"},
-		{name: "kook", decode: kook.Decode, raw: `{"d":{"msg_id":"m1","channel_type":"PERSON","target_id":"bot1","author_id":"u1","content":"hello","type":1,"extra":{"author":{"id":"u1","username":"ada","nickname":"Ada"}}}}`, wantName: "Ada"},
-		{name: "line", decode: line.Decode, raw: `{"events":[{"replyToken":"r1","source":{"type":"user","userId":"u1"},"message":{"id":"m1","type":"text","text":"hello"}}]}`},
-		{name: "mail", decode: mailprovider.Decode, raw: `{"id":"m1","from":"ada@example.test","from_name":"Ada","text":"hello"}`, wantName: "Ada"},
-		{name: "onebot", decode: onebot.Decode, raw: `{"post_type":"message","message_type":"private","message_id":1,"user_id":2,"raw_message":"hello","sender":{"nickname":"Ada"}}`, wantName: "Ada"},
-		{name: "qq", decode: qq.Decode, raw: `{"post_type":"message","message_type":"private","message_id":1,"user_id":2,"raw_message":"hello","sender":{"nickname":"Ada"}}`, wantName: "Ada"},
-		{name: "qqguild", decode: qqguild.Decode, raw: `{"id":"m1","content":"hello","author":{"id":"u1","username":"Ada"}}`, wantName: "Ada"},
-		{name: "slack", decode: slack.Decode, raw: `{"type":"event_callback","event":{"type":"message","user":"u1","channel":"D1","channel_type":"im","text":"hello","ts":"m1"}}`},
-		{name: "telegram", decode: telegram.Decode, raw: `{"update_id":99,"message":{"message_id":1,"text":"hello","chat":{"id":2,"type":"private"},"from":{"id":3,"first_name":"Ada"}}}`, wantName: "Ada"},
-		{name: "wechat-official", decode: wechatofficial.Decode, raw: `<xml><ToUserName>bot</ToUserName><FromUserName>u1</FromUserName><CreateTime>1</CreateTime><MsgType>text</MsgType><Content>hello</Content><MsgId>m1</MsgId></xml>`},
-		{name: "whatsapp", decode: whatsapp.Decode, raw: `{"entry":[{"changes":[{"value":{"contacts":[{"profile":{"name":"Ada"},"wa_id":"u1"}],"messages":[{"id":"m1","from":"u1","type":"text","text":{"body":"hello"}}]}}]}]}`, wantName: "Ada"},
-		{name: "zulip", decode: zulip.Decode, raw: `{"id":1,"sender_id":2,"sender_email":"ada@example.test","sender_full_name":"Ada","content":"hello","type":"private"}`, wantName: "Ada"},
+		{name: "dingtalk", wantIDs: [4]string{"u1", "c1", "m1", "u1"}, decode: dingtalk.Decode, raw: `{"msgId":"m1","msgtype":"text","senderStaffId":"u1","senderNick":"Ada","conversationId":"c1","conversationType":"1","text":{"content":"hello"}}`, wantName: "Ada"},
+		{name: "discord", wantIDs: [4]string{"u1", "D1", "m1", "D1"}, decode: discord.Decode, raw: `{"id":"m1","channel_id":"D1","content":"hello","author":{"id":"u1","username":"Ada"}}`, wantName: "Ada"},
+		{name: "kook", wantIDs: [4]string{"u1", "u1", "m1", "u1"}, decode: kook.Decode, raw: `{"d":{"msg_id":"m1","channel_type":"PERSON","target_id":"bot1","author_id":"u1","content":"hello","type":1,"extra":{"author":{"id":"u1","username":"ada","nickname":"Ada"}}}}`, wantName: "Ada"},
+		{name: "line", wantIDs: [4]string{"u1", "u1", "m1", "u1"}, decode: line.Decode, raw: `{"events":[{"replyToken":"r1","source":{"type":"user","userId":"u1"},"message":{"id":"m1","type":"text","text":"hello"}}]}`},
+		{name: "mail", wantIDs: [4]string{"ada@example.test", "ada@example.test", "m1", "ada@example.test"}, decode: mailprovider.Decode, raw: `{"id":"m1","from":"ada@example.test","from_name":"Ada","text":"hello"}`, wantName: "Ada"},
+		{name: "onebot", wantIDs: [4]string{"2", "2", "1", "2"}, decode: onebot.Decode, raw: `{"post_type":"message","message_type":"private","message_id":1,"user_id":2,"raw_message":"hello","sender":{"nickname":"Ada"}}`, wantName: "Ada"},
+		{name: "qq", wantIDs: [4]string{"2", "2", "1", "2"}, decode: qq.Decode, raw: `{"post_type":"message","message_type":"private","message_id":1,"user_id":2,"raw_message":"hello","sender":{"nickname":"Ada"}}`, wantName: "Ada"},
+		{name: "qqguild", wantIDs: [4]string{"u1", "u1", "m1", "u1"}, decode: qqguild.Decode, raw: `{"id":"m1","content":"hello","author":{"id":"u1","username":"Ada"}}`, wantName: "Ada"},
+		{name: "slack", wantIDs: [4]string{"u1", "D1", "m1", "D1"}, decode: slack.Decode, raw: `{"type":"event_callback","event":{"type":"message","user":"u1","channel":"D1","channel_type":"im","text":"hello","ts":"m1"}}`},
+		{name: "telegram", wantIDs: [4]string{"3", "2", "1", "2"}, decode: telegram.Decode, raw: `{"update_id":99,"message":{"message_id":1,"text":"hello","chat":{"id":2,"type":"private"},"from":{"id":3,"first_name":"Ada"}}}`, wantName: "Ada"},
+		{name: "wechat-official", wantIDs: [4]string{"u1", "u1", "m1", "u1"}, decode: wechatofficial.Decode, raw: `<xml><ToUserName>bot</ToUserName><FromUserName>u1</FromUserName><CreateTime>1</CreateTime><MsgType>text</MsgType><Content>hello</Content><MsgId>m1</MsgId></xml>`},
+		{name: "whatsapp", wantIDs: [4]string{"u1", "u1", "m1", "u1"}, decode: whatsapp.Decode, raw: `{"entry":[{"changes":[{"value":{"contacts":[{"profile":{"name":"Ada"},"wa_id":"u1"}],"messages":[{"id":"m1","from":"u1","type":"text","text":{"body":"hello"}}]}}]}]}`, wantName: "Ada"},
+		{name: "zulip", wantIDs: [4]string{"2", "ada@example.test", "1", "ada@example.test"}, decode: zulip.Decode, raw: `{"id":1,"sender_id":2,"sender_email":"ada@example.test","sender_full_name":"Ada","content":"hello","type":"private"}`, wantName: "Ada"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -345,13 +362,13 @@ func TestProviderDecodersNormalizeDirectMessages(t *testing.T) {
 				t.Fatal("decode ok = false")
 			}
 			event = event.Sanitized()
-			if event.Channel.Type != uvim.ChannelDirect || event.Channel.ID == "" || event.User.ID == "" {
+			if event.Channel.Type != uvim.ChannelDirect || event.Channel.ID != tt.wantIDs[1] || event.User.ID != tt.wantIDs[0] || event.Message.ID != tt.wantIDs[2] || event.Message.Text != "hello" {
 				t.Fatalf("event = %+v", event)
 			}
 			if event.User.Name != tt.wantName || event.Channel.Name != tt.wantName {
 				t.Fatalf("display names user=%q channel=%q, want %q", event.User.Name, event.Channel.Name, tt.wantName)
 			}
-			if event.Referrer.Target == nil || event.Referrer.Target.ID == "" || event.Referrer.Target.Kind == "" {
+			if event.Referrer.Target == nil || event.Referrer.Target.ID != tt.wantIDs[3] || event.Referrer.Target.Kind == "" {
 				t.Fatalf("reply target missing: %+v", event.Referrer)
 			}
 		})

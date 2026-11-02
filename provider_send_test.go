@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	uvim "github.com/hengshi/uv-im-connector"
@@ -28,33 +30,6 @@ import (
 	"github.com/hengshi/uv-im-connector/providers/whatsapp"
 	"github.com/hengshi/uv-im-connector/providers/zulip"
 )
-
-func TestSlackSendUsesBearerJSON(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/api/chat.postMessage" {
-			t.Fatalf("path = %s", req.URL.Path)
-		}
-		if got := req.Header.Get("Authorization"); got != "Bearer token" {
-			t.Fatalf("authorization = %q", got)
-		}
-		var body map[string]any
-		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-			t.Fatal(err)
-		}
-		if body["channel"] != "c1" || body["text"] != "hello" || body["thread_ts"] != "m1" {
-			t.Fatalf("body = %+v", body)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "channel": "c1", "ts": "m2"})
-	}))
-	defer server.Close()
-	provider, err := slack.New(slack.Config{BaseURL: server.URL, Token: "token"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.Send(context.Background(), uvim.OutboundMessage{Provider: "slack", ChannelID: "c1", Text: "hello", Referrer: uvim.Referrer{MessageID: "m1"}}); err != nil {
-		t.Fatal(err)
-	}
-}
 
 func TestSlackSendUploadsInternalResource(t *testing.T) {
 	store := &uvim.ResourceStore{Dir: t.TempDir()}
@@ -114,26 +89,6 @@ func TestSlackSendUploadsInternalResource(t *testing.T) {
 	}
 }
 
-func TestDiscordSendUsesBotAuthorization(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/api/v10/channels/c1/messages" {
-			t.Fatalf("path = %s", req.URL.Path)
-		}
-		if got := req.Header.Get("Authorization"); got != "Bot token" {
-			t.Fatalf("authorization = %q", got)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": "m1"})
-	}))
-	defer server.Close()
-	provider, err := discord.New(discord.Config{BaseURL: server.URL, Token: "token"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.Send(context.Background(), uvim.OutboundMessage{Provider: "discord", ChannelID: "c1", ChannelType: uvim.ChannelDirect, Text: "hello"}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestDiscordSendUploadsInternalResource(t *testing.T) {
 	store := &uvim.ResourceStore{Dir: t.TempDir()}
 	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
@@ -183,23 +138,6 @@ func TestDiscordSendUploadsInternalResource(t *testing.T) {
 	}
 }
 
-func TestDiscordSendAcceptsPrefixedBotAuthorization(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if got := req.Header.Get("Authorization"); got != "Bot token" {
-			t.Fatalf("authorization = %q", got)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": "m1"})
-	}))
-	defer server.Close()
-	provider, err := discord.New(discord.Config{BaseURL: server.URL, Token: "Bot token"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.Send(context.Background(), uvim.OutboundMessage{Provider: "discord", ChannelID: "c1", Text: "hello"}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestDiscordProactiveUserCreatesDMThenSends(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -216,6 +154,13 @@ func TestDiscordProactiveUserCreatesDMThenSends(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "dm1"})
 		case "/api/v10/channels/dm1/messages":
+			var body map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			if body["content"] != "hello" {
+				t.Errorf("DM message body = %+v", body)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "m1"})
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -575,58 +520,6 @@ func TestWhatsAppTypedTextAddressing(t *testing.T) {
 	}
 }
 
-func TestTelegramSendUsesTokenPathWithoutBearer(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/bottoken/sendMessage" {
-			t.Fatalf("path = %s", req.URL.Path)
-		}
-		if got := req.Header.Get("Authorization"); got != "" {
-			t.Fatalf("authorization = %q", got)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]any{"message_id": 42}})
-	}))
-	defer server.Close()
-	provider, err := telegram.New(telegram.Config{BaseURL: server.URL, Token: "token"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.Send(context.Background(), uvim.OutboundMessage{Provider: "telegram", ChannelID: "c1", Text: "hello"}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestZulipSendUsesFormEncoding(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path != "/api/v1/messages" {
-			t.Fatalf("path = %s", req.URL.Path)
-		}
-		if got := req.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/x-www-form-urlencoded") {
-			t.Fatalf("content-type = %q", got)
-		}
-		raw, err := io.ReadAll(req.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if body := string(raw); !strings.Contains(body, "type=stream") || !strings.Contains(body, "topic=general") {
-			t.Fatalf("body = %q", body)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"result": "success", "msg": "", "id": 42})
-	}))
-	defer server.Close()
-	provider, err := zulip.New(zulip.Config{BaseURL: server.URL, Token: "Basic token"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.Send(context.Background(), uvim.OutboundMessage{
-		Provider: "zulip",
-		Target:   &uvim.OutboundTarget{Kind: uvim.TargetGroup, ID: "c1"},
-		Text:     "hello",
-		Referrer: uvim.Referrer{ThreadID: "general"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestZulipSendUploadsInternalResource(t *testing.T) {
 	store := &uvim.ResourceStore{Dir: t.TempDir()}
 	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
@@ -679,126 +572,220 @@ func TestZulipSendUploadsInternalResource(t *testing.T) {
 }
 
 func TestProviderOutboundTargetRequestShapes(t *testing.T) {
-	tests := []struct {
-		name  string
-		build func() (httpchannel.Request, error)
-		path  string
-		check func(*testing.T, httpchannel.Request)
+	// Exercise Provider.Send, including HTTP serialization, authentication and receipts.
+	providers := map[string]struct {
+		new                 func(string, string) (uvim.Provider, error)
+		response, messageID string
 	}{
-		{name: "dingtalk group", path: "/robot/send?access_token=token", build: func() (httpchannel.Request, error) {
-			return dingtalk.Send(targetMessage(uvim.TargetGroup, "g1"), httpchannel.Config{Token: "token"})
-		}},
-		{name: "dingtalk session reply", path: "/robot/sendBySession?session=s1", build: func() (httpchannel.Request, error) {
-			msg := targetMessage(uvim.TargetUser, "u1")
-			msg.Referrer.ReplyToken = "https://oapi.dingtalk.com/robot/sendBySession?session=s1"
-			return dingtalk.Send(msg, httpchannel.Config{BaseURL: "https://oapi.dingtalk.com"})
-		}},
-		{name: "discord channel", path: "/api/v10/channels/c1/messages", build: func() (httpchannel.Request, error) {
-			return discord.Send(targetMessage(uvim.TargetChannel, "c1"), httpchannel.Config{})
-		}},
-		{name: "kook direct", path: "/api/v3/direct-message/create", build: func() (httpchannel.Request, error) {
-			return kook.Send(targetMessage(uvim.TargetUser, "u1"), httpchannel.Config{})
-		}, check: checkBodyValue("target_id", "u1")},
-		{name: "line push", path: "/v2/bot/message/push", build: func() (httpchannel.Request, error) {
-			return line.Send(targetMessage(uvim.TargetUser, "u1"), httpchannel.Config{})
-		}, check: checkBodyValue("to", "u1")},
-		{name: "line reply", path: "/v2/bot/message/reply", build: func() (httpchannel.Request, error) {
-			msg := targetMessage(uvim.TargetUser, "u1")
-			msg.Referrer.ReplyToken = "reply-token"
-			return line.Send(msg, httpchannel.Config{})
-		}, check: checkBodyValue("replyToken", "reply-token")},
-		{name: "matrix room", path: "/_matrix/client/v3/rooms/%21room:example/send/m.room.message/", build: func() (httpchannel.Request, error) {
-			msg := targetMessage(uvim.TargetConversation, "!room:example")
-			msg.Referrer.MessageID = "$event"
-			return matrix.Send(msg, httpchannel.Config{})
-		}, check: func(t *testing.T, req httpchannel.Request) {
-			body := req.Body.(map[string]any)
-			relates := body["m.relates_to"].(map[string]any)
-			reply := relates["m.in_reply_to"].(map[string]string)
-			if reply["event_id"] != "$event" {
-				t.Fatalf("body = %+v", body)
-			}
-		}},
-		{name: "onebot direct", path: "/send_msg", build: func() (httpchannel.Request, error) {
-			return onebot.Send(targetMessage(uvim.TargetUser, "1001"), httpchannel.Config{})
-		}, check: checkBodyValue("user_id", "1001")},
-		{name: "onebot group", path: "/send_msg", build: func() (httpchannel.Request, error) {
-			return onebot.Send(targetMessage(uvim.TargetGroup, "2001"), httpchannel.Config{})
-		}, check: checkBodyValue("group_id", "2001")},
-		{name: "onebot reply", path: "/send_msg", build: func() (httpchannel.Request, error) {
-			msg := targetMessage(uvim.TargetUser, "1001")
-			msg.Referrer.MessageID = "42"
-			return onebot.Send(msg, httpchannel.Config{})
-		}, check: func(t *testing.T, req httpchannel.Request) {
-			body := req.Body.(map[string]any)
-			segments := body["message"].([]map[string]any)
-			if segments[0]["type"] != "reply" || segments[0]["data"].(map[string]string)["id"] != "42" {
-				t.Fatalf("body = %+v", body)
-			}
-		}},
-		{name: "qq group", path: "/send_msg", build: func() (httpchannel.Request, error) {
-			return qq.Send(targetMessage(uvim.TargetGroup, "2001"), httpchannel.Config{})
-		}, check: checkBodyValue("group_id", "2001")},
-		{name: "qq c2c", path: "/v2/users/u1/messages", build: func() (httpchannel.Request, error) {
-			return qqguild.Send(targetMessage(uvim.TargetUser, "u1"), httpchannel.Config{})
-		}},
-		{name: "qq group openid", path: "/v2/groups/g1/messages", build: func() (httpchannel.Request, error) {
-			return qqguild.Send(targetMessage(uvim.TargetGroup, "g1"), httpchannel.Config{})
-		}},
-		{name: "qq guild channel", path: "/channels/c1/messages", build: func() (httpchannel.Request, error) {
-			return qqguild.Send(targetMessage(uvim.TargetChannel, "c1"), httpchannel.Config{})
-		}},
-		{name: "slack user", path: "/api/chat.postMessage", build: func() (httpchannel.Request, error) {
-			return slack.Send(targetMessage(uvim.TargetUser, "U1"), httpchannel.Config{})
-		}, check: checkBodyValue("channel", "U1")},
-		{name: "telegram chat", path: "/bottoken/sendMessage", build: func() (httpchannel.Request, error) {
-			return telegram.Send(targetMessage(uvim.TargetUser, "1001"), httpchannel.Config{Token: "token"})
-		}, check: checkBodyValue("chat_id", "1001")},
-		{name: "wechat official user", path: "/cgi-bin/message/custom/send?access_token=token", build: func() (httpchannel.Request, error) {
-			return wechatofficial.Send(targetMessage(uvim.TargetUser, "open1"), httpchannel.Config{Token: "token"})
-		}, check: checkBodyValue("touser", "open1")},
-		{name: "whatsapp user", path: "/phone1/messages", build: func() (httpchannel.Request, error) {
-			return whatsapp.Send(targetMessage(uvim.TargetUser, "8613800000000"), httpchannel.Config{}, "phone1")
-		}, check: func(t *testing.T, req httpchannel.Request) {
-			body := req.Body.(map[string]any)
-			if body["to"] != "8613800000000" || body["recipient_type"] != "individual" {
-				t.Fatalf("body = %+v", body)
-			}
-		}},
-		{name: "whatsapp group reply", path: "/phone1/messages", build: func() (httpchannel.Request, error) {
-			msg := targetMessage(uvim.TargetGroup, "group1")
-			msg.Referrer.MessageID = "wamid.1"
-			return whatsapp.Send(msg, httpchannel.Config{}, "phone1")
-		}, check: func(t *testing.T, req httpchannel.Request) {
-			body := req.Body.(map[string]any)
-			context := body["context"].(map[string]string)
-			if body["recipient_type"] != "group" || context["message_id"] != "wamid.1" {
-				t.Fatalf("body = %+v", body)
-			}
-		}},
-		{name: "zulip direct", path: "/api/v1/messages", build: func() (httpchannel.Request, error) {
-			return zulip.Send(targetMessage(uvim.TargetUser, "ada@example.test"), httpchannel.Config{})
-		}, check: func(t *testing.T, req httpchannel.Request) {
-			if req.Form.Get("type") != "private" || req.Form.Get("to") != "ada@example.test" {
-				t.Fatalf("form = %v", req.Form)
-			}
-		}},
+		"discord": {func(baseURL, token string) (uvim.Provider, error) {
+			return discord.New(discord.Config{BaseURL: baseURL, Token: token})
+		}, `{"id":"m1"}`, "m1"},
+		"kook": {func(baseURL, token string) (uvim.Provider, error) {
+			return kook.New(kook.Config{BaseURL: baseURL, Token: token})
+		}, `{"code":0,"data":{"msg_id":"m1"}}`, "m1"},
+		"line": {func(baseURL, token string) (uvim.Provider, error) {
+			return line.New(line.Config{BaseURL: baseURL, Token: token})
+		}, `{"sentMessages":[{"id":"m1"}]}`, "m1"},
+		"matrix": {func(baseURL, token string) (uvim.Provider, error) {
+			return matrix.New(matrix.Config{BaseURL: baseURL, Token: token})
+		}, `{"event_id":"m1"}`, "m1"},
+		"onebot": {func(baseURL, token string) (uvim.Provider, error) {
+			return onebot.New(onebot.Config{BaseURL: baseURL, Token: token})
+		}, `{"status":"ok","retcode":0,"data":{"message_id":1}}`, "1"},
+		"qq": {func(baseURL, token string) (uvim.Provider, error) {
+			return qq.New(qq.Config{BaseURL: baseURL, Token: token})
+		}, `{"status":"ok","retcode":0,"data":{"message_id":1}}`, "1"},
+		"qqguild": {func(baseURL, token string) (uvim.Provider, error) {
+			return qqguild.New(qqguild.Config{BaseURL: baseURL, Token: token})
+		}, `{"id":"m1"}`, "m1"},
+		"slack": {func(baseURL, token string) (uvim.Provider, error) {
+			return slack.New(slack.Config{BaseURL: baseURL, Token: token})
+		}, `{"ok":true,"ts":"m1"}`, "m1"},
+		"telegram": {func(baseURL, token string) (uvim.Provider, error) {
+			return telegram.New(telegram.Config{BaseURL: baseURL, Token: token})
+		}, `{"ok":true,"result":{"message_id":1}}`, "1"},
+		"wechat-official": {func(baseURL, token string) (uvim.Provider, error) {
+			return wechatofficial.New(wechatofficial.Config{BaseURL: baseURL, Token: token})
+		}, `{"errcode":0,"msgid":"m1"}`, "m1"},
+		"whatsapp": {func(baseURL, token string) (uvim.Provider, error) {
+			return whatsapp.New(whatsapp.Config{BaseURL: baseURL, Token: token, PhoneNumberID: "phone1"})
+		}, `{"messages":[{"id":"m1"}]}`, "m1"},
+		"zulip": {func(baseURL, token string) (uvim.Provider, error) {
+			return zulip.New(zulip.Config{BaseURL: baseURL, Token: token})
+		}, `{"result":"success","id":1}`, "1"},
+	}
+	tests := []struct {
+		name, provider, kind, id, path, body string
+		reply, thread, token, auth, method   string
+	}{
+		{"discord channel", "discord", uvim.TargetChannel, "c1", "/api/v10/channels/c1/messages", `{"content":"hello"}`, "", "", "token", "Bot token", "POST"},
+		{"discord prefixed token", "discord", uvim.TargetChannel, "c1", "/api/v10/channels/c1/messages", `{"content":"hello"}`, "", "", "Bot token", "Bot token", "POST"},
+		{"kook direct", "kook", uvim.TargetUser, "u1", "/api/v3/direct-message/create", `{"target_id":"u1","content":"hello","type":1}`, "", "", "token", "Bot token", "POST"},
+		{"line push", "line", uvim.TargetUser, "u1", "/v2/bot/message/push", `{"to":"u1","messages":[{"type":"text","text":"hello"}]}`, "", "", "token", "Bearer token", "POST"},
+		{"line reply", "line", uvim.TargetUser, "u1", "/v2/bot/message/reply", `{"replyToken":"reply-token","messages":[{"type":"text","text":"hello"}]}`, "reply-token", "", "token", "Bearer token", "POST"},
+		{"matrix room", "matrix", uvim.TargetConversation, "!room:example", "/_matrix/client/v3/rooms/%21room:example/send/m.room.message/txn-1", `{"msgtype":"m.text","body":"hello","m.relates_to":{"m.in_reply_to":{"event_id":"$event"}}}`, "$event", "", "token", "Bearer token", "PUT"},
+		{"onebot direct", "onebot", uvim.TargetUser, "1001", "/send_msg", `{"user_id":"1001","message":"hello"}`, "", "", "token", "Bearer token", "POST"},
+		{"onebot group", "onebot", uvim.TargetGroup, "2001", "/send_msg", `{"group_id":"2001","message":"hello"}`, "", "", "token", "Bearer token", "POST"},
+		{"onebot reply", "onebot", uvim.TargetUser, "1001", "/send_msg", `{"user_id":"1001","message":[{"type":"reply","data":{"id":"42"}},{"type":"text","data":{"text":"hello"}}]}`, "42", "", "token", "Bearer token", "POST"},
+		{"qq group", "qq", uvim.TargetGroup, "2001", "/send_msg", `{"group_id":"2001","message":"hello"}`, "", "", "token", "Bearer token", "POST"},
+		{"qq c2c", "qqguild", uvim.TargetUser, "u1", "/v2/users/u1/messages", `{"content":"hello","msg_type":0,"msg_id":"m0"}`, "m0", "", "token", "Bot token", "POST"},
+		{"qq group openid", "qqguild", uvim.TargetGroup, "g1", "/v2/groups/g1/messages", `{"content":"hello","msg_type":0}`, "", "", "token", "Bot token", "POST"},
+		{"qq guild channel", "qqguild", uvim.TargetChannel, "c1", "/channels/c1/messages", `{"content":"hello"}`, "", "", "token", "Bot token", "POST"},
+		{"slack user", "slack", uvim.TargetUser, "U1", "/api/chat.postMessage", `{"channel":"U1","text":"hello"}`, "", "", "token", "Bearer token", "POST"},
+		{"slack reply", "slack", uvim.TargetChannel, "c1", "/api/chat.postMessage", `{"channel":"c1","text":"hello","thread_ts":"m0"}`, "m0", "", "token", "Bearer token", "POST"},
+		{"slack thread", "slack", uvim.TargetChannel, "c1", "/api/chat.postMessage", `{"channel":"c1","text":"hello","thread_ts":"thread1"}`, "m0", "thread1", "token", "Bearer token", "POST"},
+		{"telegram chat", "telegram", uvim.TargetUser, "1001", "/bottoken/sendMessage", `{"chat_id":"1001","text":"hello","reply_parameters":{"message_id":42}}`, "42", "", "token", "", "POST"},
+		{"wechat official user", "wechat-official", uvim.TargetUser, "open1", "/cgi-bin/message/custom/send?access_token=token", `{"touser":"open1","msgtype":"text","text":{"content":"hello"}}`, "", "", "token", "", "POST"},
+		{"whatsapp user", "whatsapp", uvim.TargetUser, "8613800000000", "/phone1/messages", `{"messaging_product":"whatsapp","recipient_type":"individual","to":"8613800000000","type":"text","text":{"body":"hello"}}`, "", "", "token", "Bearer token", "POST"},
+		{"whatsapp group reply", "whatsapp", uvim.TargetGroup, "group1", "/phone1/messages", `{"messaging_product":"whatsapp","recipient_type":"group","to":"group1","type":"text","text":{"body":"hello"},"context":{"message_id":"wamid.1"}}`, "wamid.1", "", "token", "Bearer token", "POST"},
+		{"zulip direct", "zulip", uvim.TargetUser, "ada@example.test", "/api/v1/messages", `content=hello&to=ada%40example.test&type=private`, "", "", "Basic token", "Basic token", "POST"},
+		{"zulip stream", "zulip", uvim.TargetGroup, "c1", "/api/v1/messages", `content=hello&to=c1&topic=general&type=stream`, "", "general", "Basic token", "Basic token", "POST"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req, err := tt.build()
+			var sends atomic.Int32
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sends.Add(1)
+				if r.Method != tt.method || r.URL.RequestURI() != tt.path {
+					t.Errorf("request = %s %s, want %s %s", r.Method, r.URL.RequestURI(), tt.method, tt.path)
+				}
+				if got := r.Header.Get("Authorization"); got != tt.auth {
+					t.Errorf("authorization = %q, want %q", got, tt.auth)
+				}
+				if strings.Contains(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
+					if err := r.ParseForm(); err != nil {
+						t.Error(err)
+					}
+					if r.PostForm.Encode() != tt.body {
+						t.Errorf("form = %s, want %s", r.PostForm.Encode(), tt.body)
+					}
+				} else {
+					if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+						t.Errorf("content type = %s", r.Header.Get("Content-Type"))
+					}
+					var got, want any
+					if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+						t.Error(err)
+					}
+					if err := json.Unmarshal([]byte(tt.body), &want); err != nil {
+						t.Error(err)
+						return
+					}
+					if !reflect.DeepEqual(got, want) {
+						t.Errorf("body = %#v, want %#v", got, want)
+					}
+				}
+				_, _ = io.WriteString(w, providers[tt.provider].response)
+			}))
+			defer api.Close()
+			provider, err := providers[tt.provider].new(api.URL, tt.token)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tt.name == "matrix room" {
-				if !strings.HasPrefix(req.Path, tt.path) {
-					t.Fatalf("path = %q, want prefix %q", req.Path, tt.path)
-				}
-			} else if req.Path != tt.path {
-				t.Fatalf("path = %q, want %q", req.Path, tt.path)
+			msg := targetMessage(tt.kind, tt.id)
+			msg.ID = "txn-1"
+			msg.Referrer.MessageID, msg.Referrer.ThreadID = tt.reply, tt.thread
+			// LINE replies carry their native token rather than a message ID.
+			if tt.reply == "reply-token" {
+				msg.Referrer.ReplyToken = tt.reply
 			}
-			if tt.check != nil {
-				tt.check(t, req)
+			result, err := provider.Send(t.Context(), msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Provider != tt.provider || result.MessageID != providers[tt.provider].messageID || result.Time.IsZero() || sends.Load() != 1 {
+				t.Fatalf("result = %+v, sends = %d", result, sends.Load())
+			}
+		})
+	}
+
+	const text = "# 任务结论\n\n**已完成**\n- [文档](https://example.com/guide)\n\n```go\nfmt.Println(\"ok\")\n```"
+	for _, scenario := range []struct {
+		name, kind, path string
+		app, reply       bool
+	}{
+		{"dingtalk session reply", uvim.TargetUser, "/robot/sendBySession", false, true},
+		{"dingtalk app session reply", uvim.TargetGroup, "/robot/sendBySession", true, true},
+		{"dingtalk group", uvim.TargetGroup, "/robot/send", false, false},
+		{"dingtalk app direct", uvim.TargetUser, "/v1.0/robot/oToMessages/batchSend", true, false},
+		{"dingtalk app group", uvim.TargetGroup, "/v1.0/robot/groupMessages/send", true, false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var sends atomic.Int32
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1.0/oauth2/accessToken" {
+					var credentials map[string]string
+					if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
+						t.Error(err)
+					}
+					if r.Method != http.MethodPost || credentials["appKey"] != "client-id" || credentials["appSecret"] != "client-secret" {
+						t.Errorf("token request = %s %v", r.Method, credentials)
+					}
+					_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "access-token"})
+					return
+				}
+				sends.Add(1)
+				if r.Method != http.MethodPost || r.URL.Path != scenario.path {
+					t.Errorf("send route = %s %s", r.Method, r.URL.Path)
+				}
+				var body struct {
+					MsgType, MsgKey, MsgParam, RobotCode, OpenConversationID string
+					UserIDs                                                  []string
+					Markdown                                                 map[string]string
+					Text                                                     json.RawMessage
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+					return
+				}
+				content := body.Markdown
+				if scenario.app && !scenario.reply {
+					if body.MsgKey != "sampleMarkdown" || body.RobotCode != "client-id" || r.Header.Get("x-acs-dingtalk-access-token") != "access-token" {
+						t.Errorf("app message envelope = %+v", body)
+					}
+					if scenario.kind == uvim.TargetUser && (len(body.UserIDs) != 1 || body.UserIDs[0] != "recipient") || scenario.kind == uvim.TargetGroup && body.OpenConversationID != "recipient" {
+						t.Errorf("app recipient = %+v", body)
+					}
+					if err := json.Unmarshal([]byte(body.MsgParam), &content); err != nil {
+						t.Error(err)
+					}
+					_ = json.NewEncoder(w).Encode(map[string]string{"processQueryKey": "delivered"})
+				} else {
+					if body.MsgType != "markdown" || len(body.Text) != 0 || r.Header.Get("Authorization") != "" {
+						t.Errorf("webhook message envelope = %+v", body)
+					}
+					if scenario.reply && r.URL.Query().Get("session") != "reply-token" || !scenario.reply && r.URL.Query().Get("access_token") != "group-token" {
+						t.Errorf("webhook query = %s", r.URL.RawQuery)
+					}
+					_ = json.NewEncoder(w).Encode(map[string]int{"errcode": 0})
+				}
+				if content["title"] != "# 任务结论" || content["text"] != text {
+					t.Errorf("Markdown content = %+v", content)
+				}
+			}))
+			defer api.Close()
+			config := dingtalk.Config{BaseURL: api.URL, Token: "group-token"}
+			if scenario.app {
+				config.ClientID, config.ClientSecret = "client-id", "client-secret"
+			}
+			provider, err := dingtalk.New(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			msg := uvim.OutboundMessage{Text: text, Target: &uvim.OutboundTarget{Kind: scenario.kind, ID: "recipient"}}
+			if scenario.reply {
+				msg.Referrer.ReplyToken = api.URL + scenario.path + "?session=reply-token"
+			}
+			result, err := provider.Send(t.Context(), msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantID := ""
+			if scenario.app && !scenario.reply {
+				wantID = "delivered"
+			}
+			if sends.Load() != 1 || result.Provider != "dingtalk" || result.MessageID != wantID || result.Time.IsZero() {
+				t.Fatalf("result = %+v, sends = %d", result, sends.Load())
 			}
 		})
 	}
@@ -1012,15 +999,6 @@ func TestDingTalkSessionReplyRejectsDifferentOrigin(t *testing.T) {
 
 func targetMessage(kind, id string) uvim.OutboundMessage {
 	return uvim.OutboundMessage{Target: &uvim.OutboundTarget{Kind: kind, ID: id}, Text: "hello"}
-}
-
-func checkBodyValue(key string, want any) func(*testing.T, httpchannel.Request) {
-	return func(t *testing.T, req httpchannel.Request) {
-		body, ok := req.Body.(map[string]any)
-		if !ok || body[key] != want {
-			t.Fatalf("body = %+v, want %s=%v", req.Body, key, want)
-		}
-	}
 }
 
 func TestHTTPChannelDownloadPreservesPrefixedAuthorization(t *testing.T) {

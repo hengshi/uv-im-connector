@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -161,84 +160,6 @@ func TestDownloadExchangesDownloadCodeForTemporaryURL(t *testing.T) {
 
 func apiURL(r *http.Request) string {
 	return "http://" + r.Host
-}
-
-func TestSendMarkdownThroughWebhookAndAppAPI(t *testing.T) {
-	const text = "# 任务结论\n\n**已完成**\n- [文档](https://example.com/guide)\n\n```go\nfmt.Println(\"ok\")\n```"
-	for _, scenario := range []struct {
-		name, kind, path string
-		app, reply       bool
-	}{
-		{"session reply", uvim.TargetUser, "/robot/sendBySession", false, true},
-		{"app session reply", uvim.TargetGroup, "/robot/sendBySession", true, true},
-		{"group webhook", uvim.TargetGroup, "/robot/send", false, false},
-		{"app direct", uvim.TargetUser, "/v1.0/robot/oToMessages/batchSend", true, false},
-		{"app group", uvim.TargetGroup, "/v1.0/robot/groupMessages/send", true, false},
-	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			var sends atomic.Int32
-			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/v1.0/oauth2/accessToken" {
-					_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "access-token"})
-					return
-				}
-				sends.Add(1)
-				if r.Method != http.MethodPost || r.URL.Path != scenario.path {
-					t.Errorf("send route = %s %s", r.Method, r.URL.Path)
-				}
-				var body struct {
-					MsgType, MsgKey, MsgParam, RobotCode, OpenConversationID string
-					UserIDs                                                  []string
-					Markdown                                                 map[string]string
-					Text                                                     json.RawMessage
-				}
-				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-					t.Error(err)
-					return
-				}
-				content := body.Markdown
-				if scenario.app && !scenario.reply {
-					if body.MsgKey != "sampleMarkdown" || body.RobotCode != "client-id" || r.Header.Get("x-acs-dingtalk-access-token") != "access-token" {
-						t.Errorf("app message envelope = %+v", body)
-					}
-					if scenario.kind == uvim.TargetUser && (len(body.UserIDs) != 1 || body.UserIDs[0] != "recipient") || scenario.kind == uvim.TargetGroup && body.OpenConversationID != "recipient" {
-						t.Errorf("app recipient = %+v", body)
-					}
-					if err := json.Unmarshal([]byte(body.MsgParam), &content); err != nil {
-						t.Error(err)
-					}
-					_ = json.NewEncoder(w).Encode(map[string]string{"processQueryKey": "delivered"})
-				} else {
-					if body.MsgType != "markdown" || len(body.Text) != 0 || r.Header.Get("Authorization") != "" {
-						t.Errorf("webhook message envelope = %+v", body)
-					}
-					_ = json.NewEncoder(w).Encode(map[string]int{"errcode": 0})
-				}
-				if content["title"] != "# 任务结论" || content["text"] != text {
-					t.Errorf("Markdown content = %+v", content)
-				}
-			}))
-			defer api.Close()
-			config := Config{BaseURL: api.URL, Token: "group-token"}
-			if scenario.app {
-				config.ClientID, config.ClientSecret = "client-id", "client-secret"
-			}
-			provider, err := New(config)
-			if err != nil {
-				t.Fatal(err)
-			}
-			msg := uvim.OutboundMessage{Text: text, Target: &uvim.OutboundTarget{Kind: scenario.kind, ID: "recipient"}}
-			if scenario.reply {
-				msg.Referrer.ReplyToken = api.URL + scenario.path + "?session=reply-token"
-			}
-			if _, err := provider.Send(t.Context(), msg); err != nil {
-				t.Fatal(err)
-			}
-			if sends.Load() != 1 {
-				t.Fatalf("message send count = %d, want 1", sends.Load())
-			}
-		})
-	}
 }
 
 // The SDK is stubbed; the real DingTalk adapter, Hub and event log execute.

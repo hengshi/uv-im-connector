@@ -17,7 +17,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	uvim "github.com/hengshi/uv-im-connector"
-	"github.com/hengshi/uv-im-connector/conformance"
 	"github.com/hengshi/uv-im-connector/server"
 )
 
@@ -531,88 +530,89 @@ func TestFrameRoundTrip(t *testing.T) {
 	}
 }
 
-func TestProviderMetadataConformance(t *testing.T) {
-	provider, err := New(Config{AppID: "app", AppSecret: "secret", ResourceStore: &uvim.ResourceStore{Dir: t.TempDir()}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	conformance.AssertProviderMetadata(t, provider)
-	if !provider.Capabilities().UploadResource {
-		t.Fatal("UploadResource = false")
-	}
-}
-
-func TestSendRejectsMixedTextAndResource(t *testing.T) {
-	provider, err := New(Config{AppID: "app", AppSecret: "secret"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = provider.Send(nil, uvim.OutboundMessage{
-		Provider:  "lark",
-		ChannelID: "chat",
-		Text:      "file",
-		Resources: []uvim.ResourceRef{{Kind: uvim.ElementFile, InternalURL: "internal://r1"}},
-	})
-	if err == nil {
-		t.Fatal("Send() error = nil, want unsupported resource error")
-	}
-}
-
 func TestSendResourceUploadsThenReplies(t *testing.T) {
-	store := &uvim.ResourceStore{Dir: t.TempDir()}
-	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sentBody map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		switch req.URL.Path {
-		case "/open-apis/auth/v3/tenant_access_token/internal":
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
-		case "/open-apis/im/v1/files":
-			if err := req.ParseMultipartForm(1 << 20); err != nil {
-				t.Error(err)
-			}
-			file, header, err := req.FormFile("file")
+	for _, text := range []string{"", "file summary"} {
+		t.Run("text="+text, func(t *testing.T) {
+			store := &uvim.ResourceStore{Dir: t.TempDir()}
+			ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
 			if err != nil {
-				t.Error(err)
-			} else {
-				defer file.Close()
-				var data bytes.Buffer
-				_, _ = data.ReadFrom(file)
-				if header.Filename != "report.txt" || data.String() != "report" || req.FormValue("file_type") != "stream" {
-					t.Errorf("upload filename=%q data=%q type=%q", header.Filename, data.String(), req.FormValue("file_type"))
+				t.Fatal(err)
+			}
+			var sentBody map[string]any
+			var operations []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				switch req.URL.Path {
+				case "/open-apis/auth/v3/tenant_access_token/internal":
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+				case "/open-apis/im/v1/files":
+					operations = append(operations, "upload")
+					if err := req.ParseMultipartForm(1 << 20); err != nil {
+						t.Error(err)
+					}
+					file, header, err := req.FormFile("file")
+					if err != nil {
+						t.Error(err)
+					} else {
+						defer file.Close()
+						var data bytes.Buffer
+						_, _ = data.ReadFrom(file)
+						if header.Filename != "report.txt" || data.String() != "report" || req.FormValue("file_type") != "stream" {
+							t.Errorf("upload filename=%q data=%q type=%q", header.Filename, data.String(), req.FormValue("file_type"))
+						}
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"file_key": "file-1"}})
+				case "/open-apis/im/v1/messages/om_in/reply":
+					if err := json.NewDecoder(req.Body).Decode(&sentBody); err != nil {
+						t.Error(err)
+					}
+					operations = append(operations, sentBody["msg_type"].(string))
+					if sentBody["msg_type"] == "text" {
+						var content map[string]string
+						if err := json.Unmarshal([]byte(sentBody["content"].(string)), &content); err != nil {
+							t.Error(err)
+						}
+						if content["text"] != "file summary" {
+							t.Errorf("text content = %v", content)
+						}
+						_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"message_id": "om_text"}})
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"message_id": "om_out"}})
+				default:
+					t.Errorf("unexpected path %s", req.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL, ResourceStore: store})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := provider.Send(context.Background(), uvim.OutboundMessage{Text: text, Resources: []uvim.ResourceRef{ref}, Referrer: uvim.Referrer{MessageID: "om_in"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantOperations := []string{"upload", "file"}
+			if text != "" {
+				wantOperations = []string{"text", "upload", "file"}
+				if !reflect.DeepEqual(result.MessageIDs, []string{"om_text", "om_out"}) {
+					t.Errorf("message IDs = %v", result.MessageIDs)
 				}
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"file_key": "file-1"}})
-		case "/open-apis/im/v1/messages/om_in/reply":
-			if err := json.NewDecoder(req.Body).Decode(&sentBody); err != nil {
-				t.Error(err)
+			if !reflect.DeepEqual(operations, wantOperations) {
+				t.Errorf("operations = %v, want %v", operations, wantOperations)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"message_id": "om_out"}})
-		default:
-			t.Errorf("unexpected path %s", req.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer server.Close()
-	provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL, ResourceStore: store})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := provider.Send(context.Background(), uvim.OutboundMessage{Resources: []uvim.ResourceRef{ref}, Referrer: uvim.Referrer{MessageID: "om_in"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.MessageID != "om_out" || sentBody["msg_type"] != uvim.ElementFile {
-		t.Fatalf("result=%+v body=%+v", result, sentBody)
-	}
-	var content map[string]string
-	if err := json.Unmarshal([]byte(sentBody["content"].(string)), &content); err != nil {
-		t.Fatal(err)
-	}
-	if content["file_key"] != "file-1" || len(content) != 1 {
-		t.Fatalf("content = %+v", content)
+			if result.MessageID != "om_out" || sentBody["msg_type"] != uvim.ElementFile {
+				t.Fatalf("result=%+v body=%+v", result, sentBody)
+			}
+			var content map[string]string
+			if err := json.Unmarshal([]byte(sentBody["content"].(string)), &content); err != nil {
+				t.Fatal(err)
+			}
+			if content["file_key"] != "file-1" || len(content) != 1 {
+				t.Fatalf("content = %+v", content)
+			}
+		})
 	}
 }
 
@@ -746,30 +746,53 @@ func TestSendImageUsesImageUpload(t *testing.T) {
 	}
 }
 
-func TestProactiveSendSelectsRecipientIDType(t *testing.T) {
-	tests := []struct {
-		name       string
-		target     uvim.OutboundTarget
-		wantIDType string
+func TestSendTextRoutesRecipientsAndReplies(t *testing.T) {
+	for _, tt := range []struct {
+		name                    string
+		message                 uvim.OutboundMessage
+		path, idType, recipient string
 	}{
-		{name: "user open id", target: uvim.OutboundTarget{ID: "ou_user", Kind: uvim.TargetUser}, wantIDType: "open_id"},
-		{name: "conversation", target: uvim.OutboundTarget{ID: "oc_chat", Kind: uvim.TargetConversation}, wantIDType: "chat_id"},
-	}
-	for _, tt := range tests {
+		{"user open id", uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "ou_user", Kind: uvim.TargetUser}}, "/open-apis/im/v1/messages", "open_id", "ou_user"},
+		{"conversation", uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "oc_chat", Kind: uvim.TargetConversation}}, "/open-apis/im/v1/messages", "chat_id", "oc_chat"},
+		{"legacy direct channel", uvim.OutboundMessage{ChannelID: "oc_chat", ChannelType: uvim.ChannelDirect}, "/open-apis/im/v1/messages", "chat_id", "oc_chat"},
+		{"reply", uvim.OutboundMessage{Referrer: uvim.Referrer{MessageID: "om_original"}}, "/open-apis/im/v1/messages/om_original/reply", "", ""},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
-			var gotBody map[string]any
+			var sends int
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.Method != http.MethodPost {
+					t.Errorf("method = %s", req.Method)
+				}
 				switch req.URL.Path {
 				case "/open-apis/auth/v3/tenant_access_token/internal":
-					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
-				case "/open-apis/im/v1/messages":
-					if got := req.URL.Query().Get("receive_id_type"); got != tt.wantIDType {
-						t.Errorf("receive_id_type = %q, want %q", got, tt.wantIDType)
-					}
-					if err := json.NewDecoder(req.Body).Decode(&gotBody); err != nil {
+					var credentials map[string]string
+					if err := json.NewDecoder(req.Body).Decode(&credentials); err != nil {
 						t.Error(err)
 					}
-					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "msg": "ok", "data": map[string]any{"message_id": "om_sent"}})
+					if credentials["app_id"] != "app" || credentials["app_secret"] != "secret" {
+						t.Errorf("credentials = %v", credentials)
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+				case tt.path:
+					sends++
+					if req.Header.Get("Authorization") != "Bearer token" || req.URL.Query().Get("receive_id_type") != tt.idType {
+						t.Errorf("auth/query = %v %s", req.Header, req.URL.RawQuery)
+					}
+					var body map[string]string
+					if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					if body["msg_type"] != "text" || body["receive_id"] != tt.recipient {
+						t.Errorf("body = %v", body)
+					}
+					var content map[string]string
+					if err := json.Unmarshal([]byte(body["content"]), &content); err != nil {
+						t.Error(err)
+					}
+					if content["text"] != "# 结论\n**完成**" {
+						t.Errorf("content = %v", content)
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"message_id": "om_sent"}})
 				default:
 					t.Errorf("unexpected path %s", req.URL.Path)
 					w.WriteHeader(http.StatusNotFound)
@@ -780,12 +803,13 @@ func TestProactiveSendSelectsRecipientIDType(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := provider.Send(context.Background(), uvim.OutboundMessage{Target: &tt.target, Text: "hello"})
+			tt.message.Text = "# 结论\n**完成**"
+			result, err := provider.Send(t.Context(), tt.message)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if gotBody["receive_id"] != tt.target.ID || result.MessageID != "om_sent" {
-				t.Fatalf("body=%+v result=%+v", gotBody, result)
+			if sends != 1 || result.MessageID != "om_sent" || result.Provider != "lark" || result.Time.IsZero() {
+				t.Fatalf("sends=%d result=%+v", sends, result)
 			}
 		})
 	}
@@ -820,31 +844,6 @@ func TestSendBusinessFailureExposesOnlyNormalizedFacts(t *testing.T) {
 	}
 	if got := uvim.ProviderSendErrorLogDetail(err); got != "provider rejected request: code 230020" {
 		t.Fatalf("private log detail = %q", got)
-	}
-}
-
-func TestLegacyDirectChannelRemainsChatID(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		switch req.URL.Path {
-		case "/open-apis/auth/v3/tenant_access_token/internal":
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
-		case "/open-apis/im/v1/messages":
-			if got := req.URL.Query().Get("receive_id_type"); got != "chat_id" {
-				t.Errorf("receive_id_type = %q, want chat_id", got)
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"message_id": "om_sent"}})
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer server.Close()
-	provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = provider.Send(context.Background(), uvim.OutboundMessage{ChannelID: "oc_chat", ChannelType: uvim.ChannelDirect, Text: "hello"})
-	if err != nil {
-		t.Fatal(err)
 	}
 }
 
