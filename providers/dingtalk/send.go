@@ -47,7 +47,7 @@ func (p *Provider) sendOne(ctx context.Context, msg uvim.OutboundMessage) (uvim.
 			Category: uvim.SendFailureInvalidRequest, DeliveryState: uvim.DeliveryNotAttempted,
 		}, err.Error(), err)
 	}
-	key, param := "sampleText", map[string]string{"content": uvim.NormalizeOutboundText(msg.Text)}
+	key, param := "sampleMarkdown", markdownContent(uvim.NormalizeOutboundText(msg.Text))
 	if len(msg.Resources) == 1 {
 		var err error
 		key, param, err = p.uploadResource(ctx, msg.Resources[0])

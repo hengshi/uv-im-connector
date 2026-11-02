@@ -131,7 +131,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 }
 
 func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Request, error) {
-	body := map[string]any{"msgtype": "text", "text": map[string]any{"content": msg.Text}}
+	body := map[string]any{"msgtype": "markdown", "markdown": markdownContent(msg.Text)}
 	if msg.Referrer.ReplyToken != "" {
 		path, err := sameOriginPath(msg.Referrer.ReplyToken, config.BaseURL)
 		if err != nil {
@@ -145,6 +145,11 @@ func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Requ
 	}
 	token := url.QueryEscape(config.Token)
 	return httpchannel.Request{Path: "/robot/send?access_token=" + token, Body: body, NoAuth: true}, nil
+}
+
+func markdownContent(text string) map[string]string {
+	title, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
+	return map[string]string{"title": firstNonEmpty(title, "Message"), "text": text}
 }
 
 func sameOriginPath(rawURL, baseURL string) (string, error) {
