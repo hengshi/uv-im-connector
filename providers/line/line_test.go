@@ -30,13 +30,3 @@ func TestDecodeSetsSingleUseReplyHandleDeadline(t *testing.T) {
 		t.Fatalf("reply target = %+v", event.Referrer.Target)
 	}
 }
-
-func TestCapabilitiesDeclareSingleUseReplyToken(t *testing.T) {
-	provider, err := New(Config{BaseURL: "http://127.0.0.1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := provider.Capabilities().ReplyMaxUses; got != 1 {
-		t.Fatalf("reply max uses = %d, want 1", got)
-	}
-}

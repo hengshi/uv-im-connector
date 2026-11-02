@@ -90,12 +90,18 @@ func TestProviderMetadataForAllChannels(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if provider.ID() != item.name {
+				t.Fatalf("provider ID = %q, want %q", provider.ID(), item.name)
+			}
 			if seen[provider.ID()] {
 				t.Fatalf("duplicate provider ID %q", provider.ID())
 			}
 			seen[provider.ID()] = true
 			conformance.AssertProviderMetadata(t, provider)
 			caps := provider.Capabilities()
+			if !caps.Inbound || !caps.Outbound || !caps.DownloadResource {
+				t.Fatalf("inbound/outbound/download capabilities = %+v", caps)
+			}
 			if caps.DirectMessage != item.direct || caps.GroupMessage != item.group || caps.ReplyMessage != item.reply || caps.ProactiveDirect != item.proactiveDirect || caps.ProactiveGroup != item.proactiveGroup {
 				t.Fatalf("capabilities = %+v", caps)
 			}

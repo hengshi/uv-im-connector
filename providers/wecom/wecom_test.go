@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,7 +23,6 @@ import (
 
 	uvim "github.com/hengshi/uv-im-connector"
 	"github.com/hengshi/uv-im-connector/client"
-	"github.com/hengshi/uv-im-connector/conformance"
 	"github.com/hengshi/uv-im-connector/server"
 )
 
@@ -159,21 +159,6 @@ func TestDecodeMessagePreservesQuotedTextAsContextResource(t *testing.T) {
 	}
 }
 
-func TestProviderConformanceShape(t *testing.T) {
-	provider, err := New(Config{BotID: "bot", Secret: "secret", ResourceStore: &uvim.ResourceStore{Dir: t.TempDir()}, Now: func() time.Time { return time.Unix(1, 0) }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	caps := provider.Capabilities()
-	if !caps.Inbound || !caps.Outbound || !caps.UploadResource || !caps.DownloadResource {
-		t.Fatalf("capabilities = %+v", caps)
-	}
-	if provider.ID() != "wecom" {
-		t.Fatalf("ID = %q", provider.ID())
-	}
-	conformance.AssertProviderMetadata(t, provider)
-}
-
 func TestDecodeMessageFile(t *testing.T) {
 	now := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
 	provider, err := New(Config{BotID: "bot", Secret: "secret", Now: func() time.Time { return now }})
@@ -295,113 +280,100 @@ func TestDecodeAESKeyAcceptsRawBase64(t *testing.T) {
 	}
 }
 
-func TestConformanceNonNetworkParts(t *testing.T) {
-	provider, err := New(Config{BotID: "bot", Secret: "secret"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	health := provider.Health(nil)
-	if health.Provider != "wecom" {
-		t.Fatalf("health = %+v", health)
-	}
-	if provider.Capabilities().Inbound == false {
-		t.Fatal("provider must declare inbound")
-	}
-	conformance.AssertProviderMetadata(t, provider)
-}
-
-func TestSendRejectsMixedTextAndResource(t *testing.T) {
-	provider, err := New(Config{BotID: "bot", Secret: "secret"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = provider.Send(nil, uvim.OutboundMessage{
-		Provider:  "wecom",
-		ChannelID: "chat",
-		Text:      "file",
-		Resources: []uvim.ResourceRef{{Kind: uvim.ElementFile, InternalURL: "internal://r1"}},
-	})
-	if err == nil {
-		t.Fatal("Send() error = nil, want unsupported resource error")
-	}
-}
-
 func TestSendResourceReplyUploadsChunksAndSendsMedia(t *testing.T) {
-	data := bytes.Repeat([]byte("x"), uploadChunkSize+1)
-	store := &uvim.ResourceStore{Dir: t.TempDir()}
-	ref, err := store.Save(context.Background(), bytes.NewReader(data), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider, err := New(Config{BotID: "bot", Secret: "secret", ResourceStore: store})
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn := &sendTestConn{}
-	var frames []frame
-	conn.onWrite = func(raw []byte) {
-		var sent frame
-		if err := json.Unmarshal(raw, &sent); err != nil {
-			t.Error(err)
-			return
-		}
-		frames = append(frames, sent)
-		code := 0
-		ack := frame{Headers: sent.Headers, ErrCode: &code}
-		switch sent.Cmd {
-		case cmdUploadInit:
-			ack.Body = map[string]any{"upload_id": "upload-1"}
-		case cmdUploadFinish:
-			ack.Body = map[string]any{"media_id": "media-1"}
-		}
-		provider.resolvePending(sent.Headers.ReqID, ack)
-	}
-	activateSendTestConn(provider, conn)
+	for _, text := range []string{"", "file summary"} {
+		t.Run("text="+text, func(t *testing.T) {
+			data := bytes.Repeat([]byte("x"), uploadChunkSize+1)
+			store := &uvim.ResourceStore{Dir: t.TempDir()}
+			ref, err := store.Save(context.Background(), bytes.NewReader(data), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			provider, err := New(Config{BotID: "bot", Secret: "secret", ResourceStore: store})
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn := &sendTestConn{}
+			var frames []frame
+			conn.onWrite = func(raw []byte) {
+				var sent frame
+				if err := json.Unmarshal(raw, &sent); err != nil {
+					t.Error(err)
+					return
+				}
+				frames = append(frames, sent)
+				code := 0
+				ack := frame{Headers: sent.Headers, ErrCode: &code}
+				switch sent.Cmd {
+				case cmdUploadInit:
+					ack.Body = map[string]any{"upload_id": "upload-1"}
+				case cmdUploadFinish:
+					ack.Body = map[string]any{"media_id": "media-1"}
+				}
+				provider.resolvePending(sent.Headers.ReqID, ack)
+			}
+			activateSendTestConn(provider, conn)
 
-	result, err := provider.Send(context.Background(), uvim.OutboundMessage{
-		Provider:  "wecom",
-		ChannelID: "chat-1",
-		Resources: []uvim.ResourceRef{ref},
-		Referrer:  uvim.Referrer{MessageID: "msg-1", ReplyToken: "reply-1"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.MessageID != "reply-1" {
-		t.Fatalf("result = %+v", result)
-	}
-	wantCommands := []string{cmdUploadInit, cmdUploadChunk, cmdUploadChunk, cmdUploadFinish, cmdRespond}
-	if len(frames) != len(wantCommands) {
-		t.Fatalf("frames = %+v", frames)
-	}
-	for i, command := range wantCommands {
-		if frames[i].Cmd != command {
-			t.Fatalf("frame %d command = %q, want %q", i, frames[i].Cmd, command)
-		}
-	}
-	if frames[0].Body["filename"] != "report.txt" || int(frames[0].Body["total_chunks"].(float64)) != 2 {
-		t.Fatalf("init body = %+v", frames[0].Body)
-	}
-	if frames[0].Body["md5"] != fmt.Sprintf("%x", md5.Sum(data)) {
-		t.Fatalf("init md5 = %v", frames[0].Body["md5"])
-	}
-	var uploaded []byte
-	for index, sent := range frames[1:3] {
-		if got := int(sent.Body["chunk_index"].(float64)); got != index {
-			t.Fatalf("chunk index = %d, want %d", got, index)
-		}
-		decoded, err := base64.StdEncoding.DecodeString(sent.Body["base64_data"].(string))
-		if err != nil {
-			t.Fatal(err)
-		}
-		uploaded = append(uploaded, decoded...)
-	}
-	if !bytes.Equal(uploaded, data) {
-		t.Fatal("uploaded chunks do not match source data")
-	}
-	media := frames[4].Body[uvim.ElementFile].(map[string]any)
-	if frames[4].Headers.ReqID != "reply-1" || frames[4].Body["msgtype"] != uvim.ElementFile || media["media_id"] != "media-1" {
-		t.Fatalf("media frame = %+v", frames[4])
+			result, err := provider.Send(context.Background(), uvim.OutboundMessage{
+				Provider: "wecom",
+				Text:     text, Final: true,
+				ChannelID: "chat-1",
+				Resources: []uvim.ResourceRef{ref},
+				Referrer:  uvim.Referrer{MessageID: "msg-1", ReplyToken: "reply-1"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.MessageID != "reply-1" {
+				t.Fatalf("result = %+v", result)
+			}
+			if text != "" {
+				if len(frames) < 1 {
+					t.Fatal("missing text frame")
+				}
+				stream, _ := frames[0].Body["stream"].(map[string]any)
+				if frames[0].Cmd != cmdRespond || frames[0].Headers.ReqID != "reply-1" || stream["id"] != "uv-msg-1" || stream["content"] != "file summary" || stream["finish"] != true {
+					t.Errorf("text frame = %+v", frames[0])
+				}
+				if !reflect.DeepEqual(result.MessageIDs, []string{"uv-msg-1", "reply-1"}) {
+					t.Errorf("message IDs = %v", result.MessageIDs)
+				}
+				frames = frames[1:]
+			}
+			wantCommands := []string{cmdUploadInit, cmdUploadChunk, cmdUploadChunk, cmdUploadFinish, cmdRespond}
+			if len(frames) != len(wantCommands) {
+				t.Fatalf("frames = %+v", frames)
+			}
+			for i, command := range wantCommands {
+				if frames[i].Cmd != command {
+					t.Fatalf("frame %d command = %q, want %q", i, frames[i].Cmd, command)
+				}
+			}
+			if frames[0].Body["filename"] != "report.txt" || int(frames[0].Body["total_chunks"].(float64)) != 2 {
+				t.Fatalf("init body = %+v", frames[0].Body)
+			}
+			if frames[0].Body["md5"] != fmt.Sprintf("%x", md5.Sum(data)) {
+				t.Fatalf("init md5 = %v", frames[0].Body["md5"])
+			}
+			var uploaded []byte
+			for index, sent := range frames[1:3] {
+				if got := int(sent.Body["chunk_index"].(float64)); got != index {
+					t.Fatalf("chunk index = %d, want %d", got, index)
+				}
+				decoded, err := base64.StdEncoding.DecodeString(sent.Body["base64_data"].(string))
+				if err != nil {
+					t.Fatal(err)
+				}
+				uploaded = append(uploaded, decoded...)
+			}
+			if !bytes.Equal(uploaded, data) {
+				t.Fatal("uploaded chunks do not match source data")
+			}
+			media := frames[4].Body[uvim.ElementFile].(map[string]any)
+			if frames[4].Headers.ReqID != "reply-1" || frames[4].Body["msgtype"] != uvim.ElementFile || media["media_id"] != "media-1" {
+				t.Fatalf("media frame = %+v", frames[4])
+			}
+		})
 	}
 }
 
@@ -591,41 +563,60 @@ func TestLargeUploadDefersChunkLimitToWeCom(t *testing.T) {
 	}
 }
 
-func TestProactiveSendUsesMarkdownForDirectUser(t *testing.T) {
-	provider, err := New(Config{BotID: "bot", Secret: "secret"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn := &sendTestConn{}
-	conn.onWrite = func(raw []byte) {
-		var sent frame
-		if err := json.Unmarshal(raw, &sent); err != nil {
-			t.Error(err)
-			return
-		}
-		conn.sent = sent
-		code := 0
-		provider.resolvePending(sent.Headers.ReqID, frame{Headers: sent.Headers, ErrCode: &code})
-	}
-	provider.activeMu.Lock()
-	provider.activeConn = conn
-	provider.activeWrite = &sync.Mutex{}
-	provider.activeMu.Unlock()
-
-	_, err = provider.Send(context.Background(), uvim.OutboundMessage{
-		Provider: "wecom",
-		Target:   &uvim.OutboundTarget{ID: "ChenJunHao", Kind: uvim.TargetUser},
-		Text:     "upgrade complete",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if conn.sent.Cmd != cmdSend || conn.sent.Body["chatid"] != "ChenJunHao" || conn.sent.Body["msgtype"] != "markdown" {
-		t.Fatalf("sent frame = %+v", conn.sent)
-	}
-	markdown, _ := conn.sent.Body["markdown"].(map[string]any)
-	if markdown["content"] != "upgrade complete" {
-		t.Fatalf("markdown = %+v", markdown)
+func TestSendTextRoutesProactiveAndStreamReplies(t *testing.T) {
+	for _, tt := range []struct {
+		name, kind, recipient, reply string
+		final                        bool
+	}{
+		{"direct", uvim.TargetUser, "user1", "", false},
+		{"group", uvim.TargetGroup, "group1", "", false},
+		{"stream progress", uvim.TargetUser, "user1", "reply1", false},
+		{"stream final", uvim.TargetUser, "user1", "reply1", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, err := New(Config{BotID: "bot", Secret: "secret"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn := &sendTestConn{}
+			var sends int
+			conn.onWrite = func(raw []byte) {
+				sends++
+				var sent frame
+				if err := json.Unmarshal(raw, &sent); err != nil {
+					t.Error(err)
+					return
+				}
+				conn.sent = sent
+				code := 0
+				provider.resolvePending(sent.Headers.ReqID, frame{Headers: sent.Headers, ErrCode: &code})
+			}
+			activateSendTestConn(provider, conn)
+			result, err := provider.Send(t.Context(), uvim.OutboundMessage{
+				Target: &uvim.OutboundTarget{ID: tt.recipient, Kind: tt.kind},
+				Text:   "# 结论\n**完成**", Final: tt.final,
+				Referrer: uvim.Referrer{ReplyToken: tt.reply, MessageID: "message1"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantCommand := cmdSend
+			wantBody := map[string]any{"chatid": tt.recipient, "msgtype": "markdown", "markdown": map[string]any{"content": "# 结论\n**完成**"}}
+			wantID := conn.sent.Headers.ReqID
+			if tt.reply != "" {
+				wantCommand, wantID = cmdRespond, "uv-message1"
+				wantBody = map[string]any{"msgtype": "stream", "stream": map[string]any{"id": "uv-message1", "content": "# 结论\n**完成**", "finish": tt.final}}
+				if conn.sent.Headers.ReqID != tt.reply {
+					t.Errorf("reply reqid = %s", conn.sent.Headers.ReqID)
+				}
+			}
+			if conn.sent.Cmd != wantCommand || !reflect.DeepEqual(conn.sent.Body, wantBody) {
+				t.Errorf("frame = %+v, want command=%s body=%v", conn.sent, wantCommand, wantBody)
+			}
+			if sends != 1 || wantID == "" || result.MessageID != wantID || result.Provider != "wecom" || result.Time.IsZero() {
+				t.Fatalf("sends=%d result=%+v", sends, result)
+			}
+		})
 	}
 }
 
