@@ -395,6 +395,92 @@ func TestHubRoutesOutboundByConnector(t *testing.T) {
 	}
 }
 
+func TestHubMessageUpdateChecksCapabilityIdentityAndAuthentication(t *testing.T) {
+	for _, tc := range []struct {
+		name                       string
+		capability, implementation bool
+		change                     func(*uvim.MessageUpdate, *http.Request)
+		wantStatus                 int
+	}{
+		{"supported", true, true, nil, 200},
+		{"missing capability", false, true, nil, 501},
+		{"missing implementation", true, false, nil, 501},
+		{"unauthenticated", true, true, func(_ *uvim.MessageUpdate, r *http.Request) { r.Header.Del("Authorization") }, 401},
+		{"wrong method", true, true, func(_ *uvim.MessageUpdate, r *http.Request) { r.Method = http.MethodGet }, 405},
+		{"missing connector", true, true, func(m *uvim.MessageUpdate, _ *http.Request) { m.Connector = "" }, 400},
+		{"unknown connector", true, true, func(m *uvim.MessageUpdate, _ *http.Request) { m.Connector = "other" }, 404},
+		{"missing message", true, true, func(m *uvim.MessageUpdate, _ *http.Request) { m.MessageID = "" }, 400},
+		{"unsupported target", true, true, func(m *uvim.MessageUpdate, _ *http.Request) { m.Target.Kind = "foreign-kind" }, 400},
+		{"oversize", true, true, func(m *uvim.MessageUpdate, _ *http.Request) { m.Text = strings.Repeat("x", 16385) }, 502},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := memory.NewConnector("test", "sandbox")
+			advertised := &updateMetadataProvider{Provider: base, edit: tc.capability}
+			updater := &updateTestProvider{updateMetadataProvider: advertised}
+			var registered uvim.Provider = advertised
+			if tc.implementation {
+				registered = updater
+			}
+			main := memory.NewConnector("test", "main")
+			hub := NewHub(uvim.NewProviderRegistry(main, registered), nil, nil)
+			hub.SetAuthToken("token")
+			api := httptest.NewServer(hub.Handler())
+			defer api.Close()
+			msg := uvim.MessageUpdate{OutboundMessage: uvim.OutboundMessage{Provider: "test", Connector: "sandbox", Target: &uvim.OutboundTarget{ID: "conversation", Kind: uvim.TargetConversation}, Text: "replacement"}, MessageID: "outbound"}
+			req, _ := http.NewRequest(http.MethodPost, api.URL+"/v1/message.update", nil)
+			req.Header.Set("Authorization", "Bearer token")
+			if tc.change != nil {
+				tc.change(&msg, req)
+			}
+			raw, _ := json.Marshal(msg)
+			req.Body = io.NopCloser(bytes.NewReader(raw))
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status=%d want=%d", resp.StatusCode, tc.wantStatus)
+			}
+			if tc.wantStatus == 200 {
+				var result uvim.SendResult
+				if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+					t.Fatal(err)
+				}
+				if len(updater.updates) != 1 || !reflect.DeepEqual(updater.updates[0], msg) || result.MessageID != "outbound" || result.Connector != "sandbox" || result.Time.IsZero() {
+					t.Fatalf("updates=%+v result=%+v", updater.updates, result)
+				}
+			} else if len(updater.updates) != 0 {
+				t.Fatalf("unexpected updates=%+v", updater.updates)
+			}
+			if len(main.Sent()) != 0 || len(base.Sent()) != 0 {
+				t.Fatal("update fell back to create")
+			}
+		})
+	}
+}
+
+type updateMetadataProvider struct {
+	uvim.Provider
+	edit bool
+}
+
+func (p *updateMetadataProvider) Capabilities() uvim.Capabilities {
+	caps := p.Provider.Capabilities()
+	caps.EditMessage, caps.TextMaxBytes = p.edit, 16384
+	return caps
+}
+
+type updateTestProvider struct {
+	*updateMetadataProvider
+	updates []uvim.MessageUpdate
+}
+
+func (p *updateTestProvider) Update(_ context.Context, msg uvim.MessageUpdate) (uvim.SendResult, error) {
+	p.updates = append(p.updates, msg)
+	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: msg.MessageID, Time: time.Now().UTC()}, nil
+}
+
 func TestHubRejectsInvalidExplicitTarget(t *testing.T) {
 	provider := memory.New("test")
 	hub := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, ""), &uvim.ResourceStore{Dir: t.TempDir()})

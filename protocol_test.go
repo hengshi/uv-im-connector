@@ -346,6 +346,66 @@ func TestReplyHandlePolicyIsAdditiveJSON(t *testing.T) {
 	}
 }
 
+func TestOutputCapabilitiesAndMessageUpdateAreAdditive(t *testing.T) {
+	var legacy Capabilities
+	if err := json.Unmarshal([]byte(`{"outbound":true,"reply_message":true}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.ReplyStream || legacy.EditMessage || legacy.TextMaxBytes != 0 {
+		t.Fatalf("legacy capabilities inferred new operations: %+v", legacy)
+	}
+	raw, err := json.Marshal(MessageUpdate{OutboundMessage: OutboundMessage{Provider: "lark", Connector: "main", Text: "replacement", Referrer: Referrer{MessageID: "incoming"}}, MessageID: "outgoing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err != nil {
+		t.Fatal(err)
+	}
+	if object["message_id"] != "outgoing" || object["text"] != "replacement" || object["provider"] != "lark" || object["referrer"].(map[string]any)["message_id"] != "incoming" {
+		t.Fatalf("update JSON = %s", raw)
+	}
+	raw, err = json.Marshal(Capabilities{ReplyMessage: true, ReplyStream: true, TextMaxBytes: 16384})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored Capabilities
+	if err := json.Unmarshal(raw, &restored); err != nil || !restored.ReplyStream || restored.TextMaxBytes != 16384 {
+		t.Fatalf("capability round trip = %+v, %v", restored, err)
+	}
+}
+
+func TestValidateOutboundTextCountsNormalizedUTF8Bytes(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		msg      OutboundMessage
+		max      int
+		category string
+	}{
+		{"below", OutboundMessage{Text: "甲a"}, 5, ""},
+		{"exact", OutboundMessage{Text: "甲ab"}, 5, ""},
+		{"over", OutboundMessage{Text: "甲abc"}, 5, SendFailurePayloadTooLarge},
+		{"normalization", OutboundMessage{Text: " \r\n甲\r\na \n"}, 5, ""},
+		{"elements", OutboundMessage{Elements: []Element{Text("甲"), {Children: []Element{Text("abc")}}}}, 5, SendFailurePayloadTooLarge},
+		{"invalid UTF8", OutboundMessage{Text: string([]byte{0xff})}, 5, SendFailureInvalidRequest},
+		{"unknown budget", OutboundMessage{Text: strings.Repeat("a", 20000)}, 0, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateOutboundText(tc.msg, Capabilities{TextMaxBytes: tc.max})
+			if tc.category == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			failure, ok := ProviderSendFailure(err)
+			if !ok || failure.Category != tc.category || failure.DeliveryState != DeliveryNotAttempted || failure.Retryable {
+				t.Fatalf("failure=%+v err=%v", failure, err)
+			}
+		})
+	}
+}
+
 func TestValidateOutboundTarget(t *testing.T) {
 	caps := Capabilities{ProactiveDirect: true, TargetKinds: []string{TargetUser}}
 	if err := ValidateOutboundTarget(OutboundMessage{Target: &OutboundTarget{ID: "u1", Kind: TargetUser}}, caps); err != nil {

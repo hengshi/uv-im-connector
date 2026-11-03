@@ -239,6 +239,7 @@ Connector IDs identify one concrete bot/app/workspace identity for a provider. I
 | `GET /v1/events?after=<seq>` | Read persisted normalized events. |
 | `GET /v1/events/ws?after=<seq>` | Watch normalized events over WebSocket. |
 | `POST /v1/message.create` | Send an outbound message. |
+| `POST /v1/message.update` | Replace an exact bot-created text message when `edit_message` is supported. |
 | `POST /v1/upload.create` | Create an internal resource from local bytes. |
 | `POST /v1/resource.download` | Resolve a provider-private resource into an internal resource. |
 | `POST /v1/webhook/{provider}/{connector}` | Provider webhook ingress. |
@@ -353,6 +354,10 @@ Reply to a known message or thread by carrying the event referrer back:
 `target.kind` is one of `user`, `group`, `channel`, or `conversation`. Use a kind declared in the provider's `capabilities.target_kinds`. For a reply, copy the inbound event's complete `referrer`; its target takes precedence over legacy channel fields. The legacy `channel_id` and `channel_type` fields remain accepted for protocol-v1 callers: `direct` resolves to `user`, `group` to `group`, `thread` to `channel`, and `room` or an empty type resolves to `conversation`. The legacy `channel_id` remains the provider-native existing conversation/channel ID; only the semantic kind is mapped, so it is not reinterpreted as a proactive user ID. A legacy request must include a channel ID or a message/reply handle. Unknown non-empty legacy channel types are rejected instead of being guessed.
 
 `GET /v1/meta` exposes `reply_message`, `proactive_direct`, `proactive_group`, and `target_kinds` for each configured provider. Callers should check these fields before displaying or invoking an outbound operation.
+
+Optional `reply_stream` applies only to a live passive reply-token route; `edit_message` requires the provider's genuine `MessageUpdater`. `text_max_bytes` bounds normalized UTF-8 text per send/update, including caller formatting; zero or missing means unknown. WeCom, Lark, and DingTalk declare 16384 bytes and reject oversized text before upload/send. Callers own lossless pagination and route-specific presentation. Older metadata without the new capabilities implies append-only behavior.
+
+`client.Update(ctx, uvim.MessageUpdate{OutboundMessage: message, MessageID: receipt.MessageID})` calls the authenticated update endpoint. It requires an exact provider/connector, full replacement text, and original conversation proof. Lark verifies native app ownership and chat/thread identity before PUT; updates never fall back to new-message sends. See [application integration](docs/en/guide/application-integration.md#complete-text-reply-streams-and-editing) for payloads, failure handling, permissions, and dependency/service compatibility.
 
 Some inbound `referrer` values contain short-lived or limited-use reply handles. `referrer.expires_at` is the provider-supplied or adapter-derived deadline, and `capabilities.reply_max_uses` is the maximum number of outbound attempts that may carry the handle; an omitted or zero maximum means that no finite use limit is declared. A caller that needs to send after the deadline or use limit must remove the message/reply handle and send to `referrer.target` only when the corresponding proactive capability and target kind are available. This contract is capability-driven: provider business windows that do not behave like expiring reply handles remain provider constraints rather than generic retries.
 

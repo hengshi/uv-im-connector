@@ -134,6 +134,8 @@ func (p *Provider) Capabilities() uvim.Capabilities {
 		GroupMessage:     true,
 		ThreadReply:      true,
 		ReplyMessage:     true,
+		EditMessage:      true,
+		TextMaxBytes:     16 * 1024,
 		ProactiveDirect:  true,
 		ProactiveGroup:   true,
 		TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
@@ -511,6 +513,9 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	defer func() {
 		err = uvim.NewProviderSendOperationError("lark send", err)
 	}()
+	if err := uvim.ValidateOutboundText(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, err
+	}
 	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("lark send: %w", err)
 	}
@@ -597,6 +602,10 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	if decoded.Code != 0 {
 		sendErr := fmt.Errorf("lark send: code=%d msg=%q", decoded.Code, decoded.Msg)
 		return uvim.SendResult{}, uvim.NewProviderResponseError(respRaw, sendErr.Error(), sendErr)
+	}
+	if strings.TrimSpace(decoded.Data.MessageID) == "" {
+		sendErr := fmt.Errorf("lark send: response missing message ID")
+		return uvim.SendResult{}, uvim.NewProviderSendLogError(sendErr.Error(), sendErr)
 	}
 	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: decoded.Data.MessageID, Time: time.Now().UTC()}, nil
 }

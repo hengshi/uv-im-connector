@@ -42,6 +42,7 @@ WeCom、Lark WebSocket 断线及 DingTalk Stream 首次启动失败由共享监�
 - `Message`：文本、结构化 elements 和 resource references。
 - `ResourceRef`：文件 / 图片 / 音频 / 视频引用，包含 sanitized internal URL 和 provider-private 字段。
 - `OutboundMessage`：显式 `target`、text/elements/resources，以及用于 reply/thread 的可选 referrer。
+- `MessageUpdate`：嵌入 `OutboundMessage`，顶层 `message_id` 指定本 bot 已发送的精确消息，只替换文本。
 - `Capabilities`：每个 provider 的显式能力声明，包括 reply、Server 主动发送和可接受的 target kind。
 
 `OutboundMessage.target` 由 `id` 和 `kind` 组成。`kind` 只能是 `user`、`group`、`channel` 或 `conversation`，调用方必须使用该 provider 在 `capabilities.target_kinds` 中声明的类型。入站事件的 `referrer.target` 是 provider adapter 给出的精确回复目标；回复时应原样带回完整 `referrer`。目标解析优先级是 outbound `target`、`referrer.target`、旧 channel 字段。协议 v1 继续接受旧的 `channel_id` / `channel_type`：`direct` 映射为 `user`，`group` 映射为 `group`，`thread` 映射为 `channel`，`room` 或空类型映射为 `conversation`。旧 `channel_id` 仍是 provider-native 的现有会话 / channel ID，只映射语义类型，不会被重新解释成主动发送的 user ID。旧请求必须提供 channel ID 或 message / reply handle；未知的非空旧类型会被拒绝，不做猜测。
@@ -53,6 +54,8 @@ WeCom、Lark WebSocket 断线及 DingTalk Stream 首次启动失败由共享监�
 可选的 `target.id_type` 区分实际原生地址方案，只接受 `capabilities.target_id_types` 声明的值；必须随 referrer 一起保留。用户身份列表不用于自动选路，详见[带类型的原生发送地址](./identities.md#带类型的原生发送地址)。
 
 WeCom 的可选企业身份查询在事件发送 worker 中完成；应用 token 和成员查询有界缓存，查询失败仍发布原始消息，不阻塞 socket ACK 调度。配置和账号核验规则见[企微接入与通讯录](./guide/wecom.md)。
+
+`reply_stream` 只适用于有效被动 reply token；`edit_message` 要求真实的可选 `MessageUpdater` 实现；`text_max_bytes` 是单次标准化 UTF-8 文本的字节预算，零值或缺失表示未知。流式更新、编辑和长内容的集成及兼容性见[应用接入](./guide/application-integration.md#完整文本流式回复和编辑)。
 
 ## Provider 能力矩阵
 
@@ -127,6 +130,7 @@ ResourceRef
 | `GET /v1/events?after=<seq>` | 读取标准事件日志。 |
 | `GET /v1/events/ws?after=<seq>` | 订阅标准事件。 |
 | `POST /v1/message.create` | 发送出站消息。 |
+| `POST /v1/message.update` | 编辑精确 connector 的本 bot 文本消息，需能力和 `MessageUpdater` 实现。 |
 | `POST /v1/upload.create` | 从本地字节创建内部资源。 |
 | `POST /v1/resource.download` | 可信请求：把 provider-private resource 解析为内部资源。 |
 | `POST /v1/webhook/{provider}/{connector}` | Provider webhook ingress。Webhook verification 由 provider adapter 负责。 |

@@ -50,6 +50,7 @@ func New(config Config) (*Provider, error) {
 			DirectMessage:    true,
 			GroupMessage:     true,
 			ReplyMessage:     true,
+			TextMaxBytes:     16 * 1024,
 			ProactiveDirect:  clientID != "",
 			ProactiveGroup:   clientID != "" || strings.TrimSpace(config.Token) != "",
 			UploadResource:   clientID != "" && config.ResourceStore != nil,

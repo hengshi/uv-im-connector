@@ -99,6 +99,10 @@ func TestProviderMetadataForAllChannels(t *testing.T) {
 			seen[provider.ID()] = true
 			conformance.AssertProviderMetadata(t, provider)
 			caps := provider.Capabilities()
+			wantLimit := map[string]int{"wecom": 16384, "lark": 16384, "dingtalk": 16384}[item.name]
+			if caps.ReplyStream != (item.name == "wecom") || caps.EditMessage != (item.name == "lark") || caps.TextMaxBytes != wantLimit {
+				t.Fatalf("output capabilities = %+v", caps)
+			}
 			if !caps.Inbound || !caps.Outbound || !caps.DownloadResource {
 				t.Fatalf("inbound/outbound/download capabilities = %+v", caps)
 			}

@@ -71,6 +71,7 @@ Key docs:
 - GET /v1/events?after=<seq>
 - GET /v1/events/ws?after=<seq>
 - POST /v1/message.create
+- POST /v1/message.update (capability-gated exact bot-created text replacement)
 - POST /v1/upload.create
 - POST /v1/resource.download
 - POST /v1/webhook/{provider}/{connector}

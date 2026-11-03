@@ -101,6 +101,28 @@ Stable `category` values are `invalid-request`, `authentication`, `permission`, 
 
 Callers should not call provider-native send APIs directly. Provider-specific send behavior belongs in provider adapters.
 
+## Complete text, reply streams, and editing
+
+`capabilities.text_max_bytes` bounds normalized UTF-8 text bytes per send or edit, including visible prefixes and formatting added by the caller. WeCom, Lark, and DingTalk currently declare and validate 16384 bytes before upload or send. Oversized text returns `category=payload-too-large`, `delivery_state=not-attempted`, and a safe detail containing the exact limit. Zero or an absent field means unknown. The connector does not truncate or paginate; callers should page complete logical content and use a supported file resource when further pages cannot legally be sent.
+
+`reply_stream=true` applies only to a live passive reply-token route. It does not advertise proactive streaming. WeCom uses the existing `message.create` path: retain the same referrer, replace the complete stream text, and close with `final=true`. Re-evaluate the mode after switching to proactive delivery. Ordinary DingTalk Markdown appends messages. Presentation policy belongs to the caller and depends on the exact connector and actual route.
+
+`edit_message=true` advertises the optional `MessageUpdater.Update(ctx, MessageUpdate)` and `POST /v1/message.update` (Go client: `Client.Update`). Updates use the same authentication and structured failures as sends. They accept complete replacement text without elements or resources, and never fall back to creating a new message:
+
+```json
+{
+  "provider": "lark",
+  "connector": "main",
+  "message_id": "om_bot_created",
+  "target": {"kind": "conversation", "id": "oc_original_chat"},
+  "text": "Complete replacement text"
+}
+```
+
+The top-level `message_id` comes from a successful outbound `SendResult`, separately from the inbound `referrer.message_id`. Before a native PUT, Lark uses a native GET to verify the exact message's app sender, text type, and conversation. A foreign app, deleted message, different chat, or mismatched specified thread is rejected. All supplied conversation fields must agree. Provide a known chat ID, or an original `referrer.message_id` that resolves to the same chat. A user Open ID is insufficient conversation proof; use the original conversation target. Failed reads never execute an edit; the app needs message read and edit permissions. See the native [edit message](https://open.feishu.cn/document/server-docs/im-v1/message/update) and [get message](https://open.feishu.cn/document/server-docs/im-v1/message/get) contracts.
+
+These fields and the endpoint are additive protocol v1 capabilities. New callers must first read metadata for the exact provider/connector. Missing capabilities on an older service mean append-only presentation and no update calls. Older callers continue using `message.create`. Applications using the new Go client/API must pin a dependency that includes it and upgrade the service binary before enabling it; updating a local Go dependency does not upgrade a running service.
+
 ## Recovery
 
 The event log is sequence-based. A consumer can reconnect with the last processed sequence:

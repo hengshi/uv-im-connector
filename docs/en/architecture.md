@@ -42,6 +42,7 @@ The normalized protocol has these stable objects:
 - `Message`: text, structured elements, and resource references.
 - `ResourceRef`: file/image/audio/video reference with sanitized internal URL and private provider fields.
 - `OutboundMessage`: explicit target, text/elements/resources, and optional referrer for replies or threads.
+- `MessageUpdate`: embeds `OutboundMessage` with a top-level `message_id` identifying an exact bot-created message; replaces text only.
 - `Capabilities`: explicit feature declaration for each provider, including reply, proactive send, and accepted target kinds.
 
 `OutboundMessage.target` contains an `id` and a `kind`. The kind is `user`, `group`, `channel`, or `conversation`, and callers must use a kind declared by that provider in `capabilities.target_kinds`. An inbound event's `referrer.target` is the exact reply destination selected by the provider adapter; callers should copy the complete `referrer` when replying. Target resolution prefers outbound `target`, then `referrer.target`, then legacy channel fields. Protocol v1 continues to accept the legacy `channel_id` / `channel_type` fields: `direct` maps to `user`, `group` to `group`, `thread` to `channel`, and `room` or an empty type maps to `conversation`. The legacy `channel_id` remains the provider-native existing conversation/channel ID; only its semantic kind is mapped, so it is not reinterpreted as a proactive user ID. A legacy request must include a channel ID or a message/reply handle. Unknown non-empty legacy channel types are rejected instead of being guessed.
@@ -53,6 +54,8 @@ Some inbound `referrer` values contain short-lived or limited-use reply handles.
 Optional `target.id_type` distinguishes native address schemes and must be advertised in `capabilities.target_id_types`. Preserve it with the referrer. User identity lists do not choose destinations; see [typed native send addresses](./identities.md#typed-native-send-addresses).
 
 Optional WeCom enterprise lookup runs in the event-emission worker, with bounded token/member caching. Failures preserve the original message and do not block socket ACK dispatch. See [WeCom setup and directory identities](./guide/wecom.md) for configuration and account-verification rules.
+
+`reply_stream` applies only to live passive reply-token routes. `edit_message` requires a genuine optional `MessageUpdater`. `text_max_bytes` bounds normalized UTF-8 text bytes per call; zero or absent means unknown. See [application integration](./guide/application-integration.md#complete-text-reply-streams-and-editing) for streaming, editing, long content, and compatibility.
 
 ## Provider Capability Matrix
 
@@ -127,6 +130,7 @@ ResourceRef
 | `GET /v1/events?after=<seq>` | Read normalized event log. |
 | `GET /v1/events/ws?after=<seq>` | Watch normalized events. |
 | `POST /v1/message.create` | Send outbound message. |
+| `POST /v1/message.update` | Edit an exact connector's bot-created text message; requires capability and `MessageUpdater`. |
 | `POST /v1/upload.create` | Create internal resource from local bytes. |
 | `POST /v1/resource.download` | Trusted request to resolve a provider-private resource into an internal resource. |
 | `POST /v1/webhook/{provider}/{connector}` | Provider webhook ingress. Webhook verification is owned by the provider adapter. |

@@ -56,6 +56,12 @@ func AssertProviderMetadata(t *testing.T, provider uvim.Provider) {
 	if caps.ReplyMaxUses < 0 || (caps.ReplyMaxUses > 0 && !caps.ReplyMessage) {
 		t.Fatalf("provider %s has invalid reply_max_uses %d", provider.ID(), caps.ReplyMaxUses)
 	}
+	if caps.TextMaxBytes < 0 || (caps.ReplyStream && !caps.ReplyMessage) {
+		t.Fatalf("provider %s has invalid text/stream capabilities", provider.ID())
+	}
+	if _, ok := provider.(uvim.MessageUpdater); caps.EditMessage && !ok {
+		t.Fatalf("provider %s advertises edit_message without MessageUpdater", provider.ID())
+	}
 	if caps.Outbound && len(caps.TargetKinds) == 0 {
 		t.Fatalf("provider %s must declare outbound target kinds", provider.ID())
 	}

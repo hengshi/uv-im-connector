@@ -147,6 +147,58 @@ func TestServiceMetaReturnsTypedServiceMetadata(t *testing.T) {
 	}
 }
 
+func TestUpdatePreservesExactMessageAndFailureFacts(t *testing.T) {
+	for _, status := range []int{200, 502, 404} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			calls := 0
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				calls++
+				var msg uvim.MessageUpdate
+				if err := json.NewDecoder(req.Body).Decode(&msg); err != nil {
+					t.Error(err)
+				}
+				if req.Method != http.MethodPost || req.URL.Path != "/v1/message.update" || req.Header.Get("Authorization") != "Bearer token" || msg.Provider != "lark" || msg.Connector != "main" || msg.MessageID != "outbound" || msg.Text != "replacement" || msg.Referrer.MessageID != "incoming" {
+					t.Errorf("request=%s %s msg=%+v", req.Method, req.URL.Path, msg)
+				}
+				w.WriteHeader(status)
+				switch status {
+				case 200:
+					json.NewEncoder(w).Encode(uvim.SendResult{Provider: "lark", Connector: "main", MessageID: "outbound", Time: time.Now().UTC()})
+				case 502:
+					json.NewEncoder(w).Encode(map[string]any{"error": "provider_send_failed", "failure": uvim.SendFailure{Category: uvim.SendFailureRateLimited, DeliveryState: uvim.DeliveryRejected, Retryable: true, RetryAfterSeconds: 3, DeliveredCount: 1, DeliveredMessageIDs: []string{"acknowledged-prefix"}}})
+				default:
+					w.Write([]byte("legacy endpoint not found"))
+				}
+			}))
+			defer api.Close()
+			c := New(api.URL)
+			c.Token = "token"
+			result, err := c.Update(t.Context(), uvim.MessageUpdate{OutboundMessage: uvim.OutboundMessage{Provider: "lark", Connector: "main", Text: "replacement", Referrer: uvim.Referrer{MessageID: "incoming"}}, MessageID: "outbound"})
+			if calls != 1 {
+				t.Fatalf("calls=%d", calls)
+			}
+			if status == 200 {
+				if err != nil || result.MessageID != "outbound" || result.Time.IsZero() {
+					t.Fatalf("result=%+v err=%v", result, err)
+				}
+				return
+			}
+			var httpErr *HTTPError
+			if !errors.As(err, &httpErr) || httpErr.StatusCode != status {
+				t.Fatalf("error=%v", err)
+			}
+			if status == 502 {
+				failure, ok := ProviderSendFailure(err)
+				if !ok || failure.Category != uvim.SendFailureRateLimited || failure.DeliveryState != uvim.DeliveryRejected || !failure.Retryable || failure.RetryAfterSeconds != 3 || failure.DeliveredCount != 1 || len(failure.DeliveredMessageIDs) != 1 || failure.DeliveredMessageIDs[0] != "acknowledged-prefix" {
+					t.Fatalf("failure=%+v", failure)
+				}
+			} else if httpErr.Failure != nil {
+				t.Fatal("legacy failure inferred delivery evidence")
+			}
+		})
+	}
+}
+
 func TestSendSurfacesStructuredProviderFailureDetail(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
