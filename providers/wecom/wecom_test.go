@@ -644,42 +644,55 @@ func TestSendReturnsProviderAckError(t *testing.T) {
 }
 
 func TestSendTextBudgetPrecedesTransport(t *testing.T) {
-	for _, size := range []int{16383, 16384, 16385} {
-		t.Run(fmt.Sprint(size), func(t *testing.T) {
-			provider, err := New(Config{BotID: "bot", Secret: "secret"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			conn := &sendTestConn{}
-			frames := 0
-			text := strings.Repeat("x", size)
-			conn.onWrite = func(raw []byte) {
-				frames++
-				var sent frame
-				if err := json.Unmarshal(raw, &sent); err != nil {
-					t.Error(err)
-					return
+	for _, test := range []struct {
+		name  string
+		reply string
+	}{
+		{"proactive", ""},
+		{"passive", "reply"},
+	} {
+		for _, size := range []int{20479, 20480, 20481} {
+			t.Run(fmt.Sprintf("%s/%d", test.name, size), func(t *testing.T) {
+				provider, err := New(Config{BotID: "bot", Secret: "secret"})
+				if err != nil {
+					t.Fatal(err)
 				}
-				stream := uvim.MapStringAny(sent.Body["stream"])
-				if sent.Cmd != cmdRespond || stream["content"] != text || stream["finish"] != false {
-					t.Errorf("stream = %+v", sent)
+				conn := &sendTestConn{}
+				frames := 0
+				text := strings.Repeat("界", size/3) + strings.Repeat("x", size%3)
+				conn.onWrite = func(raw []byte) {
+					frames++
+					var sent frame
+					if err := json.Unmarshal(raw, &sent); err != nil {
+						t.Error(err)
+						return
+					}
+					wantCommand := cmdSend
+					wantBody := map[string]any{"chatid": "user1", "msgtype": "markdown", "markdown": map[string]any{"content": text}}
+					if test.reply != "" {
+						wantCommand = cmdRespond
+						wantBody = map[string]any{"msgtype": "stream", "stream": map[string]any{"id": "uv-incoming", "content": text, "finish": false}}
+					}
+					if sent.Cmd != wantCommand || !reflect.DeepEqual(sent.Body, wantBody) {
+						t.Errorf("text frame = %+v", sent)
+					}
+					code := 0
+					provider.resolvePending(sent.Headers.ReqID, frame{Headers: sent.Headers, ErrCode: &code})
 				}
-				code := 0
-				provider.resolvePending(sent.Headers.ReqID, frame{Headers: sent.Headers, ErrCode: &code})
-			}
-			activateSendTestConn(provider, conn)
-			_, err = provider.Send(t.Context(), uvim.OutboundMessage{Text: text, Referrer: uvim.Referrer{ReplyToken: "reply", MessageID: "incoming"}})
-			if size <= 16384 {
-				if err != nil || frames != 1 {
-					t.Fatalf("frames=%d err=%v", frames, err)
+				activateSendTestConn(provider, conn)
+				_, err = provider.Send(t.Context(), uvim.OutboundMessage{Text: text, Target: &uvim.OutboundTarget{ID: "user1", Kind: uvim.TargetUser}, Referrer: uvim.Referrer{ReplyToken: test.reply, MessageID: "incoming"}})
+				if size <= 20480 {
+					if err != nil || frames != 1 {
+						t.Fatalf("frames=%d err=%v", frames, err)
+					}
+				} else {
+					failure, ok := uvim.ProviderSendFailure(err)
+					if !ok || frames != 0 || failure.Category != uvim.SendFailurePayloadTooLarge || failure.DeliveryState != uvim.DeliveryNotAttempted {
+						t.Fatalf("frames=%d failure=%+v err=%v", frames, failure, err)
+					}
 				}
-			} else {
-				failure, ok := uvim.ProviderSendFailure(err)
-				if !ok || frames != 0 || failure.Category != uvim.SendFailurePayloadTooLarge || failure.DeliveryState != uvim.DeliveryNotAttempted {
-					t.Fatalf("frames=%d failure=%+v err=%v", frames, failure, err)
-				}
-			}
-		})
+			})
+		}
 	}
 }
 

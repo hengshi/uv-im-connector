@@ -57,24 +57,74 @@ func TestNewRejectsPartialStreamCredentials(t *testing.T) {
 	}
 }
 
-func TestSendRejectsOverBudgetBeforeEitherTransport(t *testing.T) {
+func TestSendWithoutRawTextBudgetReachesEitherTransport(t *testing.T) {
 	for _, app := range []bool{false, true} {
-		calls := 0
-		api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { calls++; w.WriteHeader(http.StatusBadRequest) }))
-		defer api.Close()
-		config := Config{Token: "group-token", BaseURL: api.URL}
-		if app {
-			config.ClientID, config.ClientSecret = "app", "secret"
-		}
-		provider, err := New(config)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = provider.Send(t.Context(), uvim.OutboundMessage{Text: strings.Repeat("x", 16385), Target: &uvim.OutboundTarget{ID: "recipient", Kind: uvim.TargetGroup}})
-		failure, ok := uvim.ProviderSendFailure(err)
-		if !ok || calls != 0 || failure.Category != uvim.SendFailurePayloadTooLarge || failure.DeliveryState != uvim.DeliveryNotAttempted {
-			t.Fatalf("app=%v calls=%d failure=%+v err=%v", app, calls, failure, err)
-		}
+		t.Run(fmt.Sprintf("app=%t", app), func(t *testing.T) {
+			prefix := "Budget regression\n"
+			text := prefix + strings.Repeat("x", 20*1024-len(prefix))
+			sends, tokens := 0, 0
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.Method != http.MethodPost {
+					t.Errorf("method = %s", req.Method)
+				}
+				if req.URL.Path == "/v1.0/oauth2/accessToken" && app {
+					tokens++
+					_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "access-token"})
+					return
+				}
+				sends++
+				var markdown map[string]string
+				if app {
+					var body struct {
+						RobotCode string   `json:"robotCode"`
+						MsgKey    string   `json:"msgKey"`
+						MsgParam  string   `json:"msgParam"`
+						UserIDs   []string `json:"userIds"`
+					}
+					if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					if req.URL.Path != "/v1.0/robot/oToMessages/batchSend" || req.Header.Get("x-acs-dingtalk-access-token") != "access-token" || body.RobotCode != "app" || body.MsgKey != "sampleMarkdown" || len(body.UserIDs) != 1 || body.UserIDs[0] != "recipient" {
+						t.Errorf("native app request path=%s body=%+v", req.URL.Path, body)
+					}
+					if err := json.Unmarshal([]byte(body.MsgParam), &markdown); err != nil {
+						t.Error(err)
+					}
+					_ = json.NewEncoder(w).Encode(map[string]string{"processQueryKey": "native-direct"})
+				} else {
+					var body struct {
+						MsgType  string            `json:"msgtype"`
+						Markdown map[string]string `json:"markdown"`
+					}
+					if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					if req.URL.Path != "/robot/send" || req.URL.Query().Get("access_token") != "group-token" || body.MsgType != "markdown" {
+						t.Errorf("native webhook request path=%s type=%s", req.URL.Path, body.MsgType)
+					}
+					markdown = body.Markdown
+					_ = json.NewEncoder(w).Encode(map[string]int{"errcode": 0})
+				}
+				if markdown["title"] != "Budget regression" || markdown["text"] != text {
+					t.Errorf("native markdown title=%q text bytes=%d, want complete %d bytes", markdown["title"], len(markdown["text"]), len(text))
+				}
+			}))
+			defer api.Close()
+			config := Config{Token: "group-token", BaseURL: api.URL}
+			kind, wantTokens, wantID := uvim.TargetGroup, 0, ""
+			if app {
+				config.ClientID, config.ClientSecret = "app", "secret"
+				kind, wantTokens, wantID = uvim.TargetUser, 1, "native-direct"
+			}
+			provider, err := New(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := provider.Send(t.Context(), uvim.OutboundMessage{Text: text, Target: &uvim.OutboundTarget{ID: "recipient", Kind: kind}})
+			if err != nil || sends != 1 || tokens != wantTokens || result.Provider != "dingtalk" || result.MessageID != wantID {
+				t.Fatalf("sends=%d tokens=%d result=%+v err=%v", sends, tokens, result, err)
+			}
+		})
 	}
 }
 
