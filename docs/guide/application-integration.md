@@ -101,6 +101,28 @@ Server 主动发送没有入站 `referrer`，必须显式传 `target`，并先�
 
 调用方不应该直接调用 provider-native send API。Provider 特有发送逻辑属于 provider adapter。
 
+## 完整文本、流式回复和编辑
+
+`capabilities.text_max_bytes` 是单次发送或编辑的标准化 UTF-8 文本字节上限，包含调用方添加的可见前缀和格式。WeCom 和 DingTalk 当前声明并在上传或发送前校验 16384 字节；超限返回 `category=payload-too-large`、`delivery_state=not-attempted` 和包含精确上限的安全说明。`0` 或字段缺失表示未知上限。Lark 的原生限制针对实际序列化请求体，无法准确声明为固定的原始 UTF-8 文本预算，因此其 `text_max_bytes` 保持未知，由原生 API 校验请求体。Connector 不自动截断或分页；调用方按完整逻辑内容分页，并在无法合法继续分页时使用受支持的文件资源。
+
+`reply_stream=true` 只表示有效被动 reply token 路由可以替换同一条流式回复，不表示主动发送支持流式更新。WeCom 使用现有 `message.create`：保留同一 `referrer` 更新全文，最后以 `final=true` 关闭流。切换主动发送路由后须重新判断模式。DingTalk 的普通 Markdown 是追加消息。调用方根据当前 connector 和实际路由决定呈现策略。
+
+`edit_message=true` 表示实现了可选 `MessageUpdater.Update(ctx, MessageUpdate)` 和 `POST /v1/message.update`（Go client 为 `Client.Update`）。编辑沿用服务认证和发送失败协议，只接受完整替换文本，不接受 elements 或 resources，失败后不会自动创建新消息：
+
+```json
+{
+  "provider": "lark",
+  "connector": "main",
+  "message_id": "om_bot_created",
+  "target": {"kind": "conversation", "id": "oc_original_chat"},
+  "text": "更新后的完整正文"
+}
+```
+
+顶层 `message_id` 来自先前成功发送的 `SendResult`，与入站 `referrer.message_id` 不同。Lark 编辑前通过原生 GET 核验精确消息的 app 发送者、文本类型和会话，再调用原生 PUT；外部 app、已撤回消息、其他会话及指定但不匹配的话题均被拒绝。所有提供的会话字段必须一致。可提供已知 chat ID，或仅提供可查询到同一会话的原始 `referrer.message_id`；用户 Open ID 不足以证明会话，须使用原始 conversation target。读取失败不会执行编辑；应用需要消息读取和编辑权限。原生接口见[编辑消息](https://open.feishu.cn/document/server-docs/im-v1/message/update)及[获取指定消息](https://open.feishu.cn/document/server-docs/im-v1/message/get)。
+
+这些字段和 endpoint 是协议 v1 的增量能力。新调用方须先读取精确 provider/connector 的 metadata；旧服务缺少能力字段时保持追加策略，不调用编辑 endpoint。旧调用方继续使用 `message.create`。使用新 Go client/API 的应用须固定包含这些 API 的依赖版本，并升级服务二进制后再启用能力；仅更新本地 Go 依赖不会升级运行中的服务。
+
 ## 恢复
 
 事件日志按 sequence 递增。Consumer 可以带上最后处理过的 sequence 重连：

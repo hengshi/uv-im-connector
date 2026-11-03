@@ -19,6 +19,8 @@ Every provider must:
 - produce a normalized `SendFailure` for every outbound failure; callers must never infer retry policy from provider names, `detail`, or logs;
 - assert `category`, `retryable`, and `delivery_state` for HTTP/business ACK failures, plus `http_status`, `provider_code`, `retry_after_seconds`, and `request_id` when available;
 - never copy provider response bodies, arbitrary provider messages, or credentials into the structured failure.
+- advertise `edit_message=true` only with a genuine `MessageUpdater`; verify the exact connector, message, app sender, and destination before editing, with no fallback send;
+- advertise `reply_stream` only for passive reply-token routes; keep `text_max_bytes` nonnegative and validate complete normalized UTF-8 text before upload/send when a positive budget is declared, without truncation.
 
 ## Test Shape
 
@@ -35,6 +37,8 @@ Provider tests should cover:
 - resource download;
 - provider health;
 - duplicate event key stability.
+- update capability, authentication, exact target/message, foreign-app rejection, native PUT, and normalized failures; append-only policy when old metadata omits capabilities;
+- text-byte boundaries, WeCom stream close semantics, and acknowledged prefixes on ordered resource-send failures.
 
 Providers that require live credentials should split tests into:
 

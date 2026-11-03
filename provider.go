@@ -31,6 +31,12 @@ type Provider interface {
 	Health(context.Context) Health
 }
 
+// MessageUpdater is implemented only by adapters with native message editing.
+// Capabilities.EditMessage must also be true before callers invoke Update.
+type MessageUpdater interface {
+	Update(context.Context, MessageUpdate) (SendResult, error)
+}
+
 // SendResourceSequence sends text followed by each resource through a provider's
 // single-message path. Successful parts are never replayed after a later failure.
 func SendResourceSequence(ctx context.Context, msg OutboundMessage, send func(context.Context, OutboundMessage) (SendResult, error)) (SendResult, error) {

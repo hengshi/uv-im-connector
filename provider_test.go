@@ -41,6 +41,10 @@ func TestSendResourceSequencePreservesPartsAndPartialFailure(t *testing.T) {
 		if failAt > 0 && (failure.Retryable || failure.DeliveryState != DeliveryUnknown || len(failure.DeliveredMessageIDs) != failAt) {
 			t.Fatalf("partial failure = %+v", failure)
 		}
+		wantPrefix := strings.Join([]string{"batch-part-1", "batch-part-2", "batch-part-3"}[:failAt], ",")
+		if strings.Join(failure.DeliveredMessageIDs, ",") != wantPrefix || strings.Join(result.MessageIDs, ",") != wantPrefix {
+			t.Fatalf("acknowledged prefix: failure=%+v result=%+v want=%s", failure, result, wantPrefix)
+		}
 	}
 }
 

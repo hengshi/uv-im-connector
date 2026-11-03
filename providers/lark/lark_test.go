@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"reflect"
 	"strings"
 	"syscall"
@@ -751,13 +753,19 @@ func TestSendTextRoutesRecipientsAndReplies(t *testing.T) {
 		name                    string
 		message                 uvim.OutboundMessage
 		path, idType, recipient string
+		text                    string
 	}{
-		{"user open id", uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "ou_user", Kind: uvim.TargetUser}}, "/open-apis/im/v1/messages", "open_id", "ou_user"},
-		{"conversation", uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "oc_chat", Kind: uvim.TargetConversation}}, "/open-apis/im/v1/messages", "chat_id", "oc_chat"},
-		{"legacy direct channel", uvim.OutboundMessage{ChannelID: "oc_chat", ChannelType: uvim.ChannelDirect}, "/open-apis/im/v1/messages", "chat_id", "oc_chat"},
-		{"reply", uvim.OutboundMessage{Referrer: uvim.Referrer{MessageID: "om_original"}}, "/open-apis/im/v1/messages/om_original/reply", "", ""},
+		{"user open id", uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "ou_user", Kind: uvim.TargetUser}}, "/open-apis/im/v1/messages", "open_id", "ou_user", ""},
+		{"conversation", uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "oc_chat", Kind: uvim.TargetConversation}}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", ""},
+		{"legacy direct channel", uvim.OutboundMessage{ChannelID: "oc_chat", ChannelType: uvim.ChannelDirect}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", ""},
+		{"reply", uvim.OutboundMessage{Referrer: uvim.Referrer{MessageID: "om_original"}}, "/open-apis/im/v1/messages/om_original/reply", "", "", ""},
+		{"20 KiB text", uvim.OutboundMessage{ChannelID: "oc_chat"}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", strings.Repeat("x", 20*1024)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			text := tt.text
+			if text == "" {
+				text = "# 结论\n**完成**"
+			}
 			var sends int
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				if req.Method != http.MethodPost {
@@ -789,7 +797,7 @@ func TestSendTextRoutesRecipientsAndReplies(t *testing.T) {
 					if err := json.Unmarshal([]byte(body["content"]), &content); err != nil {
 						t.Error(err)
 					}
-					if content["text"] != "# 结论\n**完成**" {
+					if content["text"] != text {
 						t.Errorf("content = %v", content)
 					}
 					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"message_id": "om_sent"}})
@@ -803,7 +811,7 @@ func TestSendTextRoutesRecipientsAndReplies(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			tt.message.Text = "# 结论\n**完成**"
+			tt.message.Text = text
 			result, err := provider.Send(t.Context(), tt.message)
 			if err != nil {
 				t.Fatal(err)
@@ -847,31 +855,264 @@ func TestSendBusinessFailureExposesOnlyNormalizedFacts(t *testing.T) {
 	}
 }
 
-func TestSendMarksDecodeFailureForPrivateLogs(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		switch req.URL.Path {
-		case "/open-apis/auth/v3/tenant_access_token/internal":
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
-		case "/open-apis/im/v1/messages":
-			_, _ = w.Write([]byte(`{"code":`))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer server.Close()
-	provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL})
+func TestUpdateChecksNativeMessageOwnerAndConversation(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		change           func(*messageIdentity, *uvim.MessageUpdate)
+		wantGET, wantPUT int
+	}{
+		{"conversation", nil, 1, 1},
+		{"reference proof", func(_ *messageIdentity, m *uvim.MessageUpdate) {
+			m.Target = nil
+			m.Referrer = uvim.Referrer{MessageID: "om_in"}
+		}, 2, 1},
+		{"foreign app", func(i *messageIdentity, _ *uvim.MessageUpdate) { i.Sender.ID = "other-app" }, 1, 0},
+		{"user sender", func(i *messageIdentity, _ *uvim.MessageUpdate) { i.Sender.Type = "user" }, 1, 0},
+		{"wrong sender namespace", func(i *messageIdentity, _ *uvim.MessageUpdate) { i.Sender.Kind = "open_id" }, 1, 0},
+		{"wrong chat", func(i *messageIdentity, _ *uvim.MessageUpdate) { i.ChatID = "oc_other" }, 1, 0},
+		{"wrong thread", func(i *messageIdentity, m *uvim.MessageUpdate) {
+			i.ThreadID = "thread-other"
+			m.Referrer.ThreadID = "thread-expected"
+		}, 1, 0},
+		{"wrong message", func(i *messageIdentity, _ *uvim.MessageUpdate) { i.ID = "om_other" }, 1, 0},
+		{"deleted", func(i *messageIdentity, _ *uvim.MessageUpdate) { i.Deleted = true }, 1, 0},
+		{"nontext", func(i *messageIdentity, _ *uvim.MessageUpdate) { i.Type = "file" }, 1, 0},
+		{"conflicting chat proof", func(_ *messageIdentity, m *uvim.MessageUpdate) { m.Referrer.ChannelID = "oc_other" }, 0, 0},
+		{"shadowed referrer target", func(_ *messageIdentity, m *uvim.MessageUpdate) {
+			m.Referrer.Target = &uvim.OutboundTarget{ID: "oc_other", Kind: uvim.TargetConversation}
+		}, 0, 0},
+		{"wrong connector", func(_ *messageIdentity, m *uvim.MessageUpdate) { m.Connector = "other" }, 0, 0},
+		{"user target is not chat proof", func(_ *messageIdentity, m *uvim.MessageUpdate) {
+			m.Target = &uvim.OutboundTarget{ID: "ou_user", Kind: uvim.TargetUser}
+		}, 0, 0},
+		{"20 KiB text", func(_ *messageIdentity, m *uvim.MessageUpdate) { m.Text = strings.Repeat("\\\"\nx", 5*1024) }, 1, 1},
+		{"resource update", func(_ *messageIdentity, m *uvim.MessageUpdate) {
+			m.Resources = []uvim.ResourceRef{{Kind: uvim.ElementFile}}
+		}, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			message := messageIdentity{ID: "om_out", ChatID: "oc_expected", Type: "text"}
+			message.Sender.ID, message.Sender.Kind, message.Sender.Type = "app", "app_id", "app"
+			update := uvim.MessageUpdate{OutboundMessage: uvim.OutboundMessage{Provider: "lark", Connector: "main", Target: &uvim.OutboundTarget{ID: "oc_expected", Kind: uvim.TargetConversation}, Text: "# 更新\n完整正文"}, MessageID: "om_out"}
+			if tc.change != nil {
+				tc.change(&message, &update)
+			}
+			gets, puts := 0, 0
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
+					json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+					return
+				}
+				if req.Header.Get("Authorization") != "Bearer token" {
+					t.Errorf("authorization = %q", req.Header.Get("Authorization"))
+				}
+				switch req.Method {
+				case http.MethodGet:
+					gets++
+					item := message
+					if req.URL.Path == "/open-apis/im/v1/messages/om_in" {
+						item.ID, item.ChatID = "om_in", "oc_expected"
+					} else if req.URL.Path != "/open-apis/im/v1/messages/om_out" {
+						t.Errorf("GET path = %s", req.URL.Path)
+					}
+					json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []messageIdentity{item}}})
+				case http.MethodPut:
+					puts++
+					var body map[string]string
+					if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					var content map[string]string
+					if err := json.Unmarshal([]byte(body["content"]), &content); err != nil {
+						t.Error(err)
+					}
+					if req.URL.Path != "/open-apis/im/v1/messages/om_out" || body["msg_type"] != "text" || content["text"] != update.Text || !strings.HasPrefix(req.Header.Get("Content-Type"), "application/json") {
+						t.Errorf("PUT = %s %v %v", req.URL.Path, body, content)
+					}
+					json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"message_id": "om_out"}})
+				default:
+					t.Errorf("unexpected method %s", req.Method)
+					w.WriteHeader(400)
+				}
+			}))
+			defer api.Close()
+			provider, err := New(Config{AppID: "app", AppSecret: "secret", ConnectorID: "main", BaseURL: api.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := provider.Update(t.Context(), update)
+			if gets != tc.wantGET || puts != tc.wantPUT {
+				t.Fatalf("GET=%d PUT=%d err=%v", gets, puts, err)
+			}
+			if tc.wantPUT == 1 {
+				if err != nil || result.MessageID != "om_out" || result.Provider != "lark" || result.Connector != "main" || result.Time.IsZero() {
+					t.Fatalf("result=%+v err=%v", result, err)
+				}
+			} else {
+				failure, ok := uvim.ProviderSendFailure(err)
+				if !ok || failure.DeliveryState != uvim.DeliveryNotAttempted || result.MessageID != "" {
+					t.Fatalf("failure=%+v result=%+v err=%v", failure, result, err)
+				}
+				if tc.name == "foreign app" && failure.Category != uvim.SendFailurePermission {
+					t.Fatalf("foreign app failure=%+v", failure)
+				}
+			}
+		})
+	}
+}
+
+func TestUpdatePreservesFailureBoundaryAndRetryAfter(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		lookup                bool
+		status                int
+		body, category, state string
+		retry                 bool
+	}{
+		{"lookup rate limit", true, 429, `{"code":230020,"msg":"token=secret"}`, uvim.SendFailureRateLimited, uvim.DeliveryNotAttempted, true},
+		{"update rate limit", false, 429, `{"code":230020,"msg":"token=secret"}`, uvim.SendFailureRateLimited, uvim.DeliveryRejected, true},
+		{"update server failure", false, 503, `{"code":500,"msg":"token=secret"}`, uvim.SendFailureProviderUnavailable, uvim.DeliveryUnknown, true},
+		{"business rejection", false, 200, `{"code":230001,"msg":"token=secret"}`, uvim.SendFailureProviderRejected, uvim.DeliveryRejected, false},
+		{"wrong receipt", false, 200, `{"code":0,"data":{"message_id":"om_foreign"}}`, uvim.SendFailureUnknown, uvim.DeliveryUnknown, false},
+		{"missing code", false, 200, `{}`, uvim.SendFailureUnknown, uvim.DeliveryUnknown, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			puts := 0
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
+					io.WriteString(w, `{"code":0,"tenant_access_token":"token","expire":3600}`)
+					return
+				}
+				if req.Method == http.MethodGet && !tc.lookup {
+					io.WriteString(w, `{"code":0,"data":{"items":[{"message_id":"om_out","chat_id":"oc_chat","msg_type":"text","sender":{"id":"app","id_type":"app_id","sender_type":"app"}}]}}`)
+					return
+				}
+				if req.Method == http.MethodPut {
+					puts++
+				}
+				w.Header().Set("Retry-After", "3")
+				w.Header().Set("X-Request-Id", "req-update")
+				w.WriteHeader(tc.status)
+				io.WriteString(w, tc.body)
+			}))
+			defer api.Close()
+			provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: api.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = provider.Update(t.Context(), uvim.MessageUpdate{OutboundMessage: uvim.OutboundMessage{Provider: "lark", Connector: "lark", ChannelID: "oc_chat", Text: "replacement"}, MessageID: "om_out"})
+			failure, ok := uvim.ProviderSendFailure(err)
+			if !ok || failure.Category != tc.category || failure.DeliveryState != tc.state || failure.Retryable != tc.retry {
+				t.Fatalf("failure=%+v err=%v", failure, err)
+			}
+			if tc.status != 200 && (failure.HTTPStatus != tc.status || failure.RetryAfterSeconds != 3 || failure.RequestID != "req-update") {
+				t.Fatalf("HTTP failure=%+v", failure)
+			}
+			if tc.lookup && puts != 0 || !tc.lookup && puts != 1 {
+				t.Fatalf("PUT count=%d", puts)
+			}
+			if strings.Contains(uvim.ProviderSendErrorDetail(err), "secret") || strings.Contains(uvim.ProviderSendErrorLogDetail(err), "secret") {
+				t.Fatal("provider response leaked")
+			}
+		})
+	}
+}
+
+// Explicit live-provider qualification. It uses only HTTP Send/Update/GET and
+// never starts Run, so an existing bot WebSocket connection is not replaced.
+func TestLiveTextUpdateRoundTrip(t *testing.T) {
+	if os.Getenv("UV_LARK_LIVE_UPDATE") != "1" {
+		t.Skip("set UV_LARK_LIVE_UPDATE=1 and explicit test-app credentials/chat to qualify native editing")
+	}
+	appID, secret, chatID := os.Getenv("UV_LARK_APP_ID"), os.Getenv("UV_LARK_APP_SECRET"), os.Getenv("UV_LARK_LIVE_CHAT_ID")
+	if appID == "" || secret == "" || chatID == "" {
+		t.Fatal("explicit live test app_id, app_secret and chat_id are required")
+	}
+	provider, err := New(Config{AppID: appID, AppSecret: secret, ConnectorID: os.Getenv("UV_LARK_CONNECTOR_ID"), Region: os.Getenv("UV_LARK_REGION"), BaseURL: os.Getenv("UV_LARK_BASE_URL")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = provider.Send(context.Background(), uvim.OutboundMessage{ChannelID: "oc_chat", Text: "hello"})
-	if err == nil {
-		t.Fatal("Send() error = nil")
+	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	defer cancel()
+	marker := "uv-im-connector native update " + time.Now().UTC().Format(time.RFC3339Nano)
+	message := uvim.OutboundMessage{Provider: "lark", Connector: provider.ConnectorID(), Target: &uvim.OutboundTarget{ID: chatID, Kind: uvim.TargetConversation}, Text: marker + " initial"}
+	created, err := provider.Send(ctx, message)
+	if err != nil || created.MessageID == "" {
+		t.Fatalf("native create receipt=%+v failure=%s", created, uvim.ProviderSendErrorLogDetail(err))
 	}
-	if got := uvim.ProviderSendErrorDetail(err); got != "" {
-		t.Fatalf("public detail = %q", got)
+	t.Logf("native message_id=%s connector=%s", created.MessageID, provider.ConnectorID())
+	message.Text = marker + " replacement\n完整正文"
+	updated, err := provider.Update(ctx, uvim.MessageUpdate{OutboundMessage: message, MessageID: created.MessageID})
+	if err != nil || updated.MessageID != created.MessageID {
+		t.Fatalf("native update receipt=%+v failure=%s", updated, uvim.ProviderSendErrorLogDetail(err))
 	}
-	if got := uvim.ProviderSendErrorLogDetail(err); got != "decode lark send response: unexpected end of JSON input" {
-		t.Fatalf("private log detail = %q", got)
+	token, err := provider.tenantAccessToken(ctx)
+	if err != nil {
+		t.Fatal("native readback authentication failed")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, provider.baseURL()+"/open-apis/im/v1/messages/"+url.PathEscape(created.MessageID), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	raw, err := provider.doJSON(req, "lark live readback")
+	if err != nil {
+		t.Fatalf("native readback failed: %s", uvim.ProviderSendErrorLogDetail(err))
+	}
+	var response struct {
+		Code int `json:"code"`
+		Data struct {
+			Items []quotedMessageItem `json:"items"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(raw, &response) != nil || response.Code != 0 || len(response.Data.Items) != 1 {
+		t.Fatal("native readback did not return one successful message")
+	}
+	item := response.Data.Items[0]
+	var content struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal([]byte(item.Body.Content), &content) != nil || item.ID != created.MessageID || item.ChatID != chatID || item.Type != "text" || content.Text != message.Text {
+		t.Fatal("native exact message/chat/text readback mismatch")
+	}
+}
+
+func TestSendMarksDecodeFailureForPrivateLogs(t *testing.T) {
+	for _, tc := range []struct{ name, raw, log string }{
+		{"malformed JSON", `{"code":`, "decode lark send response: unexpected end of JSON input"},
+		{"missing message receipt", `{"code":0,"data":{}}`, "lark send: response missing message ID"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				switch req.URL.Path {
+				case "/open-apis/auth/v3/tenant_access_token/internal":
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+				case "/open-apis/im/v1/messages":
+					_, _ = w.Write([]byte(tc.raw))
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = provider.Send(context.Background(), uvim.OutboundMessage{ChannelID: "oc_chat", Text: "hello"})
+			if err == nil {
+				t.Fatal("Send() error = nil")
+			}
+			failure, ok := uvim.ProviderSendFailure(err)
+			if !ok || failure.DeliveryState != uvim.DeliveryUnknown || failure.Retryable {
+				t.Fatalf("unattested failure=%+v", failure)
+			}
+			if got := uvim.ProviderSendErrorDetail(err); got != "" {
+				t.Fatalf("public detail = %q", got)
+			}
+			if got := uvim.ProviderSendErrorLogDetail(err); got != tc.log {
+				t.Fatalf("private log detail = %q", got)
+			}
+		})
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -259,7 +260,9 @@ type Capabilities struct {
 	GroupMessage     bool     `json:"group_message,omitempty"`
 	ThreadReply      bool     `json:"thread_reply,omitempty"`
 	ReplyMessage     bool     `json:"reply_message,omitempty"`
+	ReplyStream      bool     `json:"reply_stream,omitempty"` // Live passive reply-token route only.
 	ReplyMaxUses     int      `json:"reply_max_uses,omitempty"`
+	TextMaxBytes     int      `json:"text_max_bytes,omitempty"` // Normalized UTF-8 bytes per send/update; zero is unknown.
 	ProactiveDirect  bool     `json:"proactive_direct,omitempty"`
 	ProactiveGroup   bool     `json:"proactive_group,omitempty"`
 	TargetKinds      []string `json:"target_kinds,omitempty"`
@@ -291,6 +294,58 @@ type OutboundMessage struct {
 	Referrer    Referrer          `json:"referrer,omitempty"`
 	Final       bool              `json:"final,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
+}
+
+// MessageUpdate replaces a bot-created message, preserving its native identity.
+// MessageID is the outbound receipt ID, never the incoming referrer message ID.
+type MessageUpdate struct {
+	OutboundMessage
+	MessageID string `json:"message_id"`
+}
+
+// ValidateOutboundText enforces a provider's declared normalized text budget.
+// Providers must also call this for direct Go callers, before upload or send.
+func ValidateOutboundText(msg OutboundMessage, capabilities Capabilities) error {
+	if capabilities.TextMaxBytes <= 0 {
+		return nil
+	}
+	text := msg.Text
+	if strings.TrimSpace(text) == "" {
+		var parts []string
+		var collect func([]Element)
+		collect = func(elements []Element) {
+			for _, element := range elements {
+				if element.Type == ElementText && strings.TrimSpace(element.Text) != "" {
+					parts = append(parts, element.Text)
+				}
+				collect(element.Children)
+			}
+		}
+		collect(msg.Elements)
+		text = strings.Join(parts, "\n")
+	}
+	text = NormalizeOutboundText(text)
+	if !utf8.ValidString(text) {
+		return NewProviderSendFailure(SendFailure{Category: SendFailureInvalidRequest, DeliveryState: DeliveryNotAttempted}, "text must be valid UTF-8", nil)
+	}
+	if len(text) > capabilities.TextMaxBytes {
+		return NewProviderSendFailure(SendFailure{Category: SendFailurePayloadTooLarge, DeliveryState: DeliveryNotAttempted},
+			fmt.Sprintf("text is %d bytes; maximum is %d bytes", len(text), capabilities.TextMaxBytes), nil)
+	}
+	return nil
+}
+
+func ValidateMessageUpdate(msg MessageUpdate, capabilities Capabilities) error {
+	if strings.TrimSpace(msg.Provider) == "" || strings.TrimSpace(msg.Connector) == "" || strings.TrimSpace(msg.MessageID) == "" {
+		return fmt.Errorf("provider, connector and message_id are required")
+	}
+	if strings.TrimSpace(msg.Text) == "" || len(msg.Elements) != 0 || len(msg.Resources) != 0 {
+		return fmt.Errorf("update requires replacement text without elements or resources")
+	}
+	if err := ValidateOutboundTarget(msg.OutboundMessage, capabilities); err != nil {
+		return err
+	}
+	return ValidateOutboundText(msg.OutboundMessage, capabilities)
 }
 
 // ResolvedTarget prefers an explicit send target, then the adapter-provided

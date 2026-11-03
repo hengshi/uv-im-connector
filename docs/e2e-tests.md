@@ -47,3 +47,11 @@ Live-provider tests 必须由显式 credentials 保护。每个 provider 应使�
 - persisted events 和 public API responses 中的 secret redaction。
 
 Live-provider credentials 必须按环境隔离。Production credentials 不能复用于 E2E、development 或临时 debug worker。
+
+Lark 原生文本编辑可使用已有 provider API 的显式探针。先为测试应用导出 `UV_LARK_APP_ID`、`UV_LARK_APP_SECRET` 和精确会话 `UV_LARK_LIVE_CHAT_ID`；可选区域、connector ID 和 API 地址沿用 `UV_LARK_REGION`、`UV_LARK_CONNECTOR_ID`、`UV_LARK_BASE_URL`。再执行：
+
+```bash
+UV_LARK_LIVE_UPDATE=1 go test ./providers/lark -run '^TestLiveTextUpdateRoundTrip$' -count=1 -v
+```
+
+默认测试跳过此探针。启用后，它通过真实 `Send`、`Update` 和原生 GET 核验同一 message ID、会话及替换全文，不调用 `Run` 或启动第二条 bot WebSocket 连接。探针留下单条编辑后的测试消息，并输出其 ID 供测试目标 owner 清理。这只证明原生文本创建/编辑/读回，不证明入站、被动流式回复或调用方任务生命周期。

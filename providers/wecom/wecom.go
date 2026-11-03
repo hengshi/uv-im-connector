@@ -159,6 +159,8 @@ func (p *Provider) Capabilities() uvim.Capabilities {
 		GroupMessage:     true,
 		ThreadReply:      true,
 		ReplyMessage:     true,
+		ReplyStream:      true,
+		TextMaxBytes:     16 * 1024,
 		ProactiveDirect:  true,
 		ProactiveGroup:   true,
 		TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
@@ -370,6 +372,9 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	defer func() {
 		err = uvim.NewProviderSendOperationError("wecom send", err)
 	}()
+	if err := uvim.ValidateOutboundText(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, err
+	}
 	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("wecom send: %w", err)
 	}

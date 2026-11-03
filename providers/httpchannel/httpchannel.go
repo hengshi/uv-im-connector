@@ -122,6 +122,9 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	defer func() {
 		err = uvim.NewProviderSendOperationError(p.ID()+" send", err)
 	}()
+	if err := uvim.ValidateOutboundText(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, err
+	}
 	if p.config.Send == nil {
 		return uvim.SendResult{}, fmt.Errorf("%s send: outbound is not supported", p.ID())
 	}

@@ -140,6 +140,7 @@ func (h *Hub) Handler() http.Handler {
 	mux.HandleFunc("/v1/events", h.handleEvents)
 	mux.HandleFunc("/v1/events/ws", h.handleEventsWS)
 	mux.HandleFunc("/v1/message.create", h.handleMessageCreate)
+	mux.HandleFunc("/v1/message.update", h.handleMessageUpdate)
 	mux.HandleFunc("/v1/upload.create", h.handleUploadCreate)
 	mux.HandleFunc("/v1/resource.download", h.handleResourceDownload)
 	mux.HandleFunc("/v1/webhook/", h.handleWebhook)
@@ -261,6 +262,10 @@ func (h *Hub) handleMessageCreate(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_target")
 		return
 	}
+	if err := uvim.ValidateOutboundText(msg, provider.Capabilities()); err != nil {
+		writeProviderError(w, err)
+		return
+	}
 	result, err := provider.Send(req.Context(), msg)
 	if err != nil {
 		reason := uvim.ProviderSendErrorLogDetail(err)
@@ -268,6 +273,47 @@ func (h *Hub) handleMessageCreate(w http.ResponseWriter, req *http.Request) {
 			reason = "provider send failed"
 		}
 		slog.Error("provider send failed", "provider", provider.ID(), "connector", provider.ConnectorID(), "reason", reason)
+		writeProviderError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Hub) handleMessageUpdate(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	var msg uvim.MessageUpdate
+	if err := json.NewDecoder(req.Body).Decode(&msg); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_message_update")
+		return
+	}
+	if strings.TrimSpace(msg.Provider) == "" || strings.TrimSpace(msg.Connector) == "" {
+		writeError(w, http.StatusBadRequest, "provider_and_connector_required")
+		return
+	}
+	provider := h.registry.Get(msg.Provider, msg.Connector)
+	if provider == nil {
+		writeError(w, http.StatusNotFound, "provider_not_found")
+		return
+	}
+	updater, ok := provider.(uvim.MessageUpdater)
+	if !provider.Capabilities().EditMessage || !ok {
+		writeError(w, http.StatusNotImplemented, "message_update_not_supported")
+		return
+	}
+	if err := uvim.ValidateMessageUpdate(msg, provider.Capabilities()); err != nil {
+		if _, ok := uvim.ProviderSendFailure(err); ok {
+			writeProviderError(w, err)
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid_message_update")
+		}
+		return
+	}
+	result, err := updater.Update(req.Context(), msg)
+	if err != nil {
+		slog.Error("provider update failed", "provider", provider.ID(), "connector", provider.ConnectorID(), "reason", uvim.ProviderSendErrorLogDetail(err))
 		writeProviderError(w, err)
 		return
 	}

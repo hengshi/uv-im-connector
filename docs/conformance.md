@@ -19,6 +19,8 @@ Provider conformance 是新增渠道的质量门。
 - 所有 outbound 失败都生成 normalized `SendFailure`；不得让调用方按 provider 名称、`detail` 或日志猜测重试策略；
 - HTTP/业务 ACK 测试同时断言 `category`、`retryable`、`delivery_state`，并在可用时断言 `http_status`、`provider_code`、`retry_after_seconds` 和 `request_id`；
 - 不把 provider response body、任意 provider message 或 credential 复制到结构化 failure。
+- `edit_message=true` 必须有真实的 `MessageUpdater`；编辑核验精确 connector、消息、app 发送者和目标会话，不得降级成新消息发送；
+- `reply_stream` 只声明被动 reply token 路由；`text_max_bytes` 非负，声明正值时发送和编辑均在上传/发送前校验完整标准化 UTF-8 文本，超限不截断。
 
 ## 测试形态
 
@@ -35,6 +37,8 @@ Provider tests 应覆盖：
 - resource download；
 - provider health；
 - duplicate event key stability。
+- 编辑能力、认证、精确目标/消息、外部 app 拒绝、原生 PUT 和失败归一化，旧 metadata 无能力时保持追加策略；
+- 文本字节边界、WeCom 流关闭语义和顺序资源发送失败时的已确认前缀。
 
 需要 live credentials 的 provider 应拆分为：
 

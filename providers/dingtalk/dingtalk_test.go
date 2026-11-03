@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,6 +53,27 @@ func TestNewRejectsPartialStreamCredentials(t *testing.T) {
 	} {
 		if _, err := New(config); err == nil {
 			t.Fatal("New() accepted a partial DingTalk Stream credential pair")
+		}
+	}
+}
+
+func TestSendRejectsOverBudgetBeforeEitherTransport(t *testing.T) {
+	for _, app := range []bool{false, true} {
+		calls := 0
+		api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { calls++; w.WriteHeader(http.StatusBadRequest) }))
+		defer api.Close()
+		config := Config{Token: "group-token", BaseURL: api.URL}
+		if app {
+			config.ClientID, config.ClientSecret = "app", "secret"
+		}
+		provider, err := New(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = provider.Send(t.Context(), uvim.OutboundMessage{Text: strings.Repeat("x", 16385), Target: &uvim.OutboundTarget{ID: "recipient", Kind: uvim.TargetGroup}})
+		failure, ok := uvim.ProviderSendFailure(err)
+		if !ok || calls != 0 || failure.Category != uvim.SendFailurePayloadTooLarge || failure.DeliveryState != uvim.DeliveryNotAttempted {
+			t.Fatalf("app=%v calls=%d failure=%+v err=%v", app, calls, failure, err)
 		}
 	}
 }
