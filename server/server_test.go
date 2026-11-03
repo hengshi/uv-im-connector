@@ -23,6 +23,7 @@ import (
 	"github.com/hengshi/uv-im-connector/client"
 	"github.com/hengshi/uv-im-connector/providers/lark"
 	"github.com/hengshi/uv-im-connector/providers/line"
+	"github.com/hengshi/uv-im-connector/providers/matrix"
 	"github.com/hengshi/uv-im-connector/providers/memory"
 	"github.com/hengshi/uv-im-connector/providers/slack"
 	"github.com/hengshi/uv-im-connector/providers/wecom"
@@ -776,6 +777,244 @@ func TestHubWebhookRoutesToProviderAndStoresEvent(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Provider != "slack" || events[0].Message.Text != "hello" {
 		t.Fatalf("events = %+v", events)
+	}
+}
+
+// This exercises the public connector protocol, durable restart, native Slack
+// addressing and revocation together. It does not qualify Slack's live service.
+func TestHubVerifiedIdentityLinkJourney(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	var sends []map[string]any
+	native := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/api/chat.postMessage" || req.Header.Get("Authorization") != "Bearer native-token" {
+			t.Errorf("unexpected native send: %s, auth=%t", req.URL.Path, req.Header.Get("Authorization") == "Bearer native-token")
+			http.Error(w, "bad request", 400)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		sends = append(sends, body)
+		writeJSON(w, 200, map[string]any{"ok": true, "channel": "D-private", "ts": "sent-1"})
+	}))
+	defer native.Close()
+	provider, err := slack.New(slack.Config{ConnectorID: "work", BaseURL: native.URL, Token: "native-token", WebhookSecret: "hook-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var api *httptest.Server
+	var hub *Hub
+	var c *client.Client
+	linkDir := filepath.Join(dir, "links")
+	start := func() {
+		hub = NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, filepath.Join(dir, "events.jsonl")), nil)
+		hub.SetAuthToken("api-token")
+		if err := hub.EnableIdentityLinks(filepath.Join(linkDir, "identity-links.json")); err != nil {
+			t.Fatal(err)
+		}
+		api = httptest.NewServer(hub.Handler())
+		c = client.New(api.URL)
+		c.Token = "api-token"
+	}
+	start()
+	defer func() { api.Close(); hub.CloseIdentityLinks() }()
+	meta, err := c.ServiceMeta(ctx)
+	if err != nil || !meta.IdentityLinks {
+		t.Fatalf("identity capability: %+v %v", meta, err)
+	}
+	emit := func(user, channel, channelType, ts string) uvim.IdentityEventRef {
+		raw, _ := json.Marshal(map[string]any{"type": "event_callback", "event": map[string]any{"type": "message", "user": user, "channel": channel, "channel_type": channelType, "text": "/bind gitlab thomas", "ts": ts}})
+		req, _ := http.NewRequest(http.MethodPost, api.URL+"/v1/webhook/slack/work", bytes.NewReader(raw))
+		req.Header.Set("X-UV-Webhook-Secret", "hook-token")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("native ingress status %d", resp.StatusCode)
+		}
+		events, err := c.Events(ctx, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range events {
+			if event.Message.ID == ts {
+				return uvim.IdentityEventRef{Provider: "slack", Connector: "work", EventID: event.ID}
+			}
+		}
+		t.Fatal("native event not observed")
+		return uvim.IdentityEventRef{}
+	}
+	event := emit("U-employee", "D-private", "im", "1.0")
+	identity := uvim.UserIdentity{Type: "gitlab.userid", Scope: "gitlab.example", ID: "17"}
+	account := uvim.UserIdentity{Type: "gitlab.account", Scope: "gitlab.example", ID: "thomas"}
+	request := uvim.IdentityLinkRequest{Identity: identity, Account: &account, Event: event, Proof: "gitlab:project:note-41"}
+	linked, err := c.LinkIdentity(ctx, request)
+	if err != nil || !linked.Found || linked.Link == nil {
+		t.Fatalf("link: %+v %v", linked, err)
+	}
+	if linked.Link.UserID != "U-employee" || linked.Link.Target != (uvim.OutboundTarget{ID: "D-private", Kind: uvim.TargetChannel}) {
+		t.Fatalf("native target: %+v", linked.Link)
+	}
+	repeated, err := c.LinkIdentity(ctx, request)
+	if err != nil || repeated.Link.IdentityLinkRef != linked.Link.IdentityLinkRef {
+		t.Fatalf("link must be idempotent: %+v %v", repeated, err)
+	}
+	aliasRequest := request
+	aliasRequest.Identity, aliasRequest.Account = account, nil
+	if _, err := c.LinkIdentity(ctx, aliasRequest); err == nil {
+		t.Fatal("account alias became a second canonical identity")
+	}
+	func() {
+		original, err := os.ReadFile(filepath.Join(linkDir, "identity-links.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(linkDir, linkDir+".parked"); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			os.Remove(linkDir)
+			if err := os.Rename(linkDir+".parked", linkDir); err != nil {
+				t.Fatal(err)
+			}
+		}()
+		if err := os.WriteFile(linkDir, []byte("not a directory"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		failed := request
+		failed.Identity.ID, failed.Account = "19", nil
+		if _, err := c.LinkIdentity(ctx, failed); err == nil {
+			t.Fatal("unwritable identity store reported success")
+		}
+		result, err := c.ResolveIdentity(ctx, uvim.IdentityResolveRequest{Identity: failed.Identity, Provider: "slack", Connector: "work"})
+		if err != nil || result.Found {
+			t.Fatalf("failed link entered the official index: %+v %v", result, err)
+		}
+		retained, err := os.ReadFile(filepath.Join(linkDir+".parked", "identity-links.json"))
+		if err != nil || !bytes.Equal(retained, original) {
+			t.Fatalf("failed save changed old data: %v", err)
+		}
+	}()
+	otherEvent := emit("U-other", "D-other", "im", "2.0")
+	otherRequest := request
+	otherRequest.Event = otherEvent
+	if _, err := c.LinkIdentity(ctx, otherRequest); err == nil {
+		t.Fatal("another user replaced the link")
+	}
+	if _, err := c.UnlinkIdentity(ctx, otherRequest); err == nil {
+		t.Fatal("another user removed the link")
+	}
+	groupRequest := request
+	groupRequest.Identity.ID = "18"
+	groupRequest.Account = nil
+	groupRequest.Event = emit("U-employee", "C-group", "channel", "3.0")
+	if _, err := c.LinkIdentity(ctx, groupRequest); err == nil {
+		t.Fatal("group audience accepted as private")
+	}
+	api.Close()
+	if err := hub.CloseIdentityLinks(); err != nil {
+		t.Fatal(err)
+	}
+	start()
+	resolved, err := c.ResolveIdentity(ctx, uvim.IdentityResolveRequest{Identity: account, Provider: "slack", Connector: "work"})
+	if err != nil || !resolved.Found || resolved.Link.IdentityLinkRef != linked.Link.IdentityLinkRef {
+		t.Fatalf("persisted alias: %+v %v", resolved, err)
+	}
+	isolated, err := c.ResolveIdentity(ctx, uvim.IdentityResolveRequest{Identity: account, Provider: "slack", Connector: "other"})
+	if err != nil || isolated.Found || isolated.Revoked {
+		t.Fatalf("connector isolation: %+v %v", isolated, err)
+	}
+	message := uvim.OutboundMessage{Provider: "slack", Connector: "work", Target: &linked.Link.Target, IdentityLink: &linked.Link.IdentityLinkRef, Text: "Task completed", Final: true}
+	if _, err := c.Send(ctx, message); err != nil {
+		t.Fatal(err)
+	}
+	if len(sends) != 1 || sends[0]["channel"] != "D-private" || sends[0]["text"] != "Task completed" {
+		t.Fatalf("native delivery: %+v", sends)
+	}
+	if _, err := c.UnlinkIdentity(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Send(ctx, message)
+	if failure, ok := client.ProviderSendFailure(err); !ok || failure.DeliveryState != uvim.DeliveryNotAttempted || len(sends) != 1 {
+		t.Fatalf("revoked send: %+v %v count=%d", failure, err, len(sends))
+	}
+	resolved, err = c.ResolveIdentity(ctx, uvim.IdentityResolveRequest{Identity: account, Provider: "slack", Connector: "work"})
+	if err != nil || resolved.Found || !resolved.Revoked {
+		t.Fatalf("revoked alias must prevent fallback: %+v %v", resolved, err)
+	}
+}
+
+func TestHubLinkedMatrixRoomRechecksNativeAudience(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	var joined atomic.Int32
+	joined.Store(2)
+	var sent atomic.Int32
+	native := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Header.Get("Authorization") != "Bearer native-token" {
+			http.Error(w, "unauthorized", 401)
+			return
+		}
+		switch {
+		case req.URL.Path == "/_matrix/client/v3/account/whoami":
+			writeJSON(w, 200, map[string]any{"user_id": "@bot:example"})
+		case strings.HasSuffix(req.URL.Path, "/joined_members"):
+			members := map[string]any{"@bot:example": map[string]any{}, "@employee:example": map[string]any{}}
+			if joined.Load() > 2 {
+				members["@third:example"] = map[string]any{}
+			}
+			writeJSON(w, 200, map[string]any{"joined": members})
+		case req.Method == http.MethodPut && strings.Contains(req.URL.Path, "/send/m.room.message/"):
+			sent.Add(1)
+			writeJSON(w, 200, map[string]any{"event_id": "$sent"})
+		default:
+			http.Error(w, "unexpected native operation", 400)
+		}
+	}))
+	defer native.Close()
+	p, err := matrix.New(matrix.Config{BaseURL: native.URL, Token: "native-token", WebhookSecret: "hook-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := NewHub(uvim.NewProviderRegistry(p), mustEventLog(t, filepath.Join(dir, "events.jsonl")), nil)
+	hub.SetAuthToken("api-token")
+	if err := hub.EnableIdentityLinks(filepath.Join(dir, "identity-links.json")); err != nil {
+		t.Fatal(err)
+	}
+	defer hub.CloseIdentityLinks()
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	req, _ := http.NewRequest(http.MethodPost, api.URL+"/v1/webhook/matrix/matrix", strings.NewReader(`{"event_id":"$message","room_id":"!private:example","sender":"@employee:example","type":"m.room.message","content":{"msgtype":"m.text","body":"/bind github employee"}}`))
+	req.Header.Set("X-UV-Webhook-Secret", "hook-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("native ingress %d", resp.StatusCode)
+	}
+	c := client.New(api.URL)
+	c.Token = "api-token"
+	linked, err := c.LinkIdentity(ctx, uvim.IdentityLinkRequest{Identity: uvim.UserIdentity{Type: "github.userid", Scope: "github.com", ID: "42"}, Event: uvim.IdentityEventRef{Provider: "matrix", Connector: "matrix", EventID: "$message"}, Proof: "github:issue:comment-21"})
+	if err != nil || !linked.Found {
+		t.Fatalf("private room link %+v %v", linked, err)
+	}
+	if linked.Link.Target != (uvim.OutboundTarget{ID: "!private:example", Kind: uvim.TargetConversation}) {
+		t.Fatalf("room target %+v", linked.Link.Target)
+	}
+	msg := uvim.OutboundMessage{Provider: "matrix", Connector: "matrix", Target: &linked.Link.Target, IdentityLink: &linked.Link.IdentityLinkRef, Text: "private result"}
+	if _, err := c.Send(ctx, msg); err != nil {
+		t.Fatal(err)
+	}
+	joined.Store(3)
+	_, err = c.Send(ctx, msg)
+	if failure, ok := client.ProviderSendFailure(err); !ok || failure.DeliveryState != uvim.DeliveryNotAttempted || sent.Load() != 1 {
+		t.Fatalf("changed audience sent=%d failure=%+v err=%v", sent.Load(), failure, err)
 	}
 }
 

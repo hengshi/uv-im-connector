@@ -125,6 +125,21 @@ func (c *Client) WatchEventsWithConnect(ctx context.Context, after int64, onConn
 	}
 }
 
+func (c *Client) LinkIdentity(ctx context.Context, request uvim.IdentityLinkRequest) (uvim.IdentityResolveResult, error) {
+	var out uvim.IdentityResolveResult
+	return out, c.postJSON(ctx, "/v1/identity.link", request, &out)
+}
+
+func (c *Client) ResolveIdentity(ctx context.Context, request uvim.IdentityResolveRequest) (uvim.IdentityResolveResult, error) {
+	var out uvim.IdentityResolveResult
+	return out, c.postJSON(ctx, "/v1/identity.resolve", request, &out)
+}
+
+func (c *Client) UnlinkIdentity(ctx context.Context, request uvim.IdentityLinkRequest) (uvim.IdentityResolveResult, error) {
+	var out uvim.IdentityResolveResult
+	return out, c.postJSON(ctx, "/v1/identity.unlink", request, &out)
+}
+
 func (c *Client) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
 	var out uvim.SendResult
 	return out, c.postJSON(ctx, "/v1/message.create", msg, &out)

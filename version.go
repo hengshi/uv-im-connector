@@ -57,6 +57,7 @@ func RuntimeBuildMetadata() BuildMetadata {
 }
 
 type ServiceMeta struct {
+	IdentityLinks    bool           `json:"identity_links,omitempty"`
 	Service          string         `json:"service"`
 	ConnectorVersion string         `json:"connector_version"`
 	ProtocolVersion  string         `json:"protocol_version"`
