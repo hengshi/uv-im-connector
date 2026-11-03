@@ -135,7 +135,6 @@ func (p *Provider) Capabilities() uvim.Capabilities {
 		ThreadReply:      true,
 		ReplyMessage:     true,
 		EditMessage:      true,
-		TextMaxBytes:     16 * 1024,
 		ProactiveDirect:  true,
 		ProactiveGroup:   true,
 		TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},

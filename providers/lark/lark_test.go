@@ -754,14 +754,12 @@ func TestSendTextRoutesRecipientsAndReplies(t *testing.T) {
 		message                 uvim.OutboundMessage
 		path, idType, recipient string
 		text                    string
-		oversize                bool
 	}{
-		{"user open id", uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "ou_user", Kind: uvim.TargetUser}}, "/open-apis/im/v1/messages", "open_id", "ou_user", "", false},
-		{"conversation", uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "oc_chat", Kind: uvim.TargetConversation}}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", "", false},
-		{"legacy direct channel", uvim.OutboundMessage{ChannelID: "oc_chat", ChannelType: uvim.ChannelDirect}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", "", false},
-		{"reply", uvim.OutboundMessage{Referrer: uvim.Referrer{MessageID: "om_original"}}, "/open-apis/im/v1/messages/om_original/reply", "", "", "", false},
-		{"exact byte budget", uvim.OutboundMessage{ChannelID: "oc_chat"}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", strings.Repeat("x", 16384), false},
-		{"over byte budget", uvim.OutboundMessage{ChannelID: "oc_chat"}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", strings.Repeat("x", 16385), true},
+		{"user open id", uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "ou_user", Kind: uvim.TargetUser}}, "/open-apis/im/v1/messages", "open_id", "ou_user", ""},
+		{"conversation", uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "oc_chat", Kind: uvim.TargetConversation}}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", ""},
+		{"legacy direct channel", uvim.OutboundMessage{ChannelID: "oc_chat", ChannelType: uvim.ChannelDirect}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", ""},
+		{"reply", uvim.OutboundMessage{Referrer: uvim.Referrer{MessageID: "om_original"}}, "/open-apis/im/v1/messages/om_original/reply", "", "", ""},
+		{"20 KiB text", uvim.OutboundMessage{ChannelID: "oc_chat"}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", strings.Repeat("x", 20*1024)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			text := tt.text
@@ -770,9 +768,6 @@ func TestSendTextRoutesRecipientsAndReplies(t *testing.T) {
 			}
 			var sends int
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-				if tt.oversize {
-					t.Error("oversized text reached native HTTP")
-				}
 				if req.Method != http.MethodPost {
 					t.Errorf("method = %s", req.Method)
 				}
@@ -818,13 +813,6 @@ func TestSendTextRoutesRecipientsAndReplies(t *testing.T) {
 			}
 			tt.message.Text = text
 			result, err := provider.Send(t.Context(), tt.message)
-			if tt.oversize {
-				failure, ok := uvim.ProviderSendFailure(err)
-				if !ok || sends != 0 || failure.Category != uvim.SendFailurePayloadTooLarge || failure.DeliveryState != uvim.DeliveryNotAttempted {
-					t.Fatalf("failure=%+v sends=%d err=%v", failure, sends, err)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -897,7 +885,7 @@ func TestUpdateChecksNativeMessageOwnerAndConversation(t *testing.T) {
 		{"user target is not chat proof", func(_ *messageIdentity, m *uvim.MessageUpdate) {
 			m.Target = &uvim.OutboundTarget{ID: "ou_user", Kind: uvim.TargetUser}
 		}, 0, 0},
-		{"over budget", func(_ *messageIdentity, m *uvim.MessageUpdate) { m.Text = strings.Repeat("x", 16385) }, 0, 0},
+		{"20 KiB text", func(_ *messageIdentity, m *uvim.MessageUpdate) { m.Text = strings.Repeat("\\\"\nx", 5*1024) }, 1, 1},
 		{"resource update", func(_ *messageIdentity, m *uvim.MessageUpdate) {
 			m.Resources = []uvim.ResourceRef{{Kind: uvim.ElementFile}}
 		}, 0, 0},
@@ -938,7 +926,7 @@ func TestUpdateChecksNativeMessageOwnerAndConversation(t *testing.T) {
 					if err := json.Unmarshal([]byte(body["content"]), &content); err != nil {
 						t.Error(err)
 					}
-					if req.URL.Path != "/open-apis/im/v1/messages/om_out" || body["msg_type"] != "text" || content["text"] != "# 更新\n完整正文" || !strings.HasPrefix(req.Header.Get("Content-Type"), "application/json") {
+					if req.URL.Path != "/open-apis/im/v1/messages/om_out" || body["msg_type"] != "text" || content["text"] != update.Text || !strings.HasPrefix(req.Header.Get("Content-Type"), "application/json") {
 						t.Errorf("PUT = %s %v %v", req.URL.Path, body, content)
 					}
 					json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"message_id": "om_out"}})

@@ -103,7 +103,7 @@ Server 主动发送没有入站 `referrer`，必须显式传 `target`，并先�
 
 ## 完整文本、流式回复和编辑
 
-`capabilities.text_max_bytes` 是单次发送或编辑的标准化 UTF-8 文本字节上限，包含调用方添加的可见前缀和格式。WeCom、Lark 和 DingTalk 当前声明并在上传或发送前校验 16384 字节；超限返回 `category=payload-too-large`、`delivery_state=not-attempted` 和包含精确上限的安全说明。`0` 或字段缺失表示未知上限。Connector 不自动截断或分页；调用方按完整逻辑内容分页，并在无法合法继续分页时使用受支持的文件资源。
+`capabilities.text_max_bytes` 是单次发送或编辑的标准化 UTF-8 文本字节上限，包含调用方添加的可见前缀和格式。WeCom 和 DingTalk 当前声明并在上传或发送前校验 16384 字节；超限返回 `category=payload-too-large`、`delivery_state=not-attempted` 和包含精确上限的安全说明。`0` 或字段缺失表示未知上限。Lark 的原生限制针对实际序列化请求体，无法准确声明为固定的原始 UTF-8 文本预算，因此其 `text_max_bytes` 保持未知，由原生 API 校验请求体。Connector 不自动截断或分页；调用方按完整逻辑内容分页，并在无法合法继续分页时使用受支持的文件资源。
 
 `reply_stream=true` 只表示有效被动 reply token 路由可以替换同一条流式回复，不表示主动发送支持流式更新。WeCom 使用现有 `message.create`：保留同一 `referrer` 更新全文，最后以 `final=true` 关闭流。切换主动发送路由后须重新判断模式。DingTalk 的普通 Markdown 是追加消息。调用方根据当前 connector 和实际路由决定呈现策略。
 
