@@ -31,6 +31,13 @@ type Provider interface {
 	Health(context.Context) Health
 }
 
+// PrivateTargetResolver is needed only when normalized events cannot themselves
+// prove a private audience (for example Matrix rooms). It must recheck the native
+// audience, since a previously private room can acquire more members.
+type PrivateTargetResolver interface {
+	PrivateTarget(context.Context, Event) (OutboundTarget, error)
+}
+
 // MessageUpdater is implemented only by adapters with native message editing.
 // Capabilities.EditMessage must also be true before callers invoke Update.
 type MessageUpdater interface {

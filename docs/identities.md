@@ -96,6 +96,24 @@
 
 Go 嵌入调用方使用 `NewUserIdentityMapper`，在启动前调用 `Hub.SetUserIdentityMapper`；直接消费 provider 的应用可调用不可变 mapper 的 `Apply(event)`。部署者负责验证绑定，connector 不通过模糊通讯录搜索生成绑定。
 
+## 经双端核验的动态关联
+
+外部业务系统可以在自身完成账号核验后，通过既有受认证 HTTP 接口登记关联。`GET /v1/meta` 的 `identity_links: true` 表示当前实例支持此能力；不按连接器版本或平台名称判断。服务未配置 `UV_IM_AUTH_TOKEN` 时不开放关联接口。
+
+| POST 接口 | 输入 | 结果 |
+| --- | --- | --- |
+| `/v1/identity.link` | `identity`、可选已核验 `account` 别名、原 IM `event` 引用、外部核验 `proof` 引用 | 同一业务身份在该 provider/connector 的唯一关联及原生目标；重复登记幂等，另一用户覆盖返回 409 |
+| `/v1/identity.resolve` | `identity`、目标 `provider`/`connector`；可选 `event` 核验私人目标 | `found`、`revoked` 和已有 `link`；不按昵称匹配 |
+| `/v1/identity.unlink` | 正式 `identity`、当前 IM `event` 引用 | 只允许关联的原 IM 用户撤销；重复撤销幂等 |
+
+业务身份必须提供 `type`、`scope`、`id`。优先使用原平台稳定用户 ID；登录账号可作为已核验别名，显示名不能作为证明。`event` 形如 `{"provider":"dingtalk","connector":"work","event_id":"native-event"}`，目标从连接器自己的消息日志核验，不接受调用者指定收件地址。登记和撤销需要最近 15 分钟内的个人消息；上层应用可采用更短的核验期限。来源账号由受信调用方认证，连接器不会登录业务平台替它认证。
+
+普通直接会话沿用实际 `referrer.target`，保留 `kind` 和 `id_type`；只有短效回复能力时拒绝长期通知关联。Matrix 通过 homeserver 核对房间当前恰有机器人和该用户两位成员，并在每次关联发送前重验；查询失败或成员变化时拒绝发送。其他渠道仍受原生权限、可见范围及主动消息时间窗口约束。
+
+正式数据只保存在 state-dir 的 `identity-links.json`，使用独占写锁、版本化快照和原子持久化。损坏或未知格式阻断启动，不覆盖原数据。原子替换后的目录同步失败会使当前进程停止关联操作，重启后从磁盘重新确定结果。静态 `UV_IM_USER_IDENTITIES_FILE` 的启动只读语义保持，不被动态接口反写。
+
+关联结果含 `id` 和 `revision`。发送时在 `message.create` 或 `message.update` 附带 `identity_link: {"id":"…","revision":"…"}` 及精确原生 `target`。连接器在发送前验证关联仍有效且目标未变；撤销、换绑、旧版本引用或地址不符均以 `invalid-request / not-attempted` 拒绝，不改投其他人。已经开始的外部请求不能撤回。未携带关联引用的普通消息保持既有契约；应用必须尊重 `revoked`，不能绕过撤销回退到猜测地址。
+
 ## 带类型的原生发送地址
 
 身份列表不参与自动选路。普通发送继续使用既有 target；回复应复制完整 `referrer`。WhatsApp 手机号使用原生 `to` 字段，BSUID/parent BSUID 使用 `recipient`，因此其 target 需要保留 `id_type`：

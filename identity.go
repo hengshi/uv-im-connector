@@ -3,7 +3,55 @@ package uvim
 import (
 	"fmt"
 	"strings"
+	"time"
 )
+
+// IdentityEventRef identifies a connector-owned message. A caller cannot choose
+// the native user or send address instead of proving this event's origin.
+type IdentityEventRef struct {
+	Provider  string `json:"provider"`
+	Connector string `json:"connector"`
+	EventID   string `json:"event_id"`
+}
+
+type IdentityLinkRef struct {
+	ID       string `json:"id"`
+	Revision string `json:"revision"`
+}
+
+type IdentityLink struct {
+	IdentityLinkRef
+	Identity   UserIdentity     `json:"identity"`
+	Account    *UserIdentity    `json:"account,omitempty"`
+	Provider   string           `json:"provider"`
+	Connector  string           `json:"connector"`
+	UserID     string           `json:"user_id"`
+	Target     OutboundTarget   `json:"target"`
+	Origin     IdentityEventRef `json:"origin"`
+	Proof      string           `json:"proof"`
+	VerifiedAt time.Time        `json:"verified_at"`
+	Revoked    bool             `json:"revoked,omitempty"`
+}
+
+type IdentityLinkRequest struct {
+	Identity UserIdentity     `json:"identity"`
+	Account  *UserIdentity    `json:"account,omitempty"`
+	Event    IdentityEventRef `json:"event"`
+	Proof    string           `json:"proof,omitempty"`
+}
+
+type IdentityResolveRequest struct {
+	Identity  UserIdentity      `json:"identity"`
+	Provider  string            `json:"provider"`
+	Connector string            `json:"connector"`
+	Event     *IdentityEventRef `json:"event,omitempty"`
+}
+
+type IdentityResolveResult struct {
+	Found   bool          `json:"found"`
+	Revoked bool          `json:"revoked,omitempty"`
+	Link    *IdentityLink `json:"link,omitempty"`
+}
 
 // NormalizeUserIdentities omits absent identifiers and preserves the first
 // assertion for each type/scope pair. Native identifiers are not case folded.

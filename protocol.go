@@ -282,18 +282,19 @@ type OutboundTarget struct {
 }
 
 type OutboundMessage struct {
-	ID          string            `json:"id,omitempty"`
-	Provider    string            `json:"provider"`
-	Connector   string            `json:"connector,omitempty"`
-	Target      *OutboundTarget   `json:"target,omitempty"`
-	ChannelID   string            `json:"channel_id,omitempty"`
-	ChannelType string            `json:"channel_type,omitempty"`
-	Text        string            `json:"text,omitempty"`
-	Elements    []Element         `json:"elements,omitempty"`
-	Resources   []ResourceRef     `json:"resources,omitempty"`
-	Referrer    Referrer          `json:"referrer,omitempty"`
-	Final       bool              `json:"final,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	IdentityLink *IdentityLinkRef  `json:"identity_link,omitempty"`
+	ID           string            `json:"id,omitempty"`
+	Provider     string            `json:"provider"`
+	Connector    string            `json:"connector,omitempty"`
+	Target       *OutboundTarget   `json:"target,omitempty"`
+	ChannelID    string            `json:"channel_id,omitempty"`
+	ChannelType  string            `json:"channel_type,omitempty"`
+	Text         string            `json:"text,omitempty"`
+	Elements     []Element         `json:"elements,omitempty"`
+	Resources    []ResourceRef     `json:"resources,omitempty"`
+	Referrer     Referrer          `json:"referrer,omitempty"`
+	Final        bool              `json:"final,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
 }
 
 // MessageUpdate replaces a bot-created message, preserving its native identity.

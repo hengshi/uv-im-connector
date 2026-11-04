@@ -25,6 +25,7 @@ type Hub struct {
 	resources      *uvim.ResourceStore
 	authToken      string
 	identityMapper *uvim.UserIdentityMapper
+	identityLinks  *identityLinks
 
 	mu          sync.Mutex
 	subscribers map[chan uvim.Event]struct{}
@@ -141,6 +142,9 @@ func (h *Hub) Handler() http.Handler {
 	mux.HandleFunc("/v1/events/ws", h.handleEventsWS)
 	mux.HandleFunc("/v1/message.create", h.handleMessageCreate)
 	mux.HandleFunc("/v1/message.update", h.handleMessageUpdate)
+	mux.HandleFunc("/v1/identity.link", h.handleIdentity)
+	mux.HandleFunc("/v1/identity.resolve", h.handleIdentity)
+	mux.HandleFunc("/v1/identity.unlink", h.handleIdentity)
 	mux.HandleFunc("/v1/upload.create", h.handleUploadCreate)
 	mux.HandleFunc("/v1/resource.download", h.handleResourceDownload)
 	mux.HandleFunc("/v1/webhook/", h.handleWebhook)
@@ -170,7 +174,9 @@ func (h *Hub) handleMeta(w http.ResponseWriter, req *http.Request) {
 			Health:       provider.Health(req.Context()),
 		})
 	}
-	writeJSON(w, http.StatusOK, uvim.NewServiceMeta(providers))
+	meta := uvim.NewServiceMeta(providers)
+	meta.IdentityLinks = h.identityLinks != nil && h.authToken != ""
+	writeJSON(w, http.StatusOK, meta)
 }
 
 func (h *Hub) handleEvents(w http.ResponseWriter, req *http.Request) {
@@ -266,6 +272,10 @@ func (h *Hub) handleMessageCreate(w http.ResponseWriter, req *http.Request) {
 		writeProviderError(w, err)
 		return
 	}
+	if err := h.validateIdentityLink(req.Context(), msg); err != nil {
+		writeProviderError(w, uvim.NewProviderSendFailure(uvim.SendFailure{Category: uvim.SendFailureInvalidRequest, DeliveryState: uvim.DeliveryNotAttempted}, err.Error(), err))
+		return
+	}
 	result, err := provider.Send(req.Context(), msg)
 	if err != nil {
 		reason := uvim.ProviderSendErrorLogDetail(err)
@@ -309,6 +319,10 @@ func (h *Hub) handleMessageUpdate(w http.ResponseWriter, req *http.Request) {
 		} else {
 			writeError(w, http.StatusBadRequest, "invalid_message_update")
 		}
+		return
+	}
+	if err := h.validateIdentityLink(req.Context(), msg.OutboundMessage); err != nil {
+		writeProviderError(w, uvim.NewProviderSendFailure(uvim.SendFailure{Category: uvim.SendFailureInvalidRequest, DeliveryState: uvim.DeliveryNotAttempted}, err.Error(), err))
 		return
 	}
 	result, err := updater.Update(req.Context(), msg)

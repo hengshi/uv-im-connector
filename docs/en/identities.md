@@ -96,6 +96,24 @@ The complete `provider + connector + user_id` selector must match. Added identit
 
 Embedded Go applications construct `NewUserIdentityMapper` and call `Hub.SetUserIdentityMapper` before startup. Applications consuming providers directly can use the immutable mapper's `Apply(event)`. Operators verify associations; the connector does not generate them from fuzzy directory searches.
 
+## Verified dynamic links
+
+An authenticated business application may register a link after verifying the external account itself. Discover support through `GET /v1/meta` and `identity_links: true`, without a connector version or provider allowlist. Identity endpoints require a configured `UV_IM_AUTH_TOKEN`.
+
+| POST endpoint | Input | Result |
+| --- | --- | --- |
+| `/v1/identity.link` | `identity`, optional verified `account` alias, original IM `event`, external verification `proof` reference | Unique link for that business identity and destination provider/connector; idempotent for the same owner, 409 for another owner |
+| `/v1/identity.resolve` | `identity`, destination `provider`/`connector`, optional `event` to verify the private target | `found`, `revoked`, and existing `link` |
+| `/v1/identity.unlink` | Canonical `identity` and current IM `event` | Owner-only, idempotent revocation |
+
+Business identities require `type`, `scope`, and `id`. Prefer stable native IDs, with verified login names as aliases; display names are not proof. An event reference contains `provider`, `connector`, and `event_id`. The connector checks its own log and native private target; callers cannot substitute a recipient. Linking and unlinking require a personal message from the last 15 minutes. Applications may impose a shorter challenge expiry. The authenticated caller owns external-account verification; the connector does not log into the business system.
+
+Direct conversations preserve their native `referrer.target`, including `kind` and `id_type`. Reply-only channels cannot promise lasting proactive delivery. Matrix checks that the room currently contains exactly the bot and sender, and rechecks membership before each linked send. Native permissions, visibility and messaging windows still apply.
+
+The sole dynamic store is `identity-links.json` in state-dir, with a single-writer lock and atomic versioned snapshots. Corrupt or unsupported state fails startup without overwriting data. A directory-sync failure after rename stops identity operations until restart resolves the durable outcome. The startup-only `UV_IM_USER_IDENTITIES_FILE` is unchanged and is never rewritten.
+
+Use the returned `id` and `revision` as `identity_link` on `message.create` or `message.update`, together with the exact native `target`. Stale, revoked or redirected references are rejected before sending as `invalid-request / not-attempted`. An already-started external request cannot be recalled. Ordinary messages without a link reference retain their contract; applications must honor `revoked` instead of bypassing it with guessed destinations.
+
 ## Typed native send addresses
 
 Identity lists never select a destination automatically. Preserve the complete inbound `referrer` when replying. WhatsApp phone addresses use native `to`, while BSUID/parent BSUID use `recipient`, so targets retain `id_type`:

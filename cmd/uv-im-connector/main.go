@@ -70,6 +70,14 @@ func run(addr, stateDir, providerList string) error {
 	resources := &uvim.ResourceStore{Dir: filepath.Join(stateDir, "resources")}
 	hub := server.NewHub(uvim.NewProviderRegistry(providers...), eventLog, resources)
 	hub.SetAuthToken(os.Getenv("UV_IM_AUTH_TOKEN"))
+	identityPath, err := filepath.Abs(filepath.Join(stateDir, "identity-links.json"))
+	if err != nil {
+		return err
+	}
+	if err := hub.EnableIdentityLinks(identityPath); err != nil {
+		return err
+	}
+	defer hub.CloseIdentityLinks()
 	hub.SetUserIdentityMapper(identityMapper)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

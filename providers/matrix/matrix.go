@@ -77,6 +77,41 @@ func (p *Provider) Download(ctx context.Context, req uvim.ResourceDownloadReques
 	return p.base.Download(ctx, req)
 }
 
+// Matrix room events do not distinguish a DM from a group. Verify the current
+// audience using the homeserver rather than treating an arbitrary room as private.
+func (p *Provider) PrivateTarget(ctx context.Context, event uvim.Event) (uvim.OutboundTarget, error) {
+	get := func(path string, result any) error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(p.config.BaseURL, "/")+path, nil)
+		if err != nil {
+			return err
+		}
+		p.authorize(req)
+		body, err := p.do(req, "matrix private audience")
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(body, result)
+	}
+	var self struct {
+		UserID string `json:"user_id"`
+	}
+	if err := get("/_matrix/client/v3/account/whoami", &self); err != nil {
+		return uvim.OutboundTarget{}, err
+	}
+	var members struct {
+		Joined map[string]json.RawMessage `json:"joined"`
+	}
+	if err := get("/_matrix/client/v3/rooms/"+url.PathEscape(event.Channel.ID)+"/joined_members", &members); err != nil {
+		return uvim.OutboundTarget{}, err
+	}
+	_, hasBot := members.Joined[self.UserID]
+	_, hasSender := members.Joined[event.User.ID]
+	if self.UserID == "" || self.UserID == event.User.ID || len(members.Joined) != 2 || !hasBot || !hasSender {
+		return uvim.OutboundTarget{}, fmt.Errorf("matrix room is not a private conversation with this user")
+	}
+	return uvim.OutboundTarget{ID: event.Channel.ID, Kind: uvim.TargetConversation}, nil
+}
+
 func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {
 	defer func() {
 		err = uvim.NewProviderSendOperationError("matrix send", err)
