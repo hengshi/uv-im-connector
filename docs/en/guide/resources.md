@@ -22,7 +22,7 @@ Group and direct attachments use the same download path, before event persistenc
 }
 ```
 
-Lark quoted-parent context, attachments and lookup-error resources carry optional `source_message_id` pointing to the explicitly quoted parent in the same event. It survives sanitization so callers can distinguish reference material from newly attached files without guessing from filenames. It does not prove a successful content lookup or authorize Task selection or continuation; callers still check `error` and their own ownership and authorization evidence. Do not fabricate lineage for historical events or adapters that omit the field.
+Lark quoted-parent context, attachments and lookup-error resources carry optional `source_message_id` pointing to the explicitly quoted parent in the same event. It survives sanitization so callers can distinguish reference material from newly attached files without guessing from filenames. It does not prove a successful content lookup or authorize Task selection or continuation; callers still check `error` and their own ownership and authorization evidence. Do not fabricate lineage for historical events or adapters that omit the field. When the native lookup also verifies the parent sender as the configured app/app_id, resources include `source_bot_app_id`. Callers can use it to prevent an unindexed own-bot reply from falling into the current default Task; it does not recover Task ownership or grant access or execution. Other or unavailable senders omit it.
 
 Provider-private fields are removed from public events:
 

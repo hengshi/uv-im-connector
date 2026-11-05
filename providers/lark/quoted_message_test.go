@@ -104,6 +104,15 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 					items := []any{map[string]any{
 						"message_id": id, "chat_id": chat, "msg_type": kind, "deleted": scenario == "deleted", "body": map[string]any{"content": content},
 					}}
+					if scenario == "interactive" {
+						items[0].(map[string]any)["sender"] = map[string]any{"id": "app", "id_type": "app_id", "sender_type": "app"}
+					}
+					if scenario == "text" {
+						items[0].(map[string]any)["sender"] = map[string]any{"id": "other-app", "id_type": "app_id", "sender_type": "app"}
+					}
+					if scenario == "share-chat" {
+						items[0].(map[string]any)["sender"] = map[string]any{"id": "app", "id_type": "open_id", "sender_type": "user"}
+					}
 					if scenario == "merge-forward" {
 						items = append(items, map[string]any{"message_id": "child", "chat_id": "chat", "msg_type": "file", "body": map[string]any{"content": `{"file_key":"forwarded-file","file_name":"forwarded.log"}`}})
 					}
@@ -185,6 +194,13 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 			for _, ref := range event.Message.Resources {
 				if ref.SourceMessageID != "parent" {
 					t.Fatalf("quote resource lost parent lineage through Hub sanitization: %+v", ref)
+				}
+				wantBotApp := ""
+				if scenario == "interactive" {
+					wantBotApp = "app"
+				}
+				if ref.SourceBotAppID != wantBotApp {
+					t.Fatalf("quoted bot ownership = %q, want %q", ref.SourceBotAppID, wantBotApp)
 				}
 				if ref.Error != "" {
 					failures = append(failures, ref.Error)
