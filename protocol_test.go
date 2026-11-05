@@ -33,6 +33,7 @@ func TestSanitizedResourceDropsProviderSecrets(t *testing.T) {
 		Metadata:        map[string]string{"message_id": "m1"},
 		InternalURL:     "internal://r1",
 		SourceMessageID: "m1",
+		SourceBotAppID:  "app",
 	}
 	got := ref.Sanitized()
 	if got.Key != "" || got.URL != "" || got.Secret != "" || got.Private != nil || got.Metadata != nil {
@@ -43,6 +44,9 @@ func TestSanitizedResourceDropsProviderSecrets(t *testing.T) {
 	}
 	if got.SourceMessageID != "m1" {
 		t.Fatalf("public reference lineage was removed: %+v", got)
+	}
+	if got.SourceBotAppID != "app" {
+		t.Fatalf("verified source bot ownership was removed: %+v", got)
 	}
 }
 

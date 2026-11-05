@@ -16,7 +16,12 @@ type quotedMessageItem struct {
 	ChatID  string `json:"chat_id"`
 	Type    string `json:"msg_type"`
 	Deleted bool   `json:"deleted"`
-	Body    struct {
+	Sender  struct {
+		ID   string `json:"id"`
+		Kind string `json:"id_type"`
+		Type string `json:"sender_type"`
+	} `json:"sender"`
+	Body struct {
 		Content string `json:"content"`
 	} `json:"body"`
 }
@@ -35,7 +40,7 @@ func (p *Provider) enrichQuotedMessage(ctx context.Context, event *uvim.Event) {
 		SourceMessageID: id,
 		Metadata:        map[string]string{"message_id": id},
 	}
-	text, resources, err := p.quotedMessage(ctx, id, event.Channel.ID)
+	text, resources, err := p.quotedMessage(ctx, id, event.Channel.ID, &contextRef)
 	if err != nil {
 		contextRef.Error = err.Error() // Only normalized errors leave quotedMessage.
 	} else {
@@ -48,7 +53,7 @@ func (p *Provider) enrichQuotedMessage(ctx context.Context, event *uvim.Event) {
 	event.Message.Resources = append(event.Message.Resources, resources...)
 }
 
-func (p *Provider) quotedMessage(ctx context.Context, id, chatID string) (string, []uvim.ResourceRef, error) {
+func (p *Provider) quotedMessage(ctx context.Context, id, chatID string, contextRef *uvim.ResourceRef) (string, []uvim.ResourceRef, error) {
 	token, err := p.tenantAccessToken(ctx)
 	if err != nil {
 		return "", nil, fmt.Errorf("quoted_message_auth_failed")
@@ -90,6 +95,9 @@ func (p *Provider) quotedMessage(ctx context.Context, id, chatID string) (string
 	if message.Deleted {
 		return "", nil, fmt.Errorf("quoted_message_deleted")
 	}
+	if message.Sender.Type == "app" && message.Sender.Kind == "app_id" && message.Sender.ID == p.config.AppID && p.config.AppID != "" {
+		contextRef.SourceBotAppID = p.config.AppID
+	}
 	if !json.Valid([]byte(message.Body.Content)) {
 		return "", nil, fmt.Errorf("quoted_message_invalid_content")
 	}
@@ -110,6 +118,7 @@ func (p *Provider) quotedMessage(ctx context.Context, id, chatID string) (string
 		resources[i].Provider = "lark"
 		resources[i].Connector = p.ConnectorID()
 		resources[i].SourceMessageID = id
+		resources[i].SourceBotAppID = contextRef.SourceBotAppID
 		resources[i].Metadata = map[string]string{"message_id": id}
 		fmt.Fprintf(&context, "Attachment: %s (%s)\n", resources[i].Name, resources[i].Kind)
 	}
