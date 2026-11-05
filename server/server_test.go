@@ -396,6 +396,74 @@ func TestHubRoutesOutboundByConnector(t *testing.T) {
 	}
 }
 
+// The connector API must carry an explicitly requested, provider-confirmed
+// publication locator end-to-end. This is intentionally an HTTP test: a
+// caller should not need access to Lark provider internals to receive the
+// receipt needed for a future quoted continuation.
+func TestMessageCreateReturnsConfirmedPublicationLocatorWhenRequested(t *testing.T) {
+	var sends, lookups int
+	native := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			if req.Method != http.MethodPost {
+				t.Errorf("token method = %s", req.Method)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+		case "/open-apis/im/v1/messages":
+			sends++
+			if req.Method != http.MethodPost || req.URL.Query().Get("receive_id_type") != "open_id" || req.Header.Get("Authorization") != "Bearer token" {
+				t.Errorf("send request = %s %s auth=%q", req.Method, req.URL.RawQuery, req.Header.Get("Authorization"))
+			}
+			var body map[string]string
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			if body["receive_id"] != "ou_recipient" {
+				t.Errorf("send body = %v", body)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"message_id": "om_sent"}})
+		case "/open-apis/im/v1/messages/om_sent":
+			lookups++
+			if req.Method != http.MethodGet || req.Header.Get("Authorization") != "Bearer token" {
+				t.Errorf("locator request = %s auth=%q", req.Method, req.Header.Get("Authorization"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []map[string]any{{
+				"message_id": "om_sent", "chat_id": "oc_actual_conversation", "msg_type": "text",
+				"sender": map[string]string{"id": "app", "id_type": "app_id", "sender_type": "app"},
+			}}}})
+		default:
+			t.Errorf("unexpected Lark route %s", req.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer native.Close()
+	provider, err := lark.New(lark.Config{ConnectorID: "main", AppID: "app", AppSecret: "secret", BaseURL: native.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(NewHub(uvim.NewProviderRegistry(provider), nil, nil).Handler())
+	defer api.Close()
+
+	result, err := client.New(api.URL).Send(t.Context(), uvim.OutboundMessage{
+		Provider: "lark", Connector: "main", Text: "notification",
+		Target:                    &uvim.OutboundTarget{ID: "ou_recipient", Kind: uvim.TargetUser},
+		RequestPublicationLocator: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sends != 1 || lookups != 1 || result.MessageID != "om_sent" {
+		t.Fatalf("sends=%d lookups=%d result=%+v", sends, lookups, result)
+	}
+	if len(result.Publications) != 1 {
+		t.Fatalf("publications = %+v", result.Publications)
+	}
+	publication := result.Publications[0]
+	if publication.DeliveryState != uvim.PublicationDeliveryConfirmed || publication.PartOrdinal != 1 || publication.Locator.Provider != "lark" || publication.Locator.Connector != "main" || publication.Locator.MessageID != "om_sent" || publication.Locator.NativeConversationID != "oc_actual_conversation" || publication.Locator.BotAppID != "app" || publication.Locator.BotAppIDType != "app_id" || publication.Locator.NativeTarget != (uvim.OutboundTarget{ID: "oc_actual_conversation", Kind: uvim.TargetConversation}) {
+		t.Fatalf("publication = %+v", publication)
+	}
+}
+
 func TestHubMessageUpdateChecksCapabilityIdentityAndAuthentication(t *testing.T) {
 	for _, tc := range []struct {
 		name                       string
@@ -730,7 +798,7 @@ func TestHubMetaIncludesServiceAndProtocolVersion(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
 		t.Fatal(err)
 	}
-	if meta.Service != uvim.ServiceName || meta.ProtocolVersion != uvim.ProtocolVersion || meta.ConnectorVersion == "" {
+	if meta.Service != uvim.ServiceName || meta.ProtocolVersion != uvim.ProtocolVersion || meta.ConnectorVersion == "" || meta.PublicationLocatorVersion != uvim.PublicationLocatorVersionV1 {
 		t.Fatalf("meta = %+v", meta)
 	}
 	if len(meta.Providers) != 1 || meta.Providers[0].Provider != "memory" || meta.Providers[0].Connector != "main" {

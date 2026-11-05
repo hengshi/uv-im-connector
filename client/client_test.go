@@ -212,6 +212,15 @@ func TestSendSurfacesStructuredProviderFailureDetail(t *testing.T) {
 				HTTPStatus:        http.StatusTooManyRequests,
 				ProviderCode:      "230020",
 				RetryAfterSeconds: 3,
+				DeliveredCount:    1,
+				DeliveredPublications: []uvim.Publication{{
+					PartOrdinal:   1,
+					DeliveryState: uvim.PublicationDeliveryConfirmed,
+					Locator: uvim.PublicationLocator{
+						Provider: "lark", Connector: "main", MessageID: "om_confirmed", NativeConversationID: "oc_confirmed",
+						BotAppID: "app", BotAppIDType: "app_id", NativeTarget: uvim.OutboundTarget{ID: "oc_confirmed", Kind: uvim.TargetConversation},
+					},
+				}},
 			},
 		})
 	}))
@@ -225,7 +234,7 @@ func TestSendSurfacesStructuredProviderFailureDetail(t *testing.T) {
 	if !errors.As(err, &httpErr) || httpErr.Failure == nil {
 		t.Fatalf("Send error = %T %v, want typed HTTPError failure", err, err)
 	}
-	if httpErr.Failure.Category != uvim.SendFailureRateLimited || !httpErr.Failure.Retryable || httpErr.Failure.ProviderCode != "230020" {
+	if httpErr.Failure.Category != uvim.SendFailureRateLimited || !httpErr.Failure.Retryable || httpErr.Failure.ProviderCode != "230020" || len(httpErr.Failure.DeliveredPublications) != 1 || httpErr.Failure.DeliveredPublications[0].Locator.MessageID != "om_confirmed" {
 		t.Fatalf("Send failure = %+v", httpErr.Failure)
 	}
 }

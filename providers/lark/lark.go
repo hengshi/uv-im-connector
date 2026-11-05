@@ -128,20 +128,21 @@ func (p *Provider) ID() string          { return "lark" }
 func (p *Provider) ConnectorID() string { return p.config.ConnectorID }
 func (p *Provider) Capabilities() uvim.Capabilities {
 	return uvim.Capabilities{
-		Inbound:          true,
-		Outbound:         true,
-		DirectMessage:    true,
-		GroupMessage:     true,
-		ThreadReply:      true,
-		ReplyMessage:     true,
-		EditMessage:      true,
-		ProactiveDirect:  true,
-		ProactiveGroup:   true,
-		TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
-		UploadResource:   p.config.ResourceStore != nil,
-		DownloadResource: true,
-		ResourceKinds:    []string{uvim.ElementImage, uvim.ElementAudio, uvim.ElementVideo, uvim.ElementFile},
-		ChannelTypes:     []string{uvim.ChannelDirect, uvim.ChannelGroup},
+		Inbound:                   true,
+		Outbound:                  true,
+		DirectMessage:             true,
+		GroupMessage:              true,
+		ThreadReply:               true,
+		ReplyMessage:              true,
+		EditMessage:               true,
+		ProactiveDirect:           true,
+		ProactiveGroup:            true,
+		TargetKinds:               []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
+		UploadResource:            p.config.ResourceStore != nil,
+		DownloadResource:          true,
+		ResourceKinds:             []string{uvim.ElementImage, uvim.ElementAudio, uvim.ElementVideo, uvim.ElementFile},
+		ChannelTypes:              []string{uvim.ChannelDirect, uvim.ChannelGroup},
+		PublicationLocatorVersion: uvim.PublicationLocatorVersionV1,
 	}
 }
 
@@ -606,7 +607,16 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 		sendErr := fmt.Errorf("lark send: response missing message ID")
 		return uvim.SendResult{}, uvim.NewProviderSendLogError(sendErr.Error(), sendErr)
 	}
-	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: decoded.Data.MessageID, Time: time.Now().UTC()}, nil
+	result = uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: decoded.Data.MessageID, Time: time.Now().UTC()}
+	// A locator is an optional receipt enrichment. The POST has already
+	// succeeded, so a lookup failure must not change delivery semantics, cause a
+	// retry, or manufacture a conversation from the requested recipient.
+	if msg.RequestPublicationLocator {
+		if publication, ok := p.confirmedPublication(ctx, decoded.Data.MessageID); ok {
+			result.Publications = []uvim.Publication{publication}
+		}
+	}
+	return result, nil
 }
 
 func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (kind string, content map[string]string, err error) {

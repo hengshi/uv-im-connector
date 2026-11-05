@@ -273,6 +273,10 @@ type Capabilities struct {
 	DownloadResource bool     `json:"download_resource,omitempty"`
 	ResourceKinds    []string `json:"resource_kinds,omitempty"`
 	ChannelTypes     []string `json:"channel_types,omitempty"`
+	// PublicationLocatorVersion is advertised only by providers that can
+	// confirm the native message and conversation that a successful send
+	// published. An empty value means no locator is available.
+	PublicationLocatorVersion string `json:"publication_locator_version,omitempty"`
 }
 
 type OutboundTarget struct {
@@ -282,19 +286,23 @@ type OutboundTarget struct {
 }
 
 type OutboundMessage struct {
-	IdentityLink *IdentityLinkRef  `json:"identity_link,omitempty"`
-	ID           string            `json:"id,omitempty"`
-	Provider     string            `json:"provider"`
-	Connector    string            `json:"connector,omitempty"`
-	Target       *OutboundTarget   `json:"target,omitempty"`
-	ChannelID    string            `json:"channel_id,omitempty"`
-	ChannelType  string            `json:"channel_type,omitempty"`
-	Text         string            `json:"text,omitempty"`
-	Elements     []Element         `json:"elements,omitempty"`
-	Resources    []ResourceRef     `json:"resources,omitempty"`
-	Referrer     Referrer          `json:"referrer,omitempty"`
-	Final        bool              `json:"final,omitempty"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
+	IdentityLink *IdentityLinkRef `json:"identity_link,omitempty"`
+	ID           string           `json:"id,omitempty"`
+	Provider     string           `json:"provider"`
+	Connector    string           `json:"connector,omitempty"`
+	Target       *OutboundTarget  `json:"target,omitempty"`
+	ChannelID    string           `json:"channel_id,omitempty"`
+	ChannelType  string           `json:"channel_type,omitempty"`
+	Text         string           `json:"text,omitempty"`
+	Elements     []Element        `json:"elements,omitempty"`
+	Resources    []ResourceRef    `json:"resources,omitempty"`
+	Referrer     Referrer         `json:"referrer,omitempty"`
+	Final        bool             `json:"final,omitempty"`
+	// RequestPublicationLocator is an internal transport request for a
+	// post-send native receipt. It is intentionally not connector configuration:
+	// callers set it only for publications that need quote continuation.
+	RequestPublicationLocator bool              `json:"request_publication_locator,omitempty"`
+	Metadata                  map[string]string `json:"metadata,omitempty"`
 }
 
 // MessageUpdate replaces a bot-created message, preserving its native identity.
@@ -475,11 +483,40 @@ func ValidateOutboundResources(m OutboundMessage, capabilities Capabilities) err
 }
 
 type SendResult struct {
-	Provider   string    `json:"provider"`
-	Connector  string    `json:"connector,omitempty"`
-	MessageID  string    `json:"message_id,omitempty"`
-	Time       time.Time `json:"time"`
-	MessageIDs []string  `json:"message_ids,omitempty"`
+	Provider     string        `json:"provider"`
+	Connector    string        `json:"connector,omitempty"`
+	MessageID    string        `json:"message_id,omitempty"`
+	Time         time.Time     `json:"time"`
+	MessageIDs   []string      `json:"message_ids,omitempty"`
+	Publications []Publication `json:"publications,omitempty"`
+}
+
+const (
+	PublicationLocatorVersionV1  = "v1"
+	PublicationDeliveryConfirmed = "confirmed"
+)
+
+// Publication is a confirmed native-message receipt. Providers must omit it
+// rather than infer a conversation or bot identity from a requested recipient.
+// PartOrdinal is one-based when a logical send was split into multiple parts.
+type Publication struct {
+	PartOrdinal   int                `json:"part_ordinal,omitempty"`
+	DeliveryState string             `json:"delivery_state"`
+	Locator       PublicationLocator `json:"locator"`
+}
+
+// PublicationLocator preserves the provider-confirmed native identifiers that
+// are required to safely quote an outbound publication later. NativeTarget is
+// the actual native conversation target, never a requested user recipient.
+type PublicationLocator struct {
+	Provider               string         `json:"provider"`
+	Connector              string         `json:"connector,omitempty"`
+	MessageID              string         `json:"message_id"`
+	NativeConversationID   string         `json:"native_conversation_id"`
+	NativeConversationType string         `json:"native_conversation_type,omitempty"`
+	BotAppID               string         `json:"bot_app_id"`
+	BotAppIDType           string         `json:"bot_app_id_type"`
+	NativeTarget           OutboundTarget `json:"native_target"`
 }
 
 const (
@@ -514,6 +551,9 @@ type SendFailure struct {
 	RequestID           string   `json:"request_id,omitempty"`
 	DeliveredCount      int      `json:"delivered_count,omitempty"`
 	DeliveredMessageIDs []string `json:"delivered_message_ids,omitempty"`
+	// DeliveredPublications contains only confirmed successful-prefix parts.
+	// A failed or unknown part never receives a synthetic publication locator.
+	DeliveredPublications []Publication `json:"delivered_publications,omitempty"`
 }
 
 // Sanitized returns a failure suitable for persistence and policy.

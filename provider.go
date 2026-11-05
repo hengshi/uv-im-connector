@@ -83,6 +83,7 @@ func SendResourceSequence(ctx context.Context, msg OutboundMessage, send func(co
 	}
 	var result SendResult
 	var ids []string
+	var publications []Publication
 	for i, part := range parts {
 		// Matrix uses ID as its transaction key; every part needs a distinct,
 		// stable key when the caller supplies an idempotency ID.
@@ -100,11 +101,17 @@ func SendResourceSequence(ctx context.Context, msg OutboundMessage, send func(co
 			}
 			failure.DeliveryState, failure.Retryable = DeliveryUnknown, false
 			failure.DeliveredCount, failure.DeliveredMessageIDs = i, append([]string(nil), ids...)
+			failure.DeliveredPublications = append([]Publication(nil), publications...)
 			return result, NewProviderSendFailure(failure, fmt.Sprintf("send stopped after %d of %d messages; do not retry the whole sequence", i, len(parts)), err)
 		}
 		ids = append(ids, next.MessageID)
+		for _, publication := range next.Publications {
+			publication.PartOrdinal = i + 1
+			publications = append(publications, publication)
+		}
 		result = next
 		result.MessageIDs = ids
+		result.Publications = append([]Publication(nil), publications...)
 	}
 	return result, nil
 }

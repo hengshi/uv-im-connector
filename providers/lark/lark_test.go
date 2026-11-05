@@ -823,6 +823,113 @@ func TestSendTextRoutesRecipientsAndReplies(t *testing.T) {
 	}
 }
 
+func TestSendPublicationLocatorIsBestEffortAndOptIn(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		requestLocator bool
+		wantLookups    int
+	}{
+		{"lookup failure preserves successful send", true, 1},
+		{"ordinary send does not perform lookup", false, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var sends, lookups int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				switch req.URL.Path {
+				case "/open-apis/auth/v3/tenant_access_token/internal":
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+				case "/open-apis/im/v1/messages":
+					sends++
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"message_id": "om_sent"}})
+				case "/open-apis/im/v1/messages/om_sent":
+					lookups++
+					http.Error(w, "lookup unavailable", http.StatusServiceUnavailable)
+				default:
+					t.Errorf("unexpected route %s", req.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := provider.Send(t.Context(), uvim.OutboundMessage{
+				Target: &uvim.OutboundTarget{ID: "ou_recipient", Kind: uvim.TargetUser}, Text: "notification",
+				RequestPublicationLocator: tt.requestLocator,
+			})
+			if err != nil || result.MessageID != "om_sent" || len(result.Publications) != 0 {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if sends != 1 || lookups != tt.wantLookups {
+				t.Fatalf("sends=%d lookups=%d", sends, lookups)
+			}
+		})
+	}
+}
+
+func TestCapabilitiesAdvertisePublicationLocatorV1(t *testing.T) {
+	provider, err := New(Config{AppID: "app", AppSecret: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := provider.Capabilities().PublicationLocatorVersion; got != uvim.PublicationLocatorVersionV1 {
+		t.Fatalf("publication locator capability = %q", got)
+	}
+}
+
+func TestSendPublicationLocatorRequiresVerifiedNativeMessage(t *testing.T) {
+	base := func() map[string]any {
+		return map[string]any{
+			"message_id": "om_sent", "chat_id": "oc_verified", "msg_type": "text",
+			"sender": map[string]string{"id": "app", "id_type": "app_id", "sender_type": "app"},
+		}
+	}
+	for _, tt := range []struct {
+		name string
+		item map[string]any
+	}{
+		{"exact message is absent", func() map[string]any { item := base(); item["message_id"] = "om_other"; return item }()},
+		{"deleted message", func() map[string]any { item := base(); item["deleted"] = true; return item }()},
+		{"foreign app", func() map[string]any {
+			item := base()
+			item["sender"] = map[string]string{"id": "other", "id_type": "app_id", "sender_type": "app"}
+			return item
+		}()},
+		{"missing conversation", func() map[string]any { item := base(); item["chat_id"] = ""; return item }()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var sends, lookups int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				switch req.URL.Path {
+				case "/open-apis/auth/v3/tenant_access_token/internal":
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+				case "/open-apis/im/v1/messages":
+					sends++
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"message_id": "om_sent"}})
+				case "/open-apis/im/v1/messages/om_sent":
+					lookups++
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []map[string]any{tt.item}}})
+				default:
+					t.Errorf("unexpected route %s", req.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := provider.Send(t.Context(), uvim.OutboundMessage{
+				Target: &uvim.OutboundTarget{ID: "ou_recipient", Kind: uvim.TargetUser}, Text: "notification", RequestPublicationLocator: true,
+			})
+			if err != nil || result.MessageID != "om_sent" || len(result.Publications) != 0 || sends != 1 || lookups != 1 {
+				t.Fatalf("result=%+v err=%v sends=%d lookups=%d", result, err, sends, lookups)
+			}
+		})
+	}
+}
+
 func TestSendBusinessFailureExposesOnlyNormalizedFacts(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {

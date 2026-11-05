@@ -125,6 +125,16 @@ The top-level `message_id` comes from a successful outbound `SendResult`, separa
 
 These fields and the endpoint are additive protocol v1 capabilities. New callers must first read metadata for the exact provider/connector. Missing capabilities on an older service mean append-only presentation and no update calls. Older callers continue using `message.create`. Applications using the new Go client/API must pin a dependency that includes it and upgrade the service binary before enabling it; updating a local Go dependency does not upgrade a running service.
 
+## Confirmed outbound publication locators
+
+An internal caller that needs to quote a notification later may add `request_publication_locator: true` to its `message.create` request. This is not an end-user setting or connector configuration. Ordinary sends omit it and do not gain a message lookup. The caller must first verify `capabilities.publication_locator_version: "v1"` for the exact provider and connector. The service-level `publication_locator_version` only says that this HTTP service can serialize the schema; it does not imply every provider can confirm a locator.
+
+The Lark / Feishu adapter currently supports `v1`. It completes the native POST first and performs a GET for the exact returned `message_id` only when requested. A successful `SendResult.publications` entry with `delivery_state: "confirmed"` requires the same message, a non-deleted record, the configured app as sender (`app_id`), and a nonempty native `chat_id`. It contains the provider, connector, message ID, actual native conversation target, and bot app ID. A proactive recipient Open ID is never guessed to be the conversation ID. Adapters that do not advertise the capability must not synthesize a locator.
+
+Once the native POST is explicitly successful, a failed GET—whether from permission, network, deletion, or response validation—does **not** turn the send into an error or `unknown`, and never triggers a retry. The successful result still contains its original `message_id`; it simply omits `publications`. Callers may treat only a `confirmed` locator as quote evidence and must use their own safe fallback when it is absent.
+
+When one logical send is split into text/resource native parts, confirmed entries are returned in `publications` with one-based `part_ordinal`. If a later part fails, only the confirmed successful prefix appears in `failure.delivered_publications`; the failed or unknown part never gets a locator and the whole batch must not be replayed.
+
 ## Recovery
 
 The event log is sequence-based. A consumer can reconnect with the last processed sequence:
