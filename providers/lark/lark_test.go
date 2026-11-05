@@ -249,7 +249,7 @@ func TestDecodePayloadTextMention(t *testing.T) {
 				"chat_id":      "oc_chat",
 				"chat_type":    "group",
 				"message_type": "text",
-				"content":      `{"text":"@_user_1 帮我看一下"}`,
+				"content":      `{"text":"@_user_1 帮我看一下  \n"}`,
 				"mentions": []any{
 					map[string]any{
 						"key":  "@_user_1",
@@ -278,7 +278,7 @@ func TestDecodePayloadTextMention(t *testing.T) {
 	if got.Channel.Type != uvim.ChannelGroup {
 		t.Fatalf("channel = %+v", got.Channel)
 	}
-	if got.Message.Text != "帮我看一下" {
+	if got.Message.Text != "帮我看一下  \n" {
 		t.Fatalf("text = %q", got.Message.Text)
 	}
 	if got.BotMentionPrefix == nil || !*got.BotMentionPrefix {

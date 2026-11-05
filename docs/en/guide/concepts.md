@@ -62,6 +62,8 @@ Caller applications should treat `addressed=false` group events as ambient and n
 
 `bot_mention_prefix` is optional, narrower three-state provenance. `true` means an adapter can prove that the first native mention token, before mention removal, addressed this connector's bot. `false` is an explicit guard: another account held the first native mention position, or rich-text flattening lost token order, so callers must not reinterpret display-name text as a literal `@bot` invocation. An absent field means the adapter has no normalized leading-native-mention evidence; ordinary text may still be handled by the caller's own literal-`@name` rule. It is not equivalent to `addressed`, and must not be inferred from direct-message admission, `addressed`, or a display name.
 
+Lark text mention replacement preserves surrounding non-mention text, including leading/trailing spaces and newlines. Removing an own-bot token still consumes at most one following ASCII space.
+
 ## Referrer
 
 `Referrer` carries provider-native reply or thread context:
