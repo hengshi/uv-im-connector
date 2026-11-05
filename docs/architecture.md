@@ -40,7 +40,7 @@ WeCom、Lark WebSocket 断线及 DingTalk Stream 首次启动失败由共享监�
 - `Event`：入站事件 envelope，包含 provider、connector、channel、user、message 和 referrer。
 - `User.Identities`：带类型、作用域和来源的账户身份，详见 [用户身份与原生地址](./identities.md)；与会话、发送地址分别建模。
 - `Message`：文本、结构化 elements 和 resource references。
-- `ResourceRef`：文件 / 图片 / 音频 / 视频引用，包含 sanitized internal URL 和 provider-private 字段。
+- `ResourceRef`：文件 / 图片 / 音频 / 视频引用，包含 sanitized internal URL 和 provider-private 字段；可选 `source_message_id` 保留显式引用材料的消息来源，不赋予任务或执行权限。
 - `OutboundMessage`：显式 `target`、text/elements/resources，以及用于 reply/thread 的可选 referrer。
 - `MessageUpdate`：嵌入 `OutboundMessage`，顶层 `message_id` 指定本 bot 已发送的精确消息，只替换文本。
 - `SendResult`：已发消息 ID，及 provider 已确认时的 `publications` native 定位符；定位符不是由收件人地址推测出来的。

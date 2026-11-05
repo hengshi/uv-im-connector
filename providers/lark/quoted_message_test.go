@@ -183,6 +183,9 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 			var contents string
 			var failures []string
 			for _, ref := range event.Message.Resources {
+				if ref.SourceMessageID != "parent" {
+					t.Fatalf("quote resource lost parent lineage through Hub sanitization: %+v", ref)
+				}
 				if ref.Error != "" {
 					failures = append(failures, ref.Error)
 					continue

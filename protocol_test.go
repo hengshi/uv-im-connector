@@ -25,12 +25,13 @@ func TestEventDedupeKeyUsesProviderConnectorAndMessage(t *testing.T) {
 
 func TestSanitizedResourceDropsProviderSecrets(t *testing.T) {
 	ref := ResourceRef{
-		Key:         "provider-key",
-		URL:         "https://download.example",
-		Secret:      "secret",
-		Private:     map[string]string{"token": "x"},
-		Metadata:    map[string]string{"message_id": "m1"},
-		InternalURL: "internal://r1",
+		Key:             "provider-key",
+		URL:             "https://download.example",
+		Secret:          "secret",
+		Private:         map[string]string{"token": "x"},
+		Metadata:        map[string]string{"message_id": "m1"},
+		InternalURL:     "internal://r1",
+		SourceMessageID: "m1",
 	}
 	got := ref.Sanitized()
 	if got.Key != "" || got.URL != "" || got.Secret != "" || got.Private != nil || got.Metadata != nil {
@@ -38,6 +39,9 @@ func TestSanitizedResourceDropsProviderSecrets(t *testing.T) {
 	}
 	if got.InternalURL != "internal://r1" {
 		t.Fatalf("InternalURL = %q", got.InternalURL)
+	}
+	if got.SourceMessageID != "m1" {
+		t.Fatalf("public reference lineage was removed: %+v", got)
 	}
 }
 

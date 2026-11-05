@@ -32,7 +32,8 @@ func (p *Provider) enrichQuotedMessage(ctx context.Context, event *uvim.Event) {
 	contextRef := uvim.ResourceRef{
 		Provider: "lark", Connector: p.ConnectorID(), Kind: uvim.ElementFile,
 		Name: "quoted-message.txt", MIME: "text/plain; charset=utf-8",
-		Metadata: map[string]string{"message_id": id},
+		SourceMessageID: id,
+		Metadata:        map[string]string{"message_id": id},
 	}
 	text, resources, err := p.quotedMessage(ctx, id, event.Channel.ID)
 	if err != nil {
@@ -108,6 +109,7 @@ func (p *Provider) quotedMessage(ctx context.Context, id, chatID string) (string
 	for i := range resources {
 		resources[i].Provider = "lark"
 		resources[i].Connector = p.ConnectorID()
+		resources[i].SourceMessageID = id
 		resources[i].Metadata = map[string]string{"message_id": id}
 		fmt.Fprintf(&context, "Attachment: %s (%s)\n", resources[i].Name, resources[i].Kind)
 	}

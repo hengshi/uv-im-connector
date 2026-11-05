@@ -216,21 +216,25 @@ type Referrer struct {
 }
 
 type ResourceRef struct {
-	ID          string            `json:"id,omitempty"`
-	Provider    string            `json:"provider,omitempty"`
-	Connector   string            `json:"connector,omitempty"`
-	Kind        string            `json:"kind,omitempty"`
-	Name        string            `json:"name,omitempty"`
-	Key         string            `json:"key,omitempty"`
-	URL         string            `json:"url,omitempty"`
-	InternalURL string            `json:"internal_url,omitempty"`
-	MIME        string            `json:"mime,omitempty"`
-	SizeBytes   int64             `json:"size_bytes,omitempty"`
-	SHA256      string            `json:"sha256,omitempty"`
-	Error       string            `json:"error,omitempty"`
-	Secret      string            `json:"-"`
-	Private     map[string]string `json:"-"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	// SourceMessageID associates reference material (or its lookup error) with
+	// the explicitly quoted native message. It is not a new instruction, a
+	// publication locator, or authority to select or continue a Task.
+	SourceMessageID string            `json:"source_message_id,omitempty"`
+	ID              string            `json:"id,omitempty"`
+	Provider        string            `json:"provider,omitempty"`
+	Connector       string            `json:"connector,omitempty"`
+	Kind            string            `json:"kind,omitempty"`
+	Name            string            `json:"name,omitempty"`
+	Key             string            `json:"key,omitempty"`
+	URL             string            `json:"url,omitempty"`
+	InternalURL     string            `json:"internal_url,omitempty"`
+	MIME            string            `json:"mime,omitempty"`
+	SizeBytes       int64             `json:"size_bytes,omitempty"`
+	SHA256          string            `json:"sha256,omitempty"`
+	Error           string            `json:"error,omitempty"`
+	Secret          string            `json:"-"`
+	Private         map[string]string `json:"-"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
 }
 
 func (r ResourceRef) Sanitized() ResourceRef {
