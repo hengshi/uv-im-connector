@@ -43,11 +43,14 @@ WeCom、Lark WebSocket 断线及 DingTalk Stream 首次启动失败由共享监�
 - `ResourceRef`：文件 / 图片 / 音频 / 视频引用，包含 sanitized internal URL 和 provider-private 字段。
 - `OutboundMessage`：显式 `target`、text/elements/resources，以及用于 reply/thread 的可选 referrer。
 - `MessageUpdate`：嵌入 `OutboundMessage`，顶层 `message_id` 指定本 bot 已发送的精确消息，只替换文本。
-- `Capabilities`：每个 provider 的显式能力声明，包括 reply、Server 主动发送和可接受的 target kind。
+- `SendResult`：已发消息 ID，及 provider 已确认时的 `publications` native 定位符；定位符不是由收件人地址推测出来的。
+- `Capabilities`：每个 provider 的显式能力声明，包括 reply、Server 主动发送、可接受的 target kind 和可选 `publication_locator_version`。
 
 `OutboundMessage.target` 由 `id` 和 `kind` 组成。`kind` 只能是 `user`、`group`、`channel` 或 `conversation`，调用方必须使用该 provider 在 `capabilities.target_kinds` 中声明的类型。入站事件的 `referrer.target` 是 provider adapter 给出的精确回复目标；回复时应原样带回完整 `referrer`。目标解析优先级是 outbound `target`、`referrer.target`、旧 channel 字段。协议 v1 继续接受旧的 `channel_id` / `channel_type`：`direct` 映射为 `user`，`group` 映射为 `group`，`thread` 映射为 `channel`，`room` 或空类型映射为 `conversation`。旧 `channel_id` 仍是 provider-native 的现有会话 / channel ID，只映射语义类型，不会被重新解释成主动发送的 user ID。旧请求必须提供 channel ID 或 message / reply handle；未知的非空旧类型会被拒绝，不做猜测。
 
 `reply_message` 表示可以携带入站事件的 `referrer` 回复已有消息；`proactive_direct` 和 `proactive_group` 表示没有当前入站消息时，Server 能否主动发送私聊或群聊消息。调用方应从 `/v1/meta` 读取这些能力，不应根据 provider 名称推断。
+
+调用方仅在 provider 声明 `publication_locator_version` 时，才可为内部通知在 `OutboundMessage.request_publication_locator` 显式请求已确认发布定位符。普通发送不请求也不触发查询。POST 已成功而定位符读取或校验失败时，发送仍成功、不得重试，只省略定位符；分段发送失败时仅 `failure.delivered_publications` 中的已确认成功前缀可用。服务级 `publication_locator_version` 只声明 HTTP schema，不替代 provider capability。`native_conversation_type` 是可空的证据字段；Lark 消息查询不能证明会话类型时必须保留为空，调用方不得从主动收件人推断 `direct` 或 `group`。
 
 部分入站 `referrer` 带有短效或限次 reply handle。`referrer.expires_at` 表示 provider 给出或 adapter 推导的截止时间；`capabilities.reply_max_uses` 表示该 handle 最多可用于多少次出站尝试，字段缺失或为 `0` 表示没有声明有限次数。超过截止时间或次数后，调用方必须移除 message / reply handle，并且只能在对应主动发送能力和 target kind 可用时改用 `referrer.target`。不具备 reply-handle 语义的平台业务会话窗口仍属于 provider 限制，不能统一重试为同一条主动消息。
 
