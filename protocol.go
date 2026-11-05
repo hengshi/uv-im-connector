@@ -66,6 +66,12 @@ type Event struct {
 	Message   Message   `json:"message,omitempty"`
 	Referrer  Referrer  `json:"referrer,omitempty"`
 	Addressed bool      `json:"addressed,omitempty"`
+	// BotMentionPrefix records native leading-mention provenance. true proves
+	// the first native mention token after leading whitespace addressed this
+	// connector's bot. false is an explicit negative guard (for example, another
+	// account held that position or rich text lost token provenance). nil leaves
+	// ordinary text available to a caller's literal-name parser.
+	BotMentionPrefix *bool `json:"bot_mention_prefix,omitempty"`
 }
 
 func (e Event) DedupeKey() string {

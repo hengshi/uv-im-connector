@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -82,6 +83,29 @@ func TestEventSanitizedFillsDirectChannelNameFromUser(t *testing.T) {
 				t.Fatalf("channel name = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestEventBotMentionPrefixIsOptionalAndSurvivesSanitization(t *testing.T) {
+	for _, value := range []bool{true, false} {
+		t.Run(strconv.FormatBool(value), func(t *testing.T) {
+			event := Event{BotMentionPrefix: &value}
+			got := event.Sanitized().BotMentionPrefix
+			if got == nil || *got != value {
+				t.Fatalf("Sanitized().BotMentionPrefix = %v, want %v", got, value)
+			}
+			raw, err := json.Marshal(event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := `"bot_mention_prefix":` + strconv.FormatBool(value)
+			if !strings.Contains(string(raw), want) {
+				t.Fatalf("event JSON = %s, want %s", raw, want)
+			}
+		})
+	}
+	if raw, err := json.Marshal(Event{}); err != nil || strings.Contains(string(raw), "bot_mention_prefix") {
+		t.Fatalf("zero Event JSON = %s, err=%v", raw, err)
 	}
 }
 

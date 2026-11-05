@@ -281,8 +281,90 @@ func TestDecodePayloadTextMention(t *testing.T) {
 	if got.Message.Text != "帮我看一下" {
 		t.Fatalf("text = %q", got.Message.Text)
 	}
+	if got.BotMentionPrefix == nil || !*got.BotMentionPrefix {
+		t.Fatalf("BotMentionPrefix = %v, want true", got.BotMentionPrefix)
+	}
 	if got.Referrer.MessageID != "om_msg" || got.Referrer.ParentMessageID != "om_parent" || got.Referrer.RootMessageID != "om_root" {
 		t.Fatalf("referrer = %+v", got.Referrer)
+	}
+}
+
+func TestDecodePayloadPostKeepsBotMentionPrefixUnproven(t *testing.T) {
+	content := `{"content":[[{"tag":"at","user_name":"_user_1","user_id":"ou_other"},{"tag":"at","user_name":"Jarvis","user_id":"ou_bot"},{"tag":"text","text":" continue"}]]}`
+	payload, err := json.Marshal(map[string]any{
+		"header": map[string]any{"event_type": "im.message.receive_v1"},
+		"event": map[string]any{"message": map[string]any{
+			"message_id": "om_post", "chat_id": "oc_chat", "chat_type": "group", "message_type": "post", "content": content,
+			"mentions": []any{map[string]any{"key": "@_user_1", "name": "Jarvis", "id": map[string]any{"open_id": "ou_bot"}}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, ok, err := DecodePayload(payload, DecoderConfig{BotOpenID: "ou_bot"})
+	if err != nil || !ok {
+		t.Fatalf("DecodePayload() ok=%v err=%v", ok, err)
+	}
+	if !event.Addressed {
+		t.Fatal("Addressed = false")
+	}
+	if event.BotMentionPrefix == nil || *event.BotMentionPrefix {
+		t.Fatalf("BotMentionPrefix = %v for flattened post text %q, want explicit false", event.BotMentionPrefix, event.Message.Text)
+	}
+}
+
+func TestDecodePayloadBotMentionPrefixRequiresLeadingOwnNativeMention(t *testing.T) {
+	decode := func(t *testing.T, text string, mentions []any) uvim.Event {
+		t.Helper()
+		content, err := json.Marshal(map[string]string{"text": text})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(map[string]any{
+			"header": map[string]any{"event_type": "im.message.receive_v1"},
+			"event": map[string]any{"message": map[string]any{
+				"message_id": "om_msg", "chat_id": "oc_chat", "chat_type": "group", "message_type": "text", "content": string(content), "mentions": mentions,
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, ok, err := DecodePayload(raw, DecoderConfig{BotOpenID: "ou_bot"})
+		if err != nil || !ok {
+			t.Fatalf("DecodePayload() ok=%v err=%v", ok, err)
+		}
+		return event
+	}
+	bot := func(key string) any {
+		return map[string]any{"key": key, "name": "Jarvis", "id": map[string]any{"open_id": "ou_bot"}}
+	}
+	other := func(key, name string) any {
+		return map[string]any{"key": key, "name": name, "id": map[string]any{"open_id": "ou_other"}}
+	}
+	boolRef := func(value bool) *bool { return &value }
+	for _, tt := range []struct {
+		name     string
+		text     string
+		mentions []any
+		want     *bool
+	}{
+		{name: "leading own mention", text: "@_bot continue", mentions: []any{bot("@_bot")}, want: boolRef(true)},
+		{name: "leading whitespace then own mention", text: "\t @_bot continue", mentions: []any{bot("@_bot")}, want: boolRef(true)},
+		{name: "own mention in middle remains absent", text: "continue @_bot", mentions: []any{bot("@_bot")}},
+		{name: "foreign leading display name stays explicitly false", text: "@_other @_bot continue", mentions: []any{other("@_other", "Jarvis"), bot("@_bot")}, want: boolRef(false)},
+		{name: "literal display text without native prefix remains absent", text: "@Jarvis continue"},
+		{name: "longest native token wins", text: "@_user_10 continue", mentions: []any{bot("@_user_1"), other("@_user_10", "Someone")}, want: boolRef(false)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			event := decode(t, tt.text, tt.mentions)
+			if tt.want == nil {
+				if event.BotMentionPrefix != nil {
+					t.Fatalf("BotMentionPrefix = %v, want nil", *event.BotMentionPrefix)
+				}
+			} else if event.BotMentionPrefix == nil || *event.BotMentionPrefix != *tt.want {
+				t.Fatalf("BotMentionPrefix = %v, want %v", event.BotMentionPrefix, *tt.want)
+			}
+		})
 	}
 }
 

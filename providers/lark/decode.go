@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	uvim "github.com/hengshi/uv-im-connector"
 )
@@ -40,6 +41,16 @@ func DecodePayload(payload []byte, config DecoderConfig) (uvim.Event, bool, erro
 	}
 	resources := messageResources(evt.Message.MessageType, evt.Message.Content)
 	body := messageBody(evt.Message.MessageType, evt.Message.Content)
+	var botMentionPrefix *bool
+	switch evt.Message.MessageType {
+	case "text":
+		botMentionPrefix = leadingNativeBotMention(body, evt.Message.Mentions, config.BotOpenID, config.BotUnionID)
+	case "post":
+		// Rich post spans retain only display text after flattening, so they
+		// cannot prove which native mention token appeared first.
+		unproven := false
+		botMentionPrefix = &unproven
+	}
 	body = resolveMentions(body, evt.Message.Mentions, config.BotOpenID, config.BotUnionID)
 	channelType := normalizeChatType(evt.Message.ChatType)
 	messageID := evt.Message.MessageID
@@ -90,7 +101,8 @@ func DecodePayload(payload []byte, config DecoderConfig) (uvim.Event, bool, erro
 			ChannelID:       channelID,
 			Target:          &uvim.OutboundTarget{ID: channelID, Kind: uvim.TargetConversation},
 		},
-		Addressed: channelType != uvim.ChannelGroup || containsBotMention(evt.Message.Mentions, config.BotOpenID, config.BotUnionID),
+		Addressed:        channelType != uvim.ChannelGroup || containsBotMention(evt.Message.Mentions, config.BotOpenID, config.BotUnionID),
+		BotMentionPrefix: botMentionPrefix,
 	}, true, nil
 }
 
@@ -328,13 +340,7 @@ func resolveMentions(text string, mentions []mention, botOpenID, botUnionID stri
 	if text == "" || len(mentions) == 0 {
 		return text
 	}
-	sorted := make([]mention, 0, len(mentions))
-	for _, mention := range mentions {
-		if mention.Key != "" {
-			sorted = append(sorted, mention)
-		}
-	}
-	sort.SliceStable(sorted, func(i, j int) bool { return len(sorted[i].Key) > len(sorted[j].Key) })
+	sorted := sortedMentionKeys(mentions)
 	var out strings.Builder
 	for i := 0; i < len(text); {
 		var matched *mention
@@ -366,6 +372,28 @@ func resolveMentions(text string, mentions []mention, botOpenID, botUnionID stri
 		i = end
 	}
 	return strings.TrimSpace(out.String())
+}
+
+func leadingNativeBotMention(text string, mentions []mention, botOpenID, botUnionID string) *bool {
+	text = strings.TrimLeftFunc(text, unicode.IsSpace)
+	for _, mention := range sortedMentionKeys(mentions) {
+		if strings.HasPrefix(text, mention.Key) {
+			isBot := isBotMention(mention, botOpenID, botUnionID)
+			return &isBot
+		}
+	}
+	return nil
+}
+
+func sortedMentionKeys(mentions []mention) []mention {
+	sorted := make([]mention, 0, len(mentions))
+	for _, mention := range mentions {
+		if mention.Key != "" {
+			sorted = append(sorted, mention)
+		}
+	}
+	sort.SliceStable(sorted, func(i, j int) bool { return len(sorted[i].Key) > len(sorted[j].Key) })
+	return sorted
 }
 
 func isBotMention(mention mention, botOpenID, botUnionID string) bool {
