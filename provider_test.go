@@ -26,11 +26,22 @@ func TestSendResourceSequencePreservesPartsAndPartialFailure(t *testing.T) {
 			if index == failAt {
 				return SendResult{}, NewProviderSendFailure(SendFailure{Category: SendFailureRateLimited, DeliveryState: DeliveryRejected, Retryable: true}, "", cause)
 			}
-			return SendResult{MessageID: part.ID}, nil
+			return SendResult{MessageID: part.ID, Publications: []Publication{{
+				DeliveryState: PublicationDeliveryConfirmed,
+				Locator: PublicationLocator{
+					Provider: "test", MessageID: part.ID, NativeConversationID: "conversation", BotAppID: "bot", BotAppIDType: "app_id",
+					NativeTarget: OutboundTarget{ID: "conversation", Kind: TargetConversation},
+				},
+			}}}, nil
 		})
 		if failAt == 3 {
-			if err != nil || strings.Join(result.MessageIDs, ",") != "batch-part-1,batch-part-2,batch-part-3" {
+			if err != nil || strings.Join(result.MessageIDs, ",") != "batch-part-1,batch-part-2,batch-part-3" || len(result.Publications) != 3 {
 				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			for i, publication := range result.Publications {
+				if publication.PartOrdinal != i+1 || publication.Locator.MessageID != result.MessageIDs[i] {
+					t.Fatalf("publication %d = %+v", i, publication)
+				}
 			}
 			continue
 		}
@@ -38,12 +49,17 @@ func TestSendResourceSequencePreservesPartsAndPartialFailure(t *testing.T) {
 		if !errors.Is(err, cause) || !ok || calls != failAt+1 || failure.DeliveredCount != failAt {
 			t.Fatalf("calls=%d failure=%+v err=%v", calls, failure, err)
 		}
-		if failAt > 0 && (failure.Retryable || failure.DeliveryState != DeliveryUnknown || len(failure.DeliveredMessageIDs) != failAt) {
+		if failAt > 0 && (failure.Retryable || failure.DeliveryState != DeliveryUnknown || len(failure.DeliveredMessageIDs) != failAt || len(failure.DeliveredPublications) != failAt) {
 			t.Fatalf("partial failure = %+v", failure)
 		}
 		wantPrefix := strings.Join([]string{"batch-part-1", "batch-part-2", "batch-part-3"}[:failAt], ",")
 		if strings.Join(failure.DeliveredMessageIDs, ",") != wantPrefix || strings.Join(result.MessageIDs, ",") != wantPrefix {
 			t.Fatalf("acknowledged prefix: failure=%+v result=%+v want=%s", failure, result, wantPrefix)
+		}
+		for i, publication := range failure.DeliveredPublications {
+			if publication.PartOrdinal != i+1 || publication.Locator.MessageID != failure.DeliveredMessageIDs[i] {
+				t.Fatalf("delivered publication %d = %+v", i, publication)
+			}
 		}
 	}
 }
