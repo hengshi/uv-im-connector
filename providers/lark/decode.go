@@ -371,7 +371,7 @@ func resolveMentions(text string, mentions []mention, botOpenID, botUnionID stri
 		}
 		i = end
 	}
-	return strings.TrimSpace(out.String())
+	return out.String()
 }
 
 func leadingNativeBotMention(text string, mentions []mention, botOpenID, botUnionID string) *bool {
