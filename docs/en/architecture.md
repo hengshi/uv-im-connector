@@ -40,7 +40,7 @@ The normalized protocol has these stable objects:
 - `Event`: inbound event envelope with provider, connector, channel, user, message, and referrer.
 - `User.Identities`: account identifiers with type, scope and provenance, separate from conversation/send addresses; see [User identities and native addresses](./identities.md).
 - `Message`: text, structured elements, and resource references.
-- `ResourceRef`: file/image/audio/video reference with sanitized internal URL and private provider fields.
+- `ResourceRef`: file/image/audio/video reference with sanitized internal URL and private provider fields; optional `source_message_id` retains explicit reference-material lineage without granting Task or execution authority.
 - `OutboundMessage`: explicit target, text/elements/resources, and optional referrer for replies or threads.
 - `MessageUpdate`: embeds `OutboundMessage` with a top-level `message_id` identifying an exact bot-created message; replaces text only.
 - `SendResult`: sent message IDs and, when provider-confirmed, native `publications` locators that are never inferred from a recipient address.
