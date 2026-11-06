@@ -99,6 +99,11 @@ func TestInboundAttachmentsReachCaller(t *testing.T) {
 					if !events[0].Addressed || ref.Kind != wantKind || ref.InternalURL == "" || ref.Error != "" || ref.URL != "" || ref.Secret != "" {
 						t.Fatalf("public event = %+v", events[0])
 					}
+					if !quoted {
+						if len(events[0].Message.Elements) != 2 || events[0].Message.Elements[1].Resource == nil || events[0].Message.Elements[1].Resource.ID != ref.ID || events[0].Message.Elements[1].Resource.InternalURL != ref.InternalURL {
+							t.Fatalf("ordinary resource lost its element relation: %+v", events[0].Message.Elements)
+						}
+					}
 					resp, err := c.ResolveInternalURL(context.Background(), ref.InternalURL)
 					if err != nil {
 						t.Fatal(err)
@@ -144,6 +149,13 @@ func TestDecodeMessagePreservesQuotedTextAsContextResource(t *testing.T) {
 	ref := event.Message.Resources[0]
 	if ref.Name != "quoted-message.txt" || ref.InternalURL == "" || ref.Error != "" {
 		t.Fatalf("quote resource = %+v", ref)
+	}
+	if len(event.Message.Elements) != 2 || event.Message.Elements[1].Type != uvim.ElementQuote || event.Message.Elements[1].ID != "" || len(event.Message.Elements[1].Children) != 1 {
+		t.Fatalf("quoted elements = %+v", event.Message.Elements)
+	}
+	quoteLeaf := event.Message.Elements[1].Children[0]
+	if quoteLeaf.Resource == nil || quoteLeaf.Resource.ID != ref.ID || quoteLeaf.Resource.InternalURL != ref.InternalURL {
+		t.Fatalf("quoted resource was not grouped: %+v", quoteLeaf)
 	}
 	file, _, err := store.Open(ref.InternalURL)
 	if err != nil {

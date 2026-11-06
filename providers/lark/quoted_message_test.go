@@ -92,7 +92,7 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 						kind, content = "system", `{}`
 					}
 					if scenario == "merge-forward" {
-						kind, content = "merge_forward", `{}`
+						kind, content = "merge_forward", "[Merged forward placeholder]"
 					}
 					chat, id := "chat", "parent"
 					if scenario == "wrong-chat" {
@@ -114,7 +114,23 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 						items[0].(map[string]any)["sender"] = map[string]any{"id": "app", "id_type": "open_id", "sender_type": "user"}
 					}
 					if scenario == "merge-forward" {
-						items = append(items, map[string]any{"message_id": "child", "chat_id": "chat", "msg_type": "file", "body": map[string]any{"content": `{"file_key":"forwarded-file","file_name":"forwarded.log"}`}})
+						// The native response uses upper_message_id for the forwarded
+						// hierarchy. The first child deliberately omits it: Feishu's
+						// documented CLI keeps such legacy rows directly below the selected
+						// container, so the connector must preserve that compatibility.
+						items = append(items,
+							map[string]any{"message_id": "child", "chat_id": "chat", "msg_type": "file", "body": map[string]any{"content": `{"file_key":"forwarded-file","file_name":"forwarded.log"}`}},
+							map[string]any{"message_id": "nested", "chat_id": "chat", "upper_message_id": "parent", "msg_type": "merge_forward", "body": map[string]any{"content": "[Nested merged forward placeholder]"}},
+							map[string]any{"message_id": "grandchild", "upper_message_id": "nested", "msg_type": "image", "body": map[string]any{"content": `{"image_key":"nested-image"}`}},
+							map[string]any{"message_id": "wrong-chat", "chat_id": "other-chat", "upper_message_id": "parent", "msg_type": "file", "body": map[string]any{"content": `{"file_key":"wrong-chat-file"}`}},
+							map[string]any{"message_id": "orphan", "upper_message_id": "missing", "msg_type": "file", "body": map[string]any{"content": `{"file_key":"orphan-file"}`}},
+							map[string]any{"message_id": "deleted-child", "upper_message_id": "parent", "msg_type": "file", "deleted": true, "body": map[string]any{"content": `{"file_key":"deleted-file"}`}},
+							map[string]any{"message_id": "duplicate", "upper_message_id": "parent", "msg_type": "file", "body": map[string]any{"content": `{"file_key":"duplicate-one"}`}},
+							map[string]any{"message_id": "duplicate", "upper_message_id": "parent", "msg_type": "file", "body": map[string]any{"content": `{"file_key":"duplicate-two"}`}},
+							map[string]any{"message_id": "cycle-a", "upper_message_id": "cycle-b", "msg_type": "file", "body": map[string]any{"content": `{"file_key":"cycle-a"}`}},
+							map[string]any{"message_id": "cycle-b", "upper_message_id": "cycle-a", "msg_type": "file", "body": map[string]any{"content": `{"file_key":"cycle-b"}`}},
+							map[string]any{"message_id": "malformed", "upper_message_id": "parent", "msg_type": "file", "body": map[string]any{"content": `{`}},
+						)
 					}
 					json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": items}})
 				case "/open-apis/im/v1/messages/parent/resources/log-key":
@@ -131,6 +147,16 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 						return
 					}
 					io.WriteString(w, "fatal: tracking failed\n")
+				case "/open-apis/im/v1/messages/parent/resources/forwarded-file":
+					if scenario != "merge-forward" {
+						t.Error("downloaded an unexpected forwarded resource")
+					}
+					io.WriteString(w, "forwarded attachment\n")
+				case "/open-apis/im/v1/messages/parent/resources/nested-image":
+					if scenario != "merge-forward" {
+						t.Error("downloaded an unexpected nested resource")
+					}
+					io.WriteString(w, "nested image\n")
 				default:
 					t.Errorf("unexpected request %s", req.URL.Path)
 					w.WriteHeader(http.StatusNotFound)
@@ -180,8 +206,11 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 				}
 				return
 			}
-			if (scenario == "interactive" || scenario == "merge-forward") && len(event.Message.Resources) != 1 {
-				t.Fatalf("child resources leaked into event: %+v", event.Message.Resources)
+			if scenario == "interactive" && len(event.Message.Resources) != 1 {
+				t.Fatalf("interactive resources = %+v", event.Message.Resources)
+			}
+			if scenario == "merge-forward" && len(event.Message.Resources) != 3 {
+				t.Fatalf("forwarded resources = %+v", event.Message.Resources)
 			}
 			if !event.Addressed {
 				t.Fatal("bot mention was not recognized")
@@ -248,6 +277,32 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 				if scenario == "merge-forward" && (!strings.Contains(contents, "forwarded messages") || !strings.Contains(contents, "Forwarded message 1 (file): [File]")) {
 					t.Fatal("merge-forward context missing")
 				}
+				if scenario == "merge-forward" {
+					if !strings.Contains(contents, "Forwarded messages unavailable") || strings.Contains(contents, "wrong-chat-file") || strings.Contains(contents, "orphan-file") {
+						t.Fatalf("forwarded context did not isolate invalid rows: %q", contents)
+					}
+					quote := findQuotedElement(event.Message.Elements, "parent")
+					if quote == nil {
+						t.Fatalf("forwarded quote root missing: %+v", event.Message.Elements)
+					}
+					child := findQuotedElement(quote.Children, "child")
+					nested := findQuotedElement(quote.Children, "nested")
+					if child == nil || nested == nil {
+						t.Fatalf("forwarded quote hierarchy = %+v", event.Message.Elements)
+					}
+					grandchild := findQuotedElement(nested.Children, "grandchild")
+					if grandchild == nil {
+						t.Fatalf("forwarded quote hierarchy = %+v", event.Message.Elements)
+					}
+					if findQuotedElement(quote.Children, "wrong-chat") != nil || findQuotedElement(quote.Children, "orphan") != nil || findQuotedElement(quote.Children, "duplicate") != nil || findQuotedElement(quote.Children, "cycle-a") != nil {
+						t.Fatalf("invalid forwarded material entered hierarchy: %+v", quote.Children)
+					}
+					for _, node := range []*uvim.Element{child, grandchild} {
+						if len(node.Children) != 2 || node.Children[0].Type != uvim.ElementText || node.Children[1].Resource == nil || node.Children[1].Resource.InternalURL == "" || node.Children[1].Resource.Key != "" || node.Children[1].Resource.Metadata != nil {
+							t.Fatalf("forwarded resource was not safely resolved in hierarchy: %+v", node)
+						}
+					}
+				}
 			default:
 				if len(failures) == 0 || strings.Contains(contents, "fatal:") || strings.Contains(strings.Join(failures, ""), "private diagnostic") {
 					t.Fatalf("contents=%q failures=%v", contents, failures)
@@ -256,7 +311,25 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 				if len(failures) != 1 || failures[0] != want {
 					t.Fatalf("failure=%v want=%q", failures, want)
 				}
+				if scenario == "denied" || scenario == "deleted" || scenario == "wrong-chat" || scenario == "wrong-message" {
+					quote := findQuotedElement(event.Message.Elements, "parent")
+					if quote == nil || len(quote.Children) != 1 || quote.Children[0].Resource == nil || quote.Children[0].Resource.Error != want || quote.Children[0].Resource.InternalURL != "" || quote.Children[0].Resource.Key != "" || quote.Children[0].Resource.Metadata != nil {
+						t.Fatalf("quoted error resource missing from hierarchy: %+v", event.Message.Elements)
+					}
+				}
 			}
 		})
 	}
+}
+
+func findQuotedElement(elements []uvim.Element, id string) *uvim.Element {
+	for i := range elements {
+		if elements[i].Type == uvim.ElementQuote && elements[i].ID == id {
+			return &elements[i]
+		}
+		if found := findQuotedElement(elements[i].Children, id); found != nil {
+			return found
+		}
+	}
+	return nil
 }

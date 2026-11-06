@@ -122,6 +122,9 @@ func TestPostDownloadDoesNotBlockFollowingACKOrDisconnectDrain(t *testing.T) {
 	if err != nil || string(data) != "image bytes" || ref.Error != "" {
 		t.Fatalf("resource=%+v data=%q err=%v", ref, data, err)
 	}
+	if len(events[0].Message.Elements) != 2 || events[0].Message.Elements[1].Resource == nil || events[0].Message.Elements[1].Resource.ID != ref.ID || events[0].Message.Elements[1].Resource.InternalURL != ref.InternalURL {
+		t.Fatalf("ordinary resource lost its element relation: %+v", events[0].Message.Elements)
+	}
 }
 
 func TestChunkAssemblerWithoutCountOrDefaultExpiry(t *testing.T) {
@@ -179,8 +182,12 @@ func TestDecodePayloadPostResources(t *testing.T) {
 			}
 			for i, want := range []uvim.ResourceRef{{Kind: "image", Key: "image-1"}, {Kind: "video", Key: "video-1"}} {
 				ref := event.Message.Resources[i]
-				if ref.Kind != want.Kind || ref.Key != want.Key || ref.Metadata["message_id"] != "message-1" || ref.Provider != "lark" || ref.Connector != "main" {
+				if ref.ID == "" || ref.Kind != want.Kind || ref.Key != want.Key || ref.Metadata["message_id"] != "message-1" || ref.Provider != "lark" || ref.Connector != "main" {
 					t.Fatalf("resource %d = %+v", i, ref)
+				}
+				leaf := event.Message.Elements[i+1]
+				if leaf.Resource == nil || leaf.Resource.ID != ref.ID {
+					t.Fatalf("resource %d did not keep an element relation: %+v", i, leaf)
 				}
 			}
 			ambient, _, err := DecodePayload(payload, DecoderConfig{Connector: "main", BotOpenID: "another-bot"})

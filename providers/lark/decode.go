@@ -56,6 +56,9 @@ func DecodePayload(payload []byte, config DecoderConfig) (uvim.Event, bool, erro
 	messageID := evt.Message.MessageID
 	channelID := evt.Message.ChatID
 	for i := range resources {
+		if resources[i].ID == "" && resources[i].InternalURL == "" {
+			resources[i].ID = uvim.NewID("res")
+		}
 		resources[i].Provider = "lark"
 		resources[i].Connector = config.Connector
 		if resources[i].Metadata == nil {

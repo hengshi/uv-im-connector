@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -458,10 +459,31 @@ func (h *Hub) resolveEventResources(ctx context.Context, event uvim.Event) uvim.
 		return event.Sanitized()
 	}
 	provider := h.registry.Get(event.Provider, event.Connector)
-	resolved := make([]uvim.ResourceRef, len(event.Message.Resources))
-	for i, ref := range event.Message.Resources {
-		ref.Provider = uvim.FirstNonEmpty(ref.Provider, event.Provider)
-		ref.Connector = uvim.FirstNonEmpty(ref.Connector, event.Connector)
+	resources := append([]uvim.ResourceRef(nil), event.Message.Resources...)
+	for i := range resources {
+		resources[i].Provider = uvim.FirstNonEmpty(resources[i].Provider, event.Provider)
+		resources[i].Connector = uvim.FirstNonEmpty(resources[i].Connector, event.Connector)
+	}
+	ambiguousIDs := conflictingResourceIDs(resources)
+	ambiguousInternalURLs := conflictingResourceInternalURLs(resources)
+	resolved := make([]uvim.ResourceRef, len(resources))
+	resolvedByKey := make(map[string]uvim.ResourceRef, len(resources))
+	for i, ref := range resources {
+		originalID := ref.ID
+		if ambiguousIDs[originalID] {
+			// An opaque correlation ID is a relation key, not provider authority.
+			// Do not let incompatible refs overwrite the same ResourceStore entry
+			// or make an Element point at either set of bytes.
+			ref.ID = uvim.NewID("res")
+		}
+		key := resourceRelationKey(ref)
+		if ref.ID == "" && ambiguousInternalURLs[ref.InternalURL] {
+			key = ""
+		}
+		if prior, ok := resolvedByKey[key]; ok {
+			resolved[i] = prior
+			continue
+		}
 		if provider != nil && provider.Capabilities().DownloadResource && ref.InternalURL == "" && ref.Error == "" {
 			downloaded, err := provider.Download(ctx, uvim.ResourceDownloadRequest{
 				Resource: ref,
@@ -476,10 +498,128 @@ func (h *Hub) resolveEventResources(ctx context.Context, event uvim.Event) uvim.
 			}
 		}
 		resolved[i] = ref.Sanitized()
+		if key != "" {
+			resolvedByKey[key] = resolved[i]
+		}
 	}
 	event.Message.Resources = resolved
-	event.Message.Elements = elementsFromTextAndResources(event.Message.Text, resolved)
+	if len(event.Message.Elements) == 0 {
+		event.Message.Elements = elementsFromTextAndResources(event.Message.Text, resolved)
+	} else {
+		event.Message.Elements = resolveElementResources(event.Message.Elements, resources, resolved, ambiguousIDs, ambiguousInternalURLs)
+	}
 	return event.Sanitized()
+}
+
+func conflictingResourceIDs(resources []uvim.ResourceRef) map[string]bool {
+	first := make(map[string]uvim.ResourceRef, len(resources))
+	conflicts := make(map[string]bool)
+	for _, resource := range resources {
+		id := strings.TrimSpace(resource.ID)
+		if id == "" {
+			continue
+		}
+		if previous, ok := first[id]; ok {
+			if !sameResourceDescriptor(previous, resource) {
+				conflicts[id] = true
+			}
+			continue
+		}
+		first[id] = resource
+	}
+	return conflicts
+}
+
+func conflictingResourceInternalURLs(resources []uvim.ResourceRef) map[string]bool {
+	first := make(map[string]uvim.ResourceRef, len(resources))
+	conflicts := make(map[string]bool)
+	for _, resource := range resources {
+		internalURL := strings.TrimSpace(resource.InternalURL)
+		if internalURL == "" {
+			continue
+		}
+		if previous, ok := first[internalURL]; ok {
+			if !sameResourceDescriptor(previous, resource) {
+				conflicts[internalURL] = true
+			}
+			continue
+		}
+		first[internalURL] = resource
+	}
+	return conflicts
+}
+
+func sameResourceDescriptor(a, b uvim.ResourceRef) bool {
+	return a.ID == b.ID &&
+		a.Provider == b.Provider && a.Connector == b.Connector &&
+		a.Kind == b.Kind && a.Name == b.Name && a.Key == b.Key && a.URL == b.URL &&
+		a.InternalURL == b.InternalURL && a.MIME == b.MIME && a.SizeBytes == b.SizeBytes &&
+		a.SHA256 == b.SHA256 && a.Error == b.Error &&
+		a.SourceMessageID == b.SourceMessageID && a.SourceBotAppID == b.SourceBotAppID &&
+		a.Secret == b.Secret && maps.Equal(a.Private, b.Private) && maps.Equal(a.Metadata, b.Metadata)
+}
+
+func resourceRelationKey(resource uvim.ResourceRef) string {
+	if id := strings.TrimSpace(resource.ID); id != "" {
+		return "id:" + id
+	}
+	if internalURL := strings.TrimSpace(resource.InternalURL); internalURL != "" {
+		return "internal_url:" + internalURL
+	}
+	return ""
+}
+
+func resolveElementResources(elements []uvim.Element, resources, resolved []uvim.ResourceRef, ambiguousIDs, ambiguousInternalURLs map[string]bool) []uvim.Element {
+	byRelation := make(map[string]uvim.ResourceRef, len(resources)*2)
+	for i, resource := range resources {
+		if i >= len(resolved) {
+			break
+		}
+		if id := strings.TrimSpace(resource.ID); id != "" && !ambiguousIDs[id] {
+			byRelation["id:"+id] = resolved[i]
+		}
+		if internalURL := strings.TrimSpace(resource.InternalURL); internalURL != "" && !ambiguousInternalURLs[internalURL] {
+			byRelation["internal_url:"+internalURL] = resolved[i]
+		}
+	}
+	var resolve func([]uvim.Element) []uvim.Element
+	resolve = func(input []uvim.Element) []uvim.Element {
+		if len(input) == 0 {
+			return nil
+		}
+		output := make([]uvim.Element, len(input))
+		for i, element := range input {
+			output[i] = element
+			output[i].Children = resolve(element.Children)
+			key := ""
+			if element.Resource != nil {
+				key = resourceRelationKey(*element.Resource)
+			}
+			if key == "" && strings.HasPrefix(strings.TrimSpace(element.URL), "internal://") {
+				key = "internal_url:" + strings.TrimSpace(element.URL)
+			}
+			if resource, ok := byRelation[key]; ok {
+				output[i].Resource = &resource
+				output[i].URL = resource.InternalURL
+				output[i].Name = resource.Name
+				output[i].MIME = resource.MIME
+				output[i].SizeBytes = resource.SizeBytes
+			} else if uvim.IsResourceElement(element.Type) && (element.Resource != nil || strings.HasPrefix(strings.TrimSpace(element.URL), "internal://")) {
+				unavailable := uvim.ResourceRef{Kind: element.Type, Name: element.Name, MIME: element.MIME, SizeBytes: element.SizeBytes, Error: "resource_relation_unavailable"}
+				if element.Resource != nil {
+					unavailable = *element.Resource
+					unavailable.InternalURL = ""
+					if unavailable.Error == "" {
+						unavailable.Error = "resource_relation_unavailable"
+					}
+				}
+				output[i].Resource = &unavailable
+				output[i].URL = ""
+			}
+		}
+		return output
+	}
+	return resolve(elements)
 }
 
 func elementsFromTextAndResources(text string, refs []uvim.ResourceRef) []uvim.Element {

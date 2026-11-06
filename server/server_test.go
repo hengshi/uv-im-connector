@@ -755,6 +755,79 @@ func TestHubDownloadsInboundResourcesBeforeEventLog(t *testing.T) {
 	}
 }
 
+func TestHubPreservesCorrelatedResourceElements(t *testing.T) {
+	dir := t.TempDir()
+	provider := &downloadProvider{id: "test", connector: "main"}
+	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
+	hub := NewHub(uvim.NewProviderRegistry(provider), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	quoted := uvim.ResourceRef{ID: "quoted-file", Provider: "test", Connector: "main", Kind: uvim.ElementFile, Name: "quoted.txt", Key: "private-key", SourceMessageID: "parent"}
+	err := hub.Emit(context.Background(), uvim.Event{
+		ID: "evt-1", Type: uvim.EventMessageCreate, Provider: "test", Connector: "main",
+		Message: uvim.Message{
+			ID: "m1", Text: "inspect this",
+			Resources: []uvim.ResourceRef{quoted},
+			Elements: []uvim.Element{uvim.Text("inspect this"), {
+				Type: uvim.ElementQuote, ID: "parent", Children: []uvim.Element{uvim.File(quoted)},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := log.ReadAfter(context.Background(), 0)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("events=%+v err=%v", events, err)
+	}
+	got := events[0]
+	if len(got.Message.Elements) != 2 || got.Message.Elements[1].Type != uvim.ElementQuote || got.Message.Elements[1].ID != "parent" {
+		t.Fatalf("quote hierarchy was replaced: %+v", got.Message.Elements)
+	}
+	leaf := got.Message.Elements[1].Children[0]
+	if leaf.Resource == nil || leaf.Resource.ID != "quoted-file" || leaf.Resource.InternalURL == "" || leaf.Resource.Key != "" || leaf.Resource.Metadata != nil || leaf.URL != leaf.Resource.InternalURL {
+		t.Fatalf("quote resource was not resolved and sanitized: %+v", leaf)
+	}
+	if len(got.Message.Resources) != 1 || got.Message.Resources[0].InternalURL != leaf.Resource.InternalURL || got.Message.Resources[0].SourceMessageID != "parent" {
+		t.Fatalf("flat resource diverged from quote leaf: %+v", got.Message.Resources)
+	}
+}
+
+func TestHubDoesNotJoinConflictingResourceIDsInElements(t *testing.T) {
+	dir := t.TempDir()
+	provider := &downloadProvider{id: "test", connector: "main"}
+	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
+	hub := NewHub(uvim.NewProviderRegistry(provider), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	first := uvim.ResourceRef{ID: "ambiguous", Provider: "test", Connector: "main", Kind: uvim.ElementFile, Name: "same.txt", Key: "same-key", Metadata: map[string]string{"message_id": "first"}, Private: map[string]string{"token": "first"}}
+	second := uvim.ResourceRef{ID: "ambiguous", Provider: "test", Connector: "main", Kind: uvim.ElementFile, Name: "same.txt", Key: "same-key", Metadata: map[string]string{"message_id": "second"}, Private: map[string]string{"token": "second"}}
+	internalFirst := uvim.ResourceRef{Provider: "test", Connector: "main", Kind: uvim.ElementFile, Name: "shared.txt", InternalURL: "internal://shared", SourceMessageID: "first"}
+	internalSecond := uvim.ResourceRef{Provider: "test", Connector: "main", Kind: uvim.ElementFile, Name: "shared.txt", InternalURL: "internal://shared", SourceMessageID: "second"}
+	err := hub.Emit(context.Background(), uvim.Event{
+		ID: "evt-1", Type: uvim.EventMessageCreate, Provider: "test", Connector: "main",
+		Message: uvim.Message{
+			ID: "m1", Resources: []uvim.ResourceRef{first, second, internalFirst, internalSecond},
+			Elements: []uvim.Element{{Type: uvim.ElementQuote, ID: "parent", Children: []uvim.Element{uvim.File(first), uvim.File(internalFirst)}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := log.ReadAfter(context.Background(), 0)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("events=%+v err=%v", events, err)
+	}
+	if len(events[0].Message.Elements) != 1 || events[0].Message.Elements[0].Type != uvim.ElementQuote || len(events[0].Message.Elements[0].Children) != 2 {
+		t.Fatalf("ambiguous resource tree was replaced: %+v", events[0].Message.Elements)
+	}
+	quote := events[0].Message.Elements[0]
+	for _, leaf := range quote.Children {
+		if leaf.Resource == nil || leaf.Resource.InternalURL != "" || leaf.URL != "" || leaf.Resource.Key != "" || leaf.Resource.Error != "resource_relation_unavailable" {
+			t.Fatalf("ambiguous resource joined material in quote tree: %+v", leaf)
+		}
+	}
+	if len(events[0].Message.Resources) != 4 || events[0].Message.Resources[0].ID == events[0].Message.Resources[1].ID {
+		t.Fatalf("conflicting resources did not receive distinct stored identities: %+v", events[0].Message.Resources)
+	}
+}
+
 func TestHubAuthProtectsAPIs(t *testing.T) {
 	hub := NewHub(uvim.NewProviderRegistry(memory.New("test")), mustEventLog(t, ""), &uvim.ResourceStore{Dir: t.TempDir()})
 	hub.SetAuthToken("token")

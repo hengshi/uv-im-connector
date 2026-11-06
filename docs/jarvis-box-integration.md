@@ -59,11 +59,16 @@ If it fails, the context identifies the original folder and asks for a ZIP archi
 or individual files. Do not claim that folder contents were retrieved based only
 on its metadata or a successful local transport stub.
 
-Quoted `merge_forward` responses may contain the parent and its child messages;
-the connector selects the requested parent and keeps the forwarded message
-context available. Lark's resource API does not support merge-forward messages
-(including child messages) or `interactive` message cards, so those messages
-provide text/summary context but do not expose child resources.
+Quoted `merge_forward` responses include attributable child text and supported
+resources, including nested forwards. Downloads use the selected top-level
+container message ID; child IDs are positions, not download or Task authority.
+Quote elements retain the hierarchy while the complete flat resources remain
+usable by current Jarvis attachment preparation. Resource leaves correlate only
+by opaque IDs or unambiguous internal URLs. Missing/conflicting relations are
+unavailable rather than guessed from names or private keys. Invalid child rows
+are omitted with an unavailable indication without losing valid siblings.
+`interactive` cards still provide summary context without child resources.
+Neither representation creates group history or new Task selection rules.
 
 ## Release Boundary
 

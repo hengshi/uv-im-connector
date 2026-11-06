@@ -4,7 +4,7 @@
 
 Connector 不对附件大小设置额外上限：入站下载、本地存储、HTTP 上传和出站发送均不按字节数拦截，大小限制由 IM 平台或邮件服务器执行。
 
-群聊和私聊使用相同的附件下载链路，资源会在事件持久化前下载。企业微信会提取消息本身以及 `quote` 中的文件、图片、视频和引用文本，支持引用群文件后 @ 机器人；DingTalk 在配置 Stream 凭据时会用入站 `downloadCode` 换取临时文件 URL；飞书会提取图文消息中的图片和视频，也会提取被引用父消息的可下载附件。飞书 `folder` 会作为文件资源识别，但平台资源 API 不保证可以下载文件夹；`merge_forward`（包括子消息）和 `interactive` 消息卡片只提供正文/摘要，不暴露子资源。企业微信 AI Bot 回调标记为 `addressed=true`，飞书群消息仍按是否 @ 机器人设置该字段。Connector 只能处理平台实际投递的消息；文件内容识别由调用方应用负责。
+群聊和私聊使用相同的附件下载链路，资源会在事件持久化前下载。企业微信会提取消息本身以及 `quote` 中的文件、图片、视频和引用文本，支持引用群文件后 @ 机器人；DingTalk 在配置 Stream 凭据时会用入站 `downloadCode` 换取临时文件 URL；飞书会提取图文消息中的图片和视频，也会提取被引用父消息的可下载附件。飞书 `folder` 会作为文件资源识别，但平台资源 API 不保证可以下载文件夹。显式引用的 `merge_forward` 会提取同一响应中可归属的子消息正文及支持的图片、文件等资源，包括嵌套转发；下载使用顶层转发容器的 message ID。`interactive` 消息卡片仍只提供正文/摘要，不提取卡片子资源。企业微信 AI Bot 回调标记为 `addressed=true`，飞书群消息仍按是否 @ 机器人设置该字段。Connector 只能处理平台实际投递的消息；文件内容识别由调用方应用负责。
 
 ## 公开形态
 
@@ -23,6 +23,10 @@ Connector 不对附件大小设置额外上限：入站下载、本地存储、H
 ```
 
 飞书引用父消息产生的正文、附件及查询失败资源带有可选 `source_message_id`，指向同一事件显式引用的父消息。该字段在事件脱敏后保留，供调用方区分引用材料与用户新附加的文件；不能根据文件名推断来源。它不表示正文查询成功，也不授权选择或续接 Task；调用方仍需检查 `error` 与自身的归属和权限证据。旧事件或其他适配器缺少此字段时，不补造来源。原生查询同时核实父消息发送者为本 connector 配置的 app/app_id 时，资源还带 `source_bot_app_id`；调用方可用它阻止无索引的本 bot 回复误落到当前默认任务，但它不恢复 Task 归属，也不授权访问或执行。其他发送者、查不到的发送者不带该字段。
+
+`message.elements` 保留 `quote` 及其 `children` 层级，并通过不透明资源 ID 或无歧义的内部 URL 关联已下载资源；不能按文件名、平台密钥或私有 metadata 猜关联。缺失或冲突的关系标为 `resource_relation_unavailable`。`message.resources` 仍提供完整的平面材料列表，兼容只消费资源的应用。飞书子节点 ID 只是转发内的位置，所有子资源的 `source_message_id` 仍为本次显式引用的顶层父消息。企业微信 inline quote 没有可信父消息 ID 时只保留引用结构，不补造 parent/thread/Task 身份。
+
+飞书缺少 `upper_message_id` 的子项按原生 CLI 作为顶层直子；明确断链、重复、环、已删除或会话冲突的项不提供正文/资源，并在引用说明中标记不可用，合法兄弟材料仍可读取。下载及关系规则参照[飞书官方 CLI 资源合同](https://github.com/larksuite/cli/blob/05ac58ffa089fe7a171205ac1d1e97ee50196ec8/skills/lark-im/references/lark-im-message-enrichment.md)与[关系构建实现](https://github.com/larksuite/cli/blob/05ac58ffa089fe7a171205ac1d1e97ee50196ec8/shortcuts/im/convert_lib/merge.go)。这不授予来源系统权限，也不自动读取群历史。
 
 公开事件会移除 provider-private 字段：
 
