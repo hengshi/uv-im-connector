@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -77,7 +78,7 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 						kind = "folder"
 					}
 					if scenario == "text" {
-						kind, content = "text", `{"text":"fatal: tracking failed"}`
+						kind, content = "text", `{"text":"fatal: tracking failed\n"}`
 					}
 					if scenario == "interactive" {
 						kind, content = "interactive", `{"elements":[{"tag":"img","img_key":"card-image"}]}`
@@ -118,10 +119,13 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 						// hierarchy. The first child deliberately omits it: Feishu's
 						// documented CLI keeps such legacy rows directly below the selected
 						// container, so the connector must preserve that compatibility.
+						items[0].(map[string]any)["sender"] = map[string]any{"id": "app", "id_type": "app_id", "sender_type": "app"}
+						items[0].(map[string]any)["create_time"] = "1793930000000"
 						items = append(items,
-							map[string]any{"message_id": "child", "chat_id": "chat", "msg_type": "file", "body": map[string]any{"content": `{"file_key":"forwarded-file","file_name":"forwarded.log"}`}},
-							map[string]any{"message_id": "nested", "chat_id": "chat", "upper_message_id": "parent", "msg_type": "merge_forward", "body": map[string]any{"content": "[Nested merged forward placeholder]"}},
-							map[string]any{"message_id": "grandchild", "upper_message_id": "nested", "msg_type": "image", "body": map[string]any{"content": `{"image_key":"nested-image"}`}},
+							map[string]any{"message_id": "child", "chat_id": "chat", "msg_type": "file", "sender": map[string]any{"id": "speaker-file-child", "id_type": "open_id", "sender_type": "user"}, "create_time": "1793930000001", "body": map[string]any{"content": `{"file_key":"forwarded-file","file_name":"same-name.bin"}`}},
+							map[string]any{"message_id": "nested", "chat_id": "chat", "upper_message_id": "parent", "msg_type": "merge_forward", "sender": map[string]any{"id": "speaker-nested\ninjected", "id_type": "open_id", "sender_type": "user"}, "create_time": "1793930000002", "body": map[string]any{"content": "[Nested merged forward placeholder]"}},
+							map[string]any{"message_id": "grandchild", "upper_message_id": "nested", "msg_type": "file", "sender": map[string]any{"id": "speaker-nested-file", "id_type": "open_id", "sender_type": "user"}, "create_time": "1793930000003", "body": map[string]any{"content": `{"file_key":"nested-file","file_name":"same-name.bin"}`}},
+							map[string]any{"message_id": "image-child", "upper_message_id": "parent", "msg_type": "image", "sender": map[string]any{"id": "speaker-image-child", "id_type": "open_id", "sender_type": "user"}, "create_time": "1793930000004", "body": map[string]any{"content": `{"image_key":"nested-image"}`}},
 							map[string]any{"message_id": "wrong-chat", "chat_id": "other-chat", "upper_message_id": "parent", "msg_type": "file", "body": map[string]any{"content": `{"file_key":"wrong-chat-file"}`}},
 							map[string]any{"message_id": "orphan", "upper_message_id": "missing", "msg_type": "file", "body": map[string]any{"content": `{"file_key":"orphan-file"}`}},
 							map[string]any{"message_id": "deleted-child", "upper_message_id": "parent", "msg_type": "file", "deleted": true, "body": map[string]any{"content": `{"file_key":"deleted-file"}`}},
@@ -152,6 +156,11 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 						t.Error("downloaded an unexpected forwarded resource")
 					}
 					io.WriteString(w, "forwarded attachment\n")
+				case "/open-apis/im/v1/messages/parent/resources/nested-file":
+					if scenario != "merge-forward" {
+						t.Error("downloaded an unexpected nested forwarded resource")
+					}
+					io.WriteString(w, "nested forwarded attachment\n")
 				case "/open-apis/im/v1/messages/parent/resources/nested-image":
 					if scenario != "merge-forward" {
 						t.Error("downloaded an unexpected nested resource")
@@ -209,7 +218,7 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 			if scenario == "interactive" && len(event.Message.Resources) != 1 {
 				t.Fatalf("interactive resources = %+v", event.Message.Resources)
 			}
-			if scenario == "merge-forward" && len(event.Message.Resources) != 3 {
+			if scenario == "merge-forward" && len(event.Message.Resources) != 4 {
 				t.Fatalf("forwarded resources = %+v", event.Message.Resources)
 			}
 			if !event.Addressed {
@@ -225,7 +234,7 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 					t.Fatalf("quote resource lost parent lineage through Hub sanitization: %+v", ref)
 				}
 				wantBotApp := ""
-				if scenario == "interactive" {
+				if scenario == "interactive" || scenario == "merge-forward" {
 					wantBotApp = "app"
 				}
 				if ref.SourceBotAppID != wantBotApp {
@@ -246,7 +255,7 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 				}
 				contents += ref.Name + "\n" + string(data)
 			}
-			if strings.HasPrefix(scenario, "folder") && (!strings.Contains(contents, "Message type: folder") || !strings.Contains(contents, "ZIP archive")) {
+			if strings.HasPrefix(scenario, "folder") && (!strings.Contains(contents, `Message type: "folder"`) || !strings.Contains(contents, "ZIP archive")) {
 				t.Fatalf("folder context missing: %q", contents)
 			}
 			switch scenario {
@@ -274,10 +283,13 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 				if scenario == "system" && !strings.Contains(contents, "System message") {
 					t.Fatal("system context missing")
 				}
-				if scenario == "merge-forward" && (!strings.Contains(contents, "forwarded messages") || !strings.Contains(contents, "Forwarded message 1 (file): [File]")) {
-					t.Fatal("merge-forward context missing")
+				if scenario == "text" && !strings.HasSuffix(contents, "  fatal: tracking failed\n") {
+					t.Fatalf("trailing body newline acquired a dangling indentation prefix: %q", contents)
 				}
 				if scenario == "merge-forward" {
+					if !strings.Contains(contents, `Message ID: "parent"`) || !strings.Contains(contents, `Container message ID: "parent"`) || !strings.Contains(contents, `Message type: "merge_forward"`) || !strings.Contains(contents, `Sender: sender_type="app" id_type="app_id" id="app"`) || !strings.Contains(contents, `Create time: "1793930000000"`) {
+						t.Fatalf("merge-forward root provenance missing: %q", contents)
+					}
 					if !strings.Contains(contents, "Forwarded messages unavailable") || strings.Contains(contents, "wrong-chat-file") || strings.Contains(contents, "orphan-file") {
 						t.Fatalf("forwarded context did not isolate invalid rows: %q", contents)
 					}
@@ -302,6 +314,27 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 							t.Fatalf("forwarded resource was not safely resolved in hierarchy: %+v", node)
 						}
 					}
+					childRef, grandchildRef := child.Children[1].Resource, grandchild.Children[1].Resource
+					if childRef.Name != "same-name.bin" || grandchildRef.Name != "same-name.bin" || childRef.ID == "" || grandchildRef.ID == "" || childRef.ID == grandchildRef.ID {
+						t.Fatalf("same-name forwarded resources lost distinct public identity: child=%+v grandchild=%+v", childRef, grandchildRef)
+					}
+					childNodeAt := strings.Index(contents, `  Message ID: "child"`)
+					nestedNodeAt := strings.Index(contents, `  Message ID: "nested"`)
+					grandchildNodeAt := strings.Index(contents, `    Message ID: "grandchild"`)
+					if !strings.Contains(contents, "    Upper message ID: \"nested\"\n") {
+						t.Fatalf("nested material lost its actual native parent relation: %q", contents)
+					}
+					childResourceAt := strings.Index(contents, fmt.Sprintf(`  Resource: ID=%q kind=%q name=%q`, childRef.ID, childRef.Kind, childRef.Name))
+					grandchildResourceAt := strings.Index(contents, fmt.Sprintf(`    Resource: ID=%q kind=%q name=%q`, grandchildRef.ID, grandchildRef.Kind, grandchildRef.Name))
+					if childNodeAt < 0 || nestedNodeAt < 0 || grandchildNodeAt < 0 || childResourceAt < childNodeAt || childResourceAt > nestedNodeAt || grandchildResourceAt < grandchildNodeAt || strings.Contains(contents, "Attachment:") {
+						t.Fatalf("forwarded node/resource cache correspondence missing: %q", contents)
+					}
+					if !strings.Contains(contents, `Sender: sender_type="user" id_type="open_id" id="speaker-file-child"`) || !strings.Contains(contents, `Create time: "1793930000001"`) || !strings.Contains(contents, `Sender: sender_type="user" id_type="open_id" id="speaker-nested\ninjected"`) || strings.Contains(contents, "speaker-nested\ninjected") || !strings.Contains(contents, `Create time: "1793930000003"`) {
+						t.Fatalf("forwarded node provenance was not safely rendered: %q", contents)
+					}
+				}
+				if scenario == "system" && (!strings.Contains(contents, "Sender: unknown") || strings.Contains(contents, "Create time:")) {
+					t.Fatalf("missing native sender/time fallback changed: %q", contents)
 				}
 			default:
 				if len(failures) == 0 || strings.Contains(contents, "fatal:") || strings.Contains(strings.Join(failures, ""), "private diagnostic") {

@@ -26,6 +26,8 @@ Connector 不对附件大小设置额外上限：入站下载、本地存储、H
 
 `message.elements` 保留 `quote` 及其 `children` 层级，并通过不透明资源 ID 或无歧义的内部 URL 关联已下载资源；不能按文件名、平台密钥或私有 metadata 猜关联。缺失或冲突的关系标为 `resource_relation_unavailable`。`message.resources` 仍提供完整的平面材料列表，兼容只消费资源的应用。飞书子节点 ID 只是转发内的位置，所有子资源的 `source_message_id` 仍为本次显式引用的顶层父消息。企业微信 inline quote 没有可信父消息 ID 时只保留引用结构，不补造 parent/thread/Task 身份。
 
+飞书的 `quoted-message.txt` 会按原生层级依次列出每个已接受的根节点和转发节点：`Message ID`、`Message type`、`Sender`、存在时的原始毫秒时间 `Create time`、缩进的 `Body`，以及属于该节点的 `Resource: ID/kind/name`。`Container message ID` 指向本次显式引用/下载的顶层容器；只有平台实际返回上一层关系时才列出 `Upper message ID`。`Resource ID` 就是脱敏协议 `ResourceRef.ID`，可与同一事件的资源及其内部 URL 对应；同名文件不是关联依据。原生 sender 元组缺失时写为 `unknown`，缺失的时间不补造；节点/资源标签值均会转义，正文保留原有消息表示（图文消息仍为规范化展平正文），而不作为标签插入。这些都是描述性的引用事实，不恢复来源 Task、thread、用户身份或权限，也不授予访问权限。
+
 飞书缺少 `upper_message_id` 的子项按原生 CLI 作为顶层直子；明确断链、重复、环、已删除或会话冲突的项不提供正文/资源，并在引用说明中标记不可用，合法兄弟材料仍可读取。下载及关系规则参照[飞书官方 CLI 资源合同](https://github.com/larksuite/cli/blob/05ac58ffa089fe7a171205ac1d1e97ee50196ec8/skills/lark-im/references/lark-im-message-enrichment.md)与[关系构建实现](https://github.com/larksuite/cli/blob/05ac58ffa089fe7a171205ac1d1e97ee50196ec8/shortcuts/im/convert_lib/merge.go)。这不授予来源系统权限，也不自动读取群历史。
 
 公开事件会移除 provider-private 字段：

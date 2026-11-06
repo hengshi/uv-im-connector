@@ -67,6 +67,16 @@ usable by current Jarvis attachment preparation. Resource leaves correlate only
 by opaque IDs or unambiguous internal URLs. Missing/conflicting relations are
 unavailable rather than guessed from names or private keys. Invalid child rows
 are omitted with an unavailable indication without losing valid siblings.
+`quoted-message.txt` renders each accepted root/forwarded node under that same
+hierarchy with its escaped native message/type/sender tuple, the raw
+native create time when present, its existing body representation, and each
+owned public `ResourceRef.ID`, kind and quoted name. `Container message ID`
+names the selected top-level quote/download container; `Upper message ID`
+appears only when the platform supplied the immediate native relation. A missing sender is
+`unknown`; a missing time is omitted. jarvis-box may use the public resource ID
+to make an attachment correspondence visible, but must obtain bytes through the
+normalized resource and must not treat cache facts, child IDs, names or senders
+as Task, Run, conversation, ACL or identity authority.
 `interactive` cards still provide summary context without child resources.
 Neither representation creates group history or new Task selection rules.
 
