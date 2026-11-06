@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -333,6 +334,12 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 			if len(event.Message.Resources) == 0 {
 				t.Fatal("quoted message context missing from emitted resources")
 			}
+			quote := findQuotedElement(event.Message.Elements, "parent")
+			if quote == nil || len(quote.Children) == 0 || quote.Children[0].Resource == nil {
+				t.Fatalf("quoted context resource missing from quote hierarchy: %+v", event.Message.Elements)
+			}
+			contextResourceID := quote.Children[0].Resource.ID
+			contextInternalURL := quote.Children[0].Resource.InternalURL
 			wantResources := 1
 			if scenario == "reply-chain-denied" {
 				wantResources = 2
@@ -345,7 +352,9 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 			}
 			var contents string
 			var failures []string
+			var contextRef *uvim.ResourceRef
 			for _, ref := range event.Message.Resources {
+				isContextRef := ref.ID == contextResourceID && ref.InternalURL == contextInternalURL
 				if ref.SourceMessageID != "parent" {
 					t.Fatalf("quote resource lost parent lineage through Hub sanitization: %+v", ref)
 				}
@@ -355,6 +364,12 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 				}
 				if ref.SourceBotAppID != wantBotApp {
 					t.Fatalf("quoted bot ownership = %q, want %q", ref.SourceBotAppID, wantBotApp)
+				}
+				if isContextRef {
+					ref := ref
+					contextRef = &ref
+				} else if len(ref.ReferencedMessageIDs) != 0 {
+					t.Fatalf("only quote context may carry ancestor lineage: %+v", ref)
 				}
 				if ref.Error != "" {
 					failures = append(failures, ref.Error)
@@ -375,6 +390,17 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 				t.Fatalf("folder context missing: %q", contents)
 			}
 			if strings.HasPrefix(scenario, "reply-chain") {
+				if contextRef == nil {
+					t.Fatal("quoted context resource missing")
+				}
+				wantAcceptedIDs := map[string][]string{
+					"reply-chain":       {"earlier-reply", "earlier-origin"},
+					"reply-chain-cycle": {"earlier-reply"},
+					"reply-chain-depth": {"ancestor-1", "ancestor-2", "ancestor-3", "ancestor-4"},
+				}[scenario]
+				if !slices.Equal(contextRef.ReferencedMessageIDs, wantAcceptedIDs) {
+					t.Fatalf("accepted ancestor IDs = %v, want %v", contextRef.ReferencedMessageIDs, wantAcceptedIDs)
+				}
 				if len(failures) != 0 || !strings.Contains(contents, `Message ID: "parent"`) {
 					t.Fatalf("selected quote was not retained: contents=%q failures=%v", contents, failures)
 				}
@@ -441,8 +467,9 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 						{name: "cancelled", want: "quoted_message_ancestor_cancelled", ctx: cancelled},
 						{name: "timed out", want: "quoted_message_ancestor_timeout", ctx: expired},
 					} {
-						if got := provider.quotedMessageAncestors(tc.ctx, "token", quotedMessageItem{ID: "parent", ParentID: "never-read"}, "current", "chat"); !strings.Contains(got, tc.want) || ancestorLookups != 0 {
-							t.Fatalf("%s ancestor context result=%q reads=%d", tc.name, got, ancestorLookups)
+						text, ids := provider.quotedMessageAncestors(tc.ctx, "token", quotedMessageItem{ID: "parent", ParentID: "never-read"}, "current", "chat")
+						if !strings.Contains(text, tc.want) || len(ids) != 0 || ancestorLookups != 0 {
+							t.Fatalf("%s ancestor context result=%q ids=%v reads=%d", tc.name, text, ids, ancestorLookups)
 						}
 					}
 				}

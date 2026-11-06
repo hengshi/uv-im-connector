@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -792,39 +793,71 @@ func TestHubPreservesCorrelatedResourceElements(t *testing.T) {
 }
 
 func TestHubDoesNotJoinConflictingResourceIDsInElements(t *testing.T) {
-	dir := t.TempDir()
-	provider := &downloadProvider{id: "test", connector: "main"}
-	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
-	hub := NewHub(uvim.NewProviderRegistry(provider), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
-	first := uvim.ResourceRef{ID: "ambiguous", Provider: "test", Connector: "main", Kind: uvim.ElementFile, Name: "same.txt", Key: "same-key", Metadata: map[string]string{"message_id": "first"}, Private: map[string]string{"token": "first"}}
-	second := uvim.ResourceRef{ID: "ambiguous", Provider: "test", Connector: "main", Kind: uvim.ElementFile, Name: "same.txt", Key: "same-key", Metadata: map[string]string{"message_id": "second"}, Private: map[string]string{"token": "second"}}
-	internalFirst := uvim.ResourceRef{Provider: "test", Connector: "main", Kind: uvim.ElementFile, Name: "shared.txt", InternalURL: "internal://shared", SourceMessageID: "first"}
-	internalSecond := uvim.ResourceRef{Provider: "test", Connector: "main", Kind: uvim.ElementFile, Name: "shared.txt", InternalURL: "internal://shared", SourceMessageID: "second"}
-	err := hub.Emit(context.Background(), uvim.Event{
-		ID: "evt-1", Type: uvim.EventMessageCreate, Provider: "test", Connector: "main",
-		Message: uvim.Message{
-			ID: "m1", Resources: []uvim.ResourceRef{first, second, internalFirst, internalSecond},
-			Elements: []uvim.Element{{Type: uvim.ElementQuote, ID: "parent", Children: []uvim.Element{uvim.File(first), uvim.File(internalFirst)}}},
+	for _, tc := range []struct {
+		name           string
+		firstLineage   []string
+		secondLineage  []string
+		firstMetadata  map[string]string
+		secondMetadata map[string]string
+		firstPrivate   map[string]string
+		secondPrivate  map[string]string
+		firstSource    string
+		secondSource   string
+	}{
+		{
+			name:          "private descriptor differs",
+			firstMetadata: map[string]string{"message_id": "first"}, secondMetadata: map[string]string{"message_id": "second"},
+			firstPrivate: map[string]string{"token": "first"}, secondPrivate: map[string]string{"token": "second"},
+			firstSource: "first", secondSource: "second",
 		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	events, err := log.ReadAfter(context.Background(), 0)
-	if err != nil || len(events) != 1 {
-		t.Fatalf("events=%+v err=%v", events, err)
-	}
-	if len(events[0].Message.Elements) != 1 || events[0].Message.Elements[0].Type != uvim.ElementQuote || len(events[0].Message.Elements[0].Children) != 2 {
-		t.Fatalf("ambiguous resource tree was replaced: %+v", events[0].Message.Elements)
-	}
-	quote := events[0].Message.Elements[0]
-	for _, leaf := range quote.Children {
-		if leaf.Resource == nil || leaf.Resource.InternalURL != "" || leaf.URL != "" || leaf.Resource.Key != "" || leaf.Resource.Error != "resource_relation_unavailable" {
-			t.Fatalf("ambiguous resource joined material in quote tree: %+v", leaf)
-		}
-	}
-	if len(events[0].Message.Resources) != 4 || events[0].Message.Resources[0].ID == events[0].Message.Resources[1].ID {
-		t.Fatalf("conflicting resources did not receive distinct stored identities: %+v", events[0].Message.Resources)
+		{
+			name:          "only accepted ancestor lineage differs",
+			firstLineage:  []string{"ancestor-one"},
+			secondLineage: []string{"ancestor-two"},
+			firstSource:   "parent",
+			secondSource:  "parent",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			provider := &downloadProvider{id: "test", connector: "main"}
+			log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
+			hub := NewHub(uvim.NewProviderRegistry(provider), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+			first := uvim.ResourceRef{ID: "ambiguous", Provider: "test", Connector: "main", Kind: uvim.ElementFile, Name: "same.txt", Key: "same-key", Metadata: tc.firstMetadata, Private: tc.firstPrivate, SourceMessageID: tc.firstSource, ReferencedMessageIDs: tc.firstLineage}
+			second := uvim.ResourceRef{ID: "ambiguous", Provider: "test", Connector: "main", Kind: uvim.ElementFile, Name: "same.txt", Key: "same-key", Metadata: tc.secondMetadata, Private: tc.secondPrivate, SourceMessageID: tc.secondSource, ReferencedMessageIDs: tc.secondLineage}
+			internalFirst := uvim.ResourceRef{Provider: "test", Connector: "main", Kind: uvim.ElementFile, Name: "shared.txt", InternalURL: "internal://shared", SourceMessageID: tc.firstSource, ReferencedMessageIDs: tc.firstLineage}
+			internalSecond := uvim.ResourceRef{Provider: "test", Connector: "main", Kind: uvim.ElementFile, Name: "shared.txt", InternalURL: "internal://shared", SourceMessageID: tc.secondSource, ReferencedMessageIDs: tc.secondLineage}
+			err := hub.Emit(context.Background(), uvim.Event{
+				ID: "evt-1", Type: uvim.EventMessageCreate, Provider: "test", Connector: "main",
+				Message: uvim.Message{
+					ID: "m1", Resources: []uvim.ResourceRef{first, second, internalFirst, internalSecond},
+					Elements: []uvim.Element{{Type: uvim.ElementQuote, ID: "parent", Children: []uvim.Element{uvim.File(first), uvim.File(internalFirst)}}},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := log.ReadAfter(context.Background(), 0)
+			if err != nil || len(events) != 1 {
+				t.Fatalf("events=%+v err=%v", events, err)
+			}
+			if len(events[0].Message.Elements) != 1 || events[0].Message.Elements[0].Type != uvim.ElementQuote || len(events[0].Message.Elements[0].Children) != 2 {
+				t.Fatalf("ambiguous resource tree was replaced: %+v", events[0].Message.Elements)
+			}
+			quote := events[0].Message.Elements[0]
+			for _, leaf := range quote.Children {
+				if leaf.Resource == nil || leaf.Resource.InternalURL != "" || leaf.URL != "" || leaf.Resource.Key != "" || leaf.Resource.Error != "resource_relation_unavailable" {
+					t.Fatalf("ambiguous resource joined material in quote tree: %+v", leaf)
+				}
+			}
+			resources := events[0].Message.Resources
+			if len(resources) != 4 || resources[0].ID == resources[1].ID {
+				t.Fatalf("conflicting resources did not receive distinct stored identities: %+v", resources)
+			}
+			if !slices.Equal(resources[0].ReferencedMessageIDs, tc.firstLineage) || !slices.Equal(resources[1].ReferencedMessageIDs, tc.secondLineage) {
+				t.Fatalf("resource lineage was not preserved: %+v", resources)
+			}
+		})
 	}
 }
 

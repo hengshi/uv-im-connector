@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -27,14 +28,15 @@ func TestEventDedupeKeyUsesProviderConnectorAndMessage(t *testing.T) {
 
 func TestSanitizedResourceDropsProviderSecrets(t *testing.T) {
 	ref := ResourceRef{
-		Key:             "provider-key",
-		URL:             "https://download.example",
-		Secret:          "secret",
-		Private:         map[string]string{"token": "x"},
-		Metadata:        map[string]string{"message_id": "m1"},
-		InternalURL:     "internal://r1",
-		SourceMessageID: "m1",
-		SourceBotAppID:  "app",
+		Key:                  "provider-key",
+		URL:                  "https://download.example",
+		Secret:               "secret",
+		Private:              map[string]string{"token": "x"},
+		Metadata:             map[string]string{"message_id": "m1"},
+		InternalURL:          "internal://r1",
+		SourceMessageID:      "m1",
+		SourceBotAppID:       "app",
+		ReferencedMessageIDs: []string{"ancestor-1", "ancestor-2"},
 	}
 	got := ref.Sanitized()
 	if got.Key != "" || got.URL != "" || got.Secret != "" || got.Private != nil || got.Metadata != nil {
@@ -48,6 +50,13 @@ func TestSanitizedResourceDropsProviderSecrets(t *testing.T) {
 	}
 	if got.SourceBotAppID != "app" {
 		t.Fatalf("verified source bot ownership was removed: %+v", got)
+	}
+	if !slices.Equal(got.ReferencedMessageIDs, ref.ReferencedMessageIDs) {
+		t.Fatalf("referenced message IDs = %v, want %v", got.ReferencedMessageIDs, ref.ReferencedMessageIDs)
+	}
+	got.ReferencedMessageIDs[0] = "mutated"
+	if ref.ReferencedMessageIDs[0] == "mutated" {
+		t.Fatal("sanitized resource aliases referenced message IDs")
 	}
 }
 
