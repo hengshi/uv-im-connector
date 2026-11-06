@@ -55,18 +55,19 @@ const (
 )
 
 type Event struct {
-	Sequence  int64     `json:"sequence,omitempty"`
-	ID        string    `json:"id"`
-	Type      string    `json:"type"`
-	Provider  string    `json:"provider"`
-	Connector string    `json:"connector,omitempty"`
-	Time      time.Time `json:"time"`
-	Login     Login     `json:"login,omitempty"`
-	Channel   Channel   `json:"channel,omitempty"`
-	User      User      `json:"user,omitempty"`
-	Message   Message   `json:"message,omitempty"`
-	Referrer  Referrer  `json:"referrer,omitempty"`
-	Addressed bool      `json:"addressed,omitempty"`
+	Sequence    int64                   `json:"sequence,omitempty"`
+	ID          string                  `json:"id"`
+	Type        string                  `json:"type"`
+	Provider    string                  `json:"provider"`
+	Connector   string                  `json:"connector,omitempty"`
+	Time        time.Time               `json:"time"`
+	Login       Login                   `json:"login,omitempty"`
+	Channel     Channel                 `json:"channel,omitempty"`
+	User        User                    `json:"user,omitempty"`
+	Message     Message                 `json:"message,omitempty"`
+	Referrer    Referrer                `json:"referrer,omitempty"`
+	Addressed   bool                    `json:"addressed,omitempty"`
+	Interaction *InteractionActionEvent `json:"interaction,omitempty"`
 	// BotMentionPrefix records native leading-mention provenance. true proves
 	// the first native mention token after leading whitespace addressed this
 	// connector's bot. false is an explicit negative guard (for example, another
@@ -109,6 +110,9 @@ func EventSourceTimeSource(event Event) string {
 }
 
 func (e Event) DedupeKey() string {
+	if e.Type == EventInteractionAction && e.Interaction != nil {
+		return e.Provider + ":" + e.Connector + ":" + EventInteractionAction + ":" + e.Interaction.EventID
+	}
 	eventType := strings.TrimSpace(e.Type)
 	if eventType == "" {
 		eventType = "event"
@@ -308,25 +312,33 @@ func SanitizeResources(resources []ResourceRef) []ResourceRef {
 }
 
 type Capabilities struct {
-	Inbound          bool     `json:"inbound"`
-	Outbound         bool     `json:"outbound"`
-	DirectMessage    bool     `json:"direct_message,omitempty"`
-	GroupMessage     bool     `json:"group_message,omitempty"`
-	ThreadReply      bool     `json:"thread_reply,omitempty"`
-	ReplyMessage     bool     `json:"reply_message,omitempty"`
-	ReplyStream      bool     `json:"reply_stream,omitempty"` // Live passive reply-token route only.
-	ReplyMaxUses     int      `json:"reply_max_uses,omitempty"`
-	TextMaxBytes     int      `json:"text_max_bytes,omitempty"` // Normalized UTF-8 bytes per send/update; zero is unknown.
-	ProactiveDirect  bool     `json:"proactive_direct,omitempty"`
-	ProactiveGroup   bool     `json:"proactive_group,omitempty"`
-	TargetKinds      []string `json:"target_kinds,omitempty"`
-	TargetIDTypes    []string `json:"target_id_types,omitempty"`
-	EditMessage      bool     `json:"edit_message,omitempty"`
-	DeleteMessage    bool     `json:"delete_message,omitempty"`
-	UploadResource   bool     `json:"upload_resource,omitempty"`
-	DownloadResource bool     `json:"download_resource,omitempty"`
-	ResourceKinds    []string `json:"resource_kinds,omitempty"`
-	ChannelTypes     []string `json:"channel_types,omitempty"`
+	InteractiveMessage        bool     `json:"interactive_message,omitempty"`
+	InteractiveActionCallback bool     `json:"interactive_action_callback,omitempty"`
+	InteractiveMessageUpdate  bool     `json:"interactive_message_update,omitempty"`
+	InteractionSchemaVersions []string `json:"interaction_schema_versions,omitempty"`
+	InteractionUpdateVersion  string   `json:"interaction_update_version,omitempty"`
+	CardMaxBytes              int      `json:"card_max_bytes,omitempty"`
+	CallbackTextMaxBytes      int      `json:"callback_text_max_bytes,omitempty"`
+	UpdateMinIntervalMS       int      `json:"update_min_interval_ms,omitempty"`
+	Inbound                   bool     `json:"inbound"`
+	Outbound                  bool     `json:"outbound"`
+	DirectMessage             bool     `json:"direct_message,omitempty"`
+	GroupMessage              bool     `json:"group_message,omitempty"`
+	ThreadReply               bool     `json:"thread_reply,omitempty"`
+	ReplyMessage              bool     `json:"reply_message,omitempty"`
+	ReplyStream               bool     `json:"reply_stream,omitempty"` // Live passive reply-token route only.
+	ReplyMaxUses              int      `json:"reply_max_uses,omitempty"`
+	TextMaxBytes              int      `json:"text_max_bytes,omitempty"` // Normalized UTF-8 bytes per send/update; zero is unknown.
+	ProactiveDirect           bool     `json:"proactive_direct,omitempty"`
+	ProactiveGroup            bool     `json:"proactive_group,omitempty"`
+	TargetKinds               []string `json:"target_kinds,omitempty"`
+	TargetIDTypes             []string `json:"target_id_types,omitempty"`
+	EditMessage               bool     `json:"edit_message,omitempty"`
+	DeleteMessage             bool     `json:"delete_message,omitempty"`
+	UploadResource            bool     `json:"upload_resource,omitempty"`
+	DownloadResource          bool     `json:"download_resource,omitempty"`
+	ResourceKinds             []string `json:"resource_kinds,omitempty"`
+	ChannelTypes              []string `json:"channel_types,omitempty"`
 	// PublicationLocatorVersion is advertised only by providers that can
 	// confirm the native message and conversation that a successful send
 	// published. An empty value means no locator is available.
@@ -352,6 +364,7 @@ type OutboundTarget struct {
 }
 
 type OutboundMessage struct {
+	Interaction  *InteractionCard `json:"interaction,omitempty"`
 	IdentityLink *IdentityLinkRef `json:"identity_link,omitempty"`
 	ID           string           `json:"id,omitempty"`
 	Provider     string           `json:"provider"`
@@ -411,6 +424,9 @@ func ValidateOutboundText(msg OutboundMessage, capabilities Capabilities) error 
 }
 
 func ValidateMessageUpdate(msg MessageUpdate, capabilities Capabilities) error {
+	if msg.Interaction != nil {
+		return fmt.Errorf("interaction cards require the interaction update protocol")
+	}
 	if strings.TrimSpace(msg.Provider) == "" || strings.TrimSpace(msg.Connector) == "" || strings.TrimSpace(msg.MessageID) == "" {
 		return fmt.Errorf("provider, connector and message_id are required")
 	}
@@ -549,12 +565,13 @@ func ValidateOutboundResources(m OutboundMessage, capabilities Capabilities) err
 }
 
 type SendResult struct {
-	Provider     string        `json:"provider"`
-	Connector    string        `json:"connector,omitempty"`
-	MessageID    string        `json:"message_id,omitempty"`
-	Time         time.Time     `json:"time"`
-	MessageIDs   []string      `json:"message_ids,omitempty"`
-	Publications []Publication `json:"publications,omitempty"`
+	Interaction  *InteractionPublication `json:"interaction,omitempty"`
+	Provider     string                  `json:"provider"`
+	Connector    string                  `json:"connector,omitempty"`
+	MessageID    string                  `json:"message_id,omitempty"`
+	Time         time.Time               `json:"time"`
+	MessageIDs   []string                `json:"message_ids,omitempty"`
+	Publications []Publication           `json:"publications,omitempty"`
 }
 
 const (

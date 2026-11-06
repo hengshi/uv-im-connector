@@ -74,6 +74,9 @@ func (p *Provider) Send(_ context.Context, msg uvim.OutboundMessage) (result uvi
 	defer func() {
 		err = uvim.NewProviderSendOperationError("memory send", err)
 	}()
+	if err := uvim.ValidateOutboundInteraction(msg, p.caps); err != nil {
+		return uvim.SendResult{}, err
+	}
 	if err := uvim.ValidateOutboundTarget(msg, p.caps); err != nil {
 		return uvim.SendResult{}, uvim.NewProviderSendLogError("memory send: invalid target", err)
 	}

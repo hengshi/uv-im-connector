@@ -30,11 +30,12 @@ type Hub struct {
 	identityMapper *uvim.UserIdentityMapper
 	identityLinks  *identityLinks
 
-	mu                sync.Mutex
-	subscribers       map[chan uvim.Event]struct{}
-	upgrader          websocket.Upgrader
-	materialResources *conversationMaterialRegistry
-	receivedContext   *receivedContextIndex
+	mu                 sync.Mutex
+	subscribers        map[chan uvim.Event]struct{}
+	upgrader           websocket.Upgrader
+	materialResources  *conversationMaterialRegistry
+	receivedContext    *receivedContextIndex
+	interactionUpdates *interactionTransportStore
 }
 
 func NewHub(registry *uvim.ProviderRegistry, eventLog *uvim.EventLog, resources *uvim.ResourceStore) *Hub {
@@ -48,13 +49,14 @@ func NewHub(registry *uvim.ProviderRegistry, eventLog *uvim.EventLog, resources 
 		resources = &uvim.ResourceStore{}
 	}
 	hub := &Hub{
-		registry:          registry,
-		eventLog:          eventLog,
-		resources:         resources,
-		subscribers:       map[chan uvim.Event]struct{}{},
-		materialResources: newConversationMaterialRegistry(eventLog),
-		receivedContext:   newReceivedContextIndex(eventLog),
-		upgrader:          websocket.Upgrader{},
+		registry:           registry,
+		eventLog:           eventLog,
+		resources:          resources,
+		subscribers:        map[chan uvim.Event]struct{}{},
+		materialResources:  newConversationMaterialRegistry(eventLog),
+		receivedContext:    newReceivedContextIndex(eventLog),
+		interactionUpdates: newInteractionTransportStore(eventLog),
+		upgrader:           websocket.Upgrader{},
 	}
 	hub.upgrader.CheckOrigin = hub.checkOrigin
 	return hub
@@ -72,6 +74,12 @@ func (h *Hub) SetUserIdentityMapper(mapper *uvim.UserIdentityMapper) {
 }
 
 func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
+	if event.Type == uvim.EventInteractionAction && h.authToken == "" {
+		return errors.New("interaction transport requires authentication")
+	}
+	if err := uvim.ValidateInteractionEvent(event); err != nil {
+		return err
+	}
 	event = h.identityMapper.Apply(event)
 	if event.ID == "" {
 		event.ID = uvim.NewID("evt")
@@ -172,6 +180,7 @@ func (h *Hub) Handler() http.Handler {
 	mux.HandleFunc("/v1/events/ws", h.handleEventsWS)
 	mux.HandleFunc("/v1/message.create", h.handleMessageCreate)
 	mux.HandleFunc("/v1/message.update", h.handleMessageUpdate)
+	mux.HandleFunc("/v1/interaction.update", h.handleInteractionUpdate)
 	mux.HandleFunc("/v1/conversation.window", h.handleConversationWindow)
 	mux.HandleFunc("/v1/conversation.search", h.handleConversationSearch)
 	mux.HandleFunc("/v1/conversation.materialize", h.handleConversationMaterialize)
@@ -202,7 +211,15 @@ func (h *Hub) handleMeta(w http.ResponseWriter, req *http.Request) {
 	var providers []uvim.ProviderMeta
 	for _, provider := range h.registry.List() {
 		capabilities := provider.Capabilities()
+		if h.authToken == "" {
+			capabilities.InteractiveMessage, capabilities.InteractiveActionCallback, capabilities.InteractiveMessageUpdate = false, false, false
+			capabilities.InteractionSchemaVersions, capabilities.InteractionUpdateVersion = nil, ""
+		}
 		health := provider.Health(req.Context())
+		if h.authToken == "" {
+			health.Capabilities.InteractiveMessage, health.Capabilities.InteractiveActionCallback, health.Capabilities.InteractiveMessageUpdate = false, false, false
+			health.Capabilities.InteractionSchemaVersions, health.Capabilities.InteractionUpdateVersion = nil, ""
+		}
 		if !h.nativeConversationWindowAvailable(provider) && h.receivedConversationWindowAvailable(provider) {
 			capabilities.ConversationWindowVersion = uvim.ConversationWindowVersionV1
 			health.Capabilities.ConversationWindowVersion = uvim.ConversationWindowVersionV1
@@ -274,9 +291,14 @@ func (h *Hub) handleEvents(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	for i := range events {
-		events[i] = events[i].Sanitized()
+	visible := make([]uvim.Event, 0, len(events))
+	for _, event := range events {
+		if h.authToken == "" && event.Type == uvim.EventInteractionAction {
+			continue
+		}
+		visible = append(visible, event.Sanitized())
 	}
+	events = visible
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
@@ -307,6 +329,9 @@ func (h *Hub) handleEventsWS(w http.ResponseWriter, req *http.Request) {
 	}
 	lastSeq := after
 	for _, event := range backlog {
+		if h.authToken == "" && event.Type == uvim.EventInteractionAction {
+			continue
+		}
 		if err := conn.WriteJSON(event.Sanitized()); err != nil {
 			return
 		}
@@ -321,6 +346,9 @@ func (h *Hub) handleEventsWS(w http.ResponseWriter, req *http.Request) {
 		case event, ok := <-ch:
 			if !ok {
 				return
+			}
+			if h.authToken == "" && event.Type == uvim.EventInteractionAction {
+				continue
 			}
 			if event.Sequence <= lastSeq {
 				continue
@@ -343,6 +371,10 @@ func (h *Hub) handleMessageCreate(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if msg.Interaction != nil && h.authToken == "" {
+		writeError(w, http.StatusUnauthorized, "interaction_authentication_required")
+		return
+	}
 	provider := h.registry.Get(msg.Provider, msg.Connector)
 	if provider == nil {
 		writeError(w, http.StatusNotFound, "provider_not_found")
@@ -354,6 +386,10 @@ func (h *Hub) handleMessageCreate(w http.ResponseWriter, req *http.Request) {
 	}
 	if err := uvim.ValidateOutboundText(msg, provider.Capabilities()); err != nil {
 		writeProviderError(w, err)
+		return
+	}
+	if err := uvim.ValidateOutboundInteraction(msg, provider.Capabilities()); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_interaction_card")
 		return
 	}
 	if err := h.validateIdentityLink(req.Context(), msg); err != nil {
@@ -369,6 +405,14 @@ func (h *Hub) handleMessageCreate(w http.ResponseWriter, req *http.Request) {
 		slog.Error("provider send failed", "provider", provider.ID(), "connector", provider.ConnectorID(), "reason", reason)
 		writeProviderError(w, err)
 		return
+	}
+	if msg.Interaction != nil {
+		if err := h.interactionUpdates.recordSent(context.WithoutCancel(req.Context()), msg, result); err != nil {
+			// The send has already happened. Missing transport recovery evidence
+			// cannot turn it into a retryable send or invent update authority.
+			result.Interaction = nil
+			slog.Warn("interaction publication receipt unavailable", "provider", provider.ID(), "connector", provider.ConnectorID())
+		}
 	}
 	writeJSON(w, http.StatusOK, result)
 }

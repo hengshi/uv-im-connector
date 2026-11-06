@@ -372,6 +372,9 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	defer func() {
 		err = uvim.NewProviderSendOperationError("wecom send", err)
 	}()
+	if err := uvim.ValidateOutboundInteraction(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, err
+	}
 	if err := uvim.ValidateOutboundText(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, err
 	}

@@ -97,6 +97,9 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 }
 
 func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+	if err := uvim.ValidateOutboundInteraction(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, err
+	}
 	if err := uvim.ValidateOutboundText(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, err
 	}

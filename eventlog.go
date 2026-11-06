@@ -73,15 +73,19 @@ type ConversationContextDelta struct {
 type EventLog struct {
 	Path string
 
-	mu      sync.Mutex
-	nextSeq int64
-	seen    map[string]struct{}
+	mu        sync.Mutex
+	nextSeq   int64
+	seen      map[string]struct{}
+	appendErr error // An uncertain interaction append cannot be ACKed/read as durable.
 }
 
 func NewEventLog(path string) (*EventLog, error) {
 	log := &EventLog{Path: path, seen: map[string]struct{}{}, nextSeq: 1}
 	if path == "" {
 		return log, nil
+	}
+	if err := log.recoverUnterminatedTail(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
 	}
 	events, err := log.ReadAfter(context.Background(), 0)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -99,6 +103,12 @@ func NewEventLog(path string) (*EventLog, error) {
 }
 
 func (l *EventLog) Append(ctx context.Context, event Event) (Event, bool, error) {
+	if err := ValidateInteractionEvent(event); err != nil {
+		return event, false, err
+	}
+	if event.Type == EventInteractionAction && (l == nil || l.Path == "") {
+		return event, false, errors.New("interaction event requires durable EventLog")
+	}
 	if l == nil {
 		return event, true, nil
 	}
@@ -107,6 +117,9 @@ func (l *EventLog) Append(ctx context.Context, event Event) (Event, bool, error)
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.appendErr != nil {
+		return event, false, l.appendErr
+	}
 	key := event.DedupeKey()
 	if key != "" {
 		if _, ok := l.seen[key]; ok {
@@ -140,7 +153,28 @@ func (l *EventLog) Append(ctx context.Context, event Event) (Event, bool, error)
 		return event, false, err
 	}
 	if _, err := file.Write(append(raw, '\n')); err != nil {
+		if event.Type == EventInteractionAction {
+			l.appendErr = err
+		}
 		return event, false, err
+	}
+	if event.Type == EventInteractionAction {
+		if err := file.Sync(); err != nil {
+			l.appendErr = err
+			return event, false, err
+		}
+		directory, err := os.Open(filepath.Dir(l.Path))
+		if err == nil {
+			err = directory.Sync()
+			closeErr := directory.Close()
+			if err == nil {
+				err = closeErr
+			}
+		}
+		if err != nil {
+			l.appendErr = err
+			return event, false, err
+		}
 	}
 	if key != "" {
 		l.seen[key] = struct{}{}
@@ -157,13 +191,29 @@ func (l *EventLog) ReadAfter(ctx context.Context, sequence int64) ([]Event, erro
 	if l == nil || l.Path == "" {
 		return nil, nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// A polling/reconnecting reader must not observe an action between its
+	// write and durable commit, or bypass a latched uncertain append.
+	l.mu.Lock()
+	if l.appendErr != nil {
+		l.mu.Unlock()
+		return nil, l.appendErr
+	}
 	file, err := os.Open(l.Path)
+	if err != nil {
+		l.mu.Unlock()
+		return nil, err
+	}
+	info, err := file.Stat()
+	l.mu.Unlock()
+	defer file.Close()
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
 	var out []Event
-	reader := bufio.NewReader(file)
+	reader := bufio.NewReader(io.LimitReader(file, info.Size()))
 	for {
 		select {
 		case <-ctx.Done():
@@ -174,11 +224,14 @@ func (l *EventLog) ReadAfter(ctx context.Context, sequence int64) ([]Event, erro
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			return nil, readErr
 		}
-		if len(raw) == 0 && errors.Is(readErr, io.EOF) {
+		if errors.Is(readErr, io.EOF) {
 			return out, nil
 		}
 		var event Event
 		if err := json.Unmarshal(raw, &event); err != nil {
+			return nil, err
+		}
+		if err := ValidateInteractionEvent(event); err != nil {
 			return nil, err
 		}
 		if event.Sequence > sequence {

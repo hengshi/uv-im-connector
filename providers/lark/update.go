@@ -13,6 +13,8 @@ import (
 )
 
 type messageIdentity struct {
+	ParentID string `json:"parent_id"`
+	RootID   string `json:"root_id"`
 	ID       string `json:"message_id"`
 	ChatID   string `json:"chat_id"`
 	ThreadID string `json:"thread_id"`

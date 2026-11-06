@@ -155,6 +155,11 @@ func (c *Client) Update(ctx context.Context, msg uvim.MessageUpdate) (uvim.SendR
 	return out, c.postJSON(ctx, "/v1/message.update", msg, &out)
 }
 
+func (c *Client) UpdateInteraction(ctx context.Context, request uvim.InteractionMessageUpdate) (uvim.InteractionUpdateResult, error) {
+	var out uvim.InteractionUpdateResult
+	return out, c.postJSON(ctx, "/v1/interaction.update", request, &out)
+}
+
 func (c *Client) Upload(ctx context.Context, ref uvim.ResourceRef, data []byte) (uvim.ResourceRef, error) {
 	var out uvim.ResourceRef
 	input := map[string]string{

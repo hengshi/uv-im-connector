@@ -13,6 +13,7 @@ import (
 )
 
 type DecoderConfig struct {
+	Now        func() time.Time
 	AppID      string
 	BotOpenID  string
 	BotUnionID string
@@ -29,6 +30,9 @@ func DecodePayload(payload []byte, config DecoderConfig) (uvim.Event, bool, erro
 	}
 	if env.Type != "" && env.Type != "event_callback" {
 		return uvim.Event{}, false, nil
+	}
+	if env.Header.EventType == "card.action.trigger" {
+		return decodeInteractionAction(env, config)
 	}
 	if env.Header.EventType != "im.message.receive_v1" {
 		return uvim.Event{}, false, nil
@@ -112,10 +116,11 @@ func DecodePayload(payload []byte, config DecoderConfig) (uvim.Event, bool, erro
 }
 
 type eventEnvelope struct {
-	Schema string          `json:"schema"`
-	Type   string          `json:"type"`
-	Header eventHeader     `json:"header"`
-	Event  json.RawMessage `json:"event"`
+	Context interactionCallbackContext `json:"context"`
+	Schema  string                     `json:"schema"`
+	Type    string                     `json:"type"`
+	Header  eventHeader                `json:"header"`
+	Event   json.RawMessage            `json:"event"`
 }
 
 type eventHeader struct {
