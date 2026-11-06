@@ -210,6 +210,29 @@ func TestConversationSearchUsesTypedAuthenticatedRoute(t *testing.T) {
 	}
 }
 
+func TestConversationMaterializeUsesOpaqueTypedRoute(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost || req.URL.Path != "/v1/conversation.materialize" || req.Header.Get("Authorization") != "Bearer token" {
+			t.Errorf("request=%s %s authorization=%q", req.Method, req.URL.Path, req.Header.Get("Authorization"))
+		}
+		var input uvim.ConversationMaterializeRequest
+		if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+			t.Error(err)
+		}
+		if input != (uvim.ConversationMaterializeRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om", ExpectedEventDigest: "event-sha", AudienceDigest: "cap-sha", SourceEpoch: "epoch", MaterializeHandle: "opaque"}) {
+			t.Errorf("input=%+v", input)
+		}
+		_ = json.NewEncoder(w).Encode(uvim.ConversationMaterializeResult{Version: uvim.ConversationMaterializeVersionV1, State: "ready", Resource: uvim.ResourceRef{ID: "r1", InternalURL: "internal://r1"}})
+	}))
+	defer api.Close()
+	c := New(api.URL)
+	c.Token = "token"
+	result, err := c.ConversationMaterialize(t.Context(), uvim.ConversationMaterializeRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om", ExpectedEventDigest: "event-sha", AudienceDigest: "cap-sha", SourceEpoch: "epoch", MaterializeHandle: "opaque"})
+	if err != nil || result.Version != uvim.ConversationMaterializeVersionV1 || result.State != "ready" || result.Resource.InternalURL != "internal://r1" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
 func TestUpdatePreservesExactMessageAndFailureFacts(t *testing.T) {
 	for _, status := range []int{200, 502, 404} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
