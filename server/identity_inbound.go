@@ -51,7 +51,7 @@ func (h *Hub) handleInboundIdentity(w http.ResponseWriter, req *http.Request) {
 	}
 	// Released normal-user adapters omit Kind; this is the same personal
 	// native account contract used by identityEvent, not a display-name guess.
-	if !found || event.Sequence <= 0 || event.Type != uvim.EventMessageCreate || event.Message.ID == "" || event.User.ID == "" || (event.User.Kind != "" && event.User.Kind != uvim.UserKindUser) {
+	if !found || event.Sequence <= 0 || !personalIdentityEvent(event) || event.User.ID == "" || (event.User.Kind != "" && event.User.Kind != uvim.UserKindUser) {
 		writeError(w, http.StatusUnprocessableEntity, "personal_im_event_unavailable")
 		return
 	}
@@ -73,6 +73,13 @@ func (h *Hub) handleInboundIdentity(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		result.DirectTarget = &target
+	} else if event.Type == uvim.EventInteractionAction {
+		// Callback chat classification is not supplied by the caller. The
+		// provider may prove a current private target; otherwise the complete
+		// actor/link set stays useful without granting direct delivery.
+		if _, target, proofErr := h.identityEvent(req.Context(), result.Event); proofErr == nil {
+			result.DirectTarget = &target
+		}
 	}
 	h.identityLinks.mu.Lock()
 	if h.identityLinks.err != nil {
@@ -97,4 +104,11 @@ func (h *Hub) handleInboundIdentity(w http.ResponseWriter, req *http.Request) {
 	}
 	sort.Slice(result.Links, func(i, j int) bool { return result.Links[i].Link.ID < result.Links[j].Link.ID })
 	writeJSON(w, http.StatusOK, result)
+}
+
+func personalIdentityEvent(event uvim.Event) bool {
+	if event.Type == uvim.EventMessageCreate {
+		return event.Message.ID != ""
+	}
+	return event.Type == uvim.EventInteractionAction && uvim.ValidateInteractionEvent(event) == nil
 }

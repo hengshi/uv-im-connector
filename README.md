@@ -18,6 +18,8 @@ The core contract treats every channel equally:
 - Provider differences are exposed through capabilities, not product hierarchy.
 - Caller applications consume normalized events and do not parse provider-native payloads.
 
+See [interactive cards and durable callbacks](docs/en/interactions.md) for the neutral protocol, Lark application prerequisites, update recovery and verification boundaries.
+
 ## Documentation Site
 
 This repository is configured to publish the VitePress documentation site with GitHub Pages:
