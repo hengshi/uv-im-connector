@@ -153,6 +153,33 @@ func TestEventLogDedupesAfterSuccessfulAppend(t *testing.T) {
 	}
 }
 
+func TestConversationEventDigestUsesSanitizedEvent(t *testing.T) {
+	base := Event{
+		ID: "evt", Type: EventMessageCreate, Provider: "lark", Connector: "main",
+		Channel: Channel{ID: "oc", Type: ChannelGroup},
+		Message: Message{ID: "om", Text: "hello", Resources: []ResourceRef{{
+			ID: "r", Kind: ElementFile, InternalURL: "internal://r", Key: "private-key",
+			URL: "https://private.example/a", Secret: "secret", Private: map[string]string{"token": "secret"},
+		}}},
+	}
+	other := base
+	other.Message.Resources = append([]ResourceRef(nil), base.Message.Resources...)
+	other.Message.Resources[0].Key = "different-private-key"
+	other.Message.Resources[0].URL = "https://private.example/b"
+	other.Message.Resources[0].Secret = "other-secret"
+	firstDigest, err := ConversationEventDigest(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := ConversationEventDigest(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest == "" || firstDigest != secondDigest {
+		t.Fatalf("sanitized event digests differ first=%q second=%q", firstDigest, secondDigest)
+	}
+}
+
 func TestEventLogConversationWindowTriggerRequiresExactAddressedGroupMessage(t *testing.T) {
 	log, err := NewEventLog(filepath.Join(t.TempDir(), "events.jsonl"))
 	if err != nil {

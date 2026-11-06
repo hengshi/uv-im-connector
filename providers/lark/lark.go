@@ -144,6 +144,7 @@ func (p *Provider) Capabilities() uvim.Capabilities {
 		ChannelTypes:              []string{uvim.ChannelDirect, uvim.ChannelGroup},
 		PublicationLocatorVersion: uvim.PublicationLocatorVersionV1,
 		ConversationWindowVersion: uvim.ConversationWindowVersionV1,
+		ConversationSearchVersion: uvim.ConversationSearchVersionV1,
 	}
 }
 

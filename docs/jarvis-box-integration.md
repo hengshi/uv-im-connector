@@ -142,6 +142,25 @@ source-notification preparation do not request it. Window reads do not change
 Task binding, authorize another source, start background work, or create a new
 history store or per-group setting.
 
+### Candidate explicit native search (not a released Jarvis behavior)
+
+The connector also defines a candidate `conversation_search_version=v1` surface
+for a future current-Run-only CLI lookup. It is deliberately distinct from the
+automatic window: Jarvis would authenticate an internal request with the current
+Run capability, send its SHA-256 as the audience binding together with the
+persisted trigger digest, and request only local time/sender/keyword narrowing.
+Neither an Agent nor a user supplies a chat, topic, provider continuation, or
+service Bearer. A returned cursor is an opaque, short-lived connector value;
+it is invalid after a Run capability rotation and must not be placed in a
+prompt, public status, or durable Run artifact.
+
+Candidate output would identify source/provider/conversation/verified thread,
+immutable anchor, effective time bounds, and bounded scan coverage. It would
+make `none`, scan limits, cursor expiry, permission, rate and unavailable
+states explicit rather than claiming complete group-history absence. This
+document does not claim that the CLI, TaskService capability handoff, or this
+search behavior has shipped.
+
 ## Release Boundary
 
 jarvis-box does not host, spawn, or auto-update `uv-im-connector`. A connector bugfix that keeps `protocol_version` compatible is deployed by upgrading the connector service. jarvis-box needs a dependency bump and release only when it consumes new Go client/API behavior or when the connector protocol becomes incompatible with the supported protocol set.

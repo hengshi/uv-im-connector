@@ -72,6 +72,16 @@ The recent-window request and native filtering neither accept nor use `reference
 
 `available` describes one usable page; `none` means no matching item on that page, never complete-history absence. Boundary omissions with more results or a full page produce `scan_limited`; `permission_denied`, `rate_limited` and `unavailable` distinguish failures using normalized reasons rather than vendor response bodies. Callers retain explicit materials and expose missing/coverage information. Background grants no command, message binding or Task authority. This endpoint provides no received-history search, query pagination, history-media download or permanent group transcript.
 
+## Explicit native conversation search
+
+`conversation_search_version=v1` is an independent optional capability, currently implemented only by Lark/Feishu. It does not alter the four-field `conversation_window_version` request, its one-page budget, or automatic-window behavior. When the Hub service Bearer is absent, `/v1/meta` masks both capabilities. A connector without the search capability returns normalized `unsupported` only after Bearer authentication and performs no native read.
+
+`POST /v1/conversation.search` is for trusted infrastructure that has already applied its own ACL and current-Run authorization. A request carries an exact Bearer, persisted provider/connector/event/message trigger tuple, SHA-256 of the sanitized trigger, and the SHA-256 audience digest of the currently authorized Run capability. It accepts no chat, thread, path, or native `page_token`. The Hub re-proves the trigger and digest; Lark revalidates the exact native trigger, chat, time, and actual thread on every page. A rotated capability audience cannot reuse an older cursor.
+
+Filtering is local to verified scope: `from` is inclusive, `to` is exclusive and capped by the immutable anchor, sender IDs are ORed, and Unicode-lowercased keywords are ANDed substrings. Search keeps native descending time order and `page_size=1..10`, returns rows oldest-first, scans at most five source pages per call, and never merges multiple nonempty pages. It exposes only a random, short-lived Hub cursor—never a native continuation, credential, download handle, or media byte. Cursors bind trigger digest, filter/limit, verified scope, and current audience; they expire after 15 minutes or restart and cannot widen scope.
+
+Coverage reports effective requested bounds, safe scanned candidate bounds, page and candidate/match/return/boundary counts. `has_more` without `next_cursor` is permitted only at the explicit cursor metadata/chain-depth capacity boundary; other continuable `available` or `scan_limited` results must provide a Hub cursor. Unknown, malformed, or cyclic native continuations return neither rows nor cursor. Zero matches, partial scans, and capacity boundaries never claim that full group history is empty.
+
 ## Provider Capability Matrix
 
 This table covers the 16 external providers and excludes `memory`, which is used for tests and local development. `Conditional` means the adapter supports the operation when the platform condition in the last column is met.
@@ -147,6 +157,7 @@ ResourceRef
 | `POST /v1/message.create` | Send outbound message. |
 | `POST /v1/message.update` | Edit an exact connector's bot-created text message; requires capability and `MessageUpdater`. |
 | `POST /v1/conversation.window` | Read one recent native page under a persisted trigger's scope; requires Bearer authentication and optional provider capability. |
+| `POST /v1/conversation.search` | Read bounded explicit native history under the same verified trigger scope and local filters; requires Bearer, audience digest, and optional provider capability. |
 | `POST /v1/upload.create` | Create internal resource from local bytes. |
 | `POST /v1/resource.download` | Trusted request to resolve a provider-private resource into an internal resource. |
 | `POST /v1/webhook/{provider}/{connector}` | Provider webhook ingress. Webhook verification is owned by the provider adapter. |

@@ -176,6 +176,16 @@ func (c *Client) ConversationWindow(ctx context.Context, request uvim.Conversati
 	return out, c.postJSON(ctx, "/v1/conversation.window", request, &out)
 }
 
+// ConversationSearch reads a bounded, explicitly requested native-history
+// page for a retained trigger. Provider-level unavailability is represented in
+// the result; an error means the authenticated connector request failed.
+func (c *Client) ConversationSearch(ctx context.Context, request uvim.ConversationSearchRequest) (uvim.ConversationSearchResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, uvim.ConversationSearchTimeout)
+	defer cancel()
+	var out uvim.ConversationSearchResult
+	return out, c.postJSON(ctx, "/v1/conversation.search", request, &out)
+}
+
 func (c *Client) ResolveInternalURL(ctx context.Context, internalURL string) (*http.Response, error) {
 	id := strings.TrimPrefix(strings.TrimSpace(internalURL), "internal://")
 	if id == "" {

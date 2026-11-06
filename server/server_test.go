@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1060,6 +1061,205 @@ func TestHubConversationWindowUsesStrictBearerAndTrustedTrigger(t *testing.T) {
 	}
 }
 
+func TestHubConversationSearchBindsTriggerCursorAndAudience(t *testing.T) {
+	anchor := time.Date(2026, time.November, 6, 11, 0, 0, 0, time.UTC)
+	scope := uvim.ConversationSearchScope{Provider: "lark", Connector: "main", ConversationID: "oc-group", TriggerMessageID: "om-trigger", AnchorTime: anchor}
+	provider := &downloadProvider{
+		id: "lark", connector: "main", conversationSearchVersion: uvim.ConversationSearchVersionV1,
+		conversationSearchPages: []uvim.ConversationSearchPage{
+			{Status: "available", Scope: scope, CandidateCount: 2, HasMore: true, NextPageToken: "native-page-A", Candidates: []uvim.ConversationSearchCandidate{
+				{Message: uvim.ContextMessage{MessageID: "om-newer", SenderID: "ou-a", CreatedAt: anchor.Add(-time.Minute), Text: "not relevant"}, Readable: true},
+				{Message: uvim.ContextMessage{MessageID: "om-match", SenderID: "ou-a", CreatedAt: anchor.Add(-2 * time.Minute), Text: "Needle fact"}, Readable: true},
+			}},
+			{Status: "available", Scope: scope, CandidateCount: 1, Candidates: []uvim.ConversationSearchCandidate{{Message: uvim.ContextMessage{MessageID: "om-older", SenderID: "ou-b", CreatedAt: anchor.Add(-3 * time.Minute), Text: "older nonmatch"}, Readable: true}}},
+		},
+	}
+	log := mustEventLog(t, filepath.Join(t.TempDir(), "events.jsonl"))
+	hub := NewHub(uvim.NewProviderRegistry(provider), log, nil)
+	if err := hub.Emit(t.Context(), uvim.Event{ID: "evt-trigger", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-user", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-trigger", CreatedAt: anchor}, Addressed: true}); err != nil {
+		t.Fatal(err)
+	}
+	trigger, err := log.ConversationWindowTrigger(t.Context(), uvim.ConversationWindowRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-trigger", TriggerMessageID: "om-trigger"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := uvim.ConversationEventDigest(trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+
+	resp, err := http.Get(api.URL + "/v1/meta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta uvim.ServiceMeta
+	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(meta.Providers) != 1 || meta.Providers[0].Capabilities.ConversationSearchVersion != "" || meta.Providers[0].Health.Capabilities.ConversationSearchVersion != "" {
+		t.Fatalf("unauthenticated metadata exposed conversation search: %+v", meta.Providers)
+	}
+
+	hub.SetAuthToken("token")
+	c := client.New(api.URL)
+	c.Token = "token"
+	request := uvim.ConversationSearchRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-trigger", TriggerMessageID: "om-trigger", ExpectedEventDigest: digest, AudienceDigest: "capability-hash-A", Limit: 2, Filter: &uvim.ConversationSearchFilter{Keywords: []string{" needle "}}}
+	wrongDigest := request
+	wrongDigest.ExpectedEventDigest = "wrong-digest"
+	result, err := c.ConversationSearch(t.Context(), wrongDigest)
+	if err != nil || result.Status != "unavailable" || result.Reason != "trigger_unavailable" || provider.conversationSearchCalls != 0 {
+		t.Fatalf("wrong digest result=%+v calls=%d err=%v", result, provider.conversationSearchCalls, err)
+	}
+	rawUnknown, err := json.Marshal(map[string]any{"provider": "lark", "connector": "main", "trigger_event_id": "evt-trigger", "trigger_message_id": "om-trigger", "expected_event_digest": digest, "audience_digest": "capability-hash-A", "unexpected": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknownRequest, err := http.NewRequestWithContext(t.Context(), http.MethodPost, api.URL+"/v1/conversation.search", bytes.NewReader(rawUnknown))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknownRequest.Header.Set("Authorization", "Bearer token")
+	unknownResponse, err := http.DefaultClient.Do(unknownRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknownResponse.Body.Close()
+	if unknownResponse.StatusCode != http.StatusBadRequest || provider.conversationSearchCalls != 0 {
+		t.Fatalf("unknown-field status=%d calls=%d", unknownResponse.StatusCode, provider.conversationSearchCalls)
+	}
+	result, err = c.ConversationSearch(t.Context(), request)
+	if err != nil || result.Status != "available" || result.EventDigest != digest || result.Provider != "lark" || result.ConversationID != "oc-group" || len(result.Items) != 1 || result.Items[0].MessageID != "om-match" || result.NextCursor == "" || !result.HasMore || result.PageCount != 1 || result.CandidateCount != 2 || result.MatchCount != 1 || result.ReturnedCount != 1 || provider.conversationSearchCalls != 1 {
+		t.Fatalf("first search result=%+v calls=%d err=%v", result, provider.conversationSearchCalls, err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "native-page-A") {
+		t.Fatalf("native continuation leaked in result: %s", encoded)
+	}
+	bad := request
+	bad.Cursor, bad.Filter, bad.Limit, bad.AudienceDigest = result.NextCursor, nil, 0, "capability-hash-B"
+	result, err = c.ConversationSearch(t.Context(), bad)
+	if err != nil || result.Status != "unavailable" || result.Reason != "invalid_cursor" || len(result.Items) != 0 || provider.conversationSearchCalls != 1 {
+		t.Fatalf("rotated audience result=%+v calls=%d err=%v", result, provider.conversationSearchCalls, err)
+	}
+	request.Cursor, request.Filter, request.Limit = bad.Cursor, nil, 0
+	result, err = c.ConversationSearch(t.Context(), request)
+	if err != nil || result.Status != "none" || result.PageCount != 1 || result.CandidateCount != 1 || provider.conversationSearchCalls != 2 || provider.conversationSearchRequests[1].PageToken != "native-page-A" || provider.conversationSearchRequests[1].ExpectedScope == nil {
+		t.Fatalf("continuation result=%+v requests=%+v err=%v", result, provider.conversationSearchRequests, err)
+	}
+}
+
+func TestHubConversationSearchStopsAtFivePagesAndRejectsContinuationCycles(t *testing.T) {
+	anchor := time.Date(2026, time.November, 6, 12, 0, 0, 0, time.UTC)
+	scope := uvim.ConversationSearchScope{Provider: "lark", Connector: "main", ConversationID: "oc-group", TriggerMessageID: "om-trigger", AnchorTime: anchor}
+	pages := make([]uvim.ConversationSearchPage, 0, conversationSearchMaxPages)
+	for index := 0; index < conversationSearchMaxPages; index++ {
+		pages = append(pages, uvim.ConversationSearchPage{Status: "available", Scope: scope, CandidateCount: 1, HasMore: true, NextPageToken: "native-page-" + strconv.Itoa(index), Candidates: []uvim.ConversationSearchCandidate{{Message: uvim.ContextMessage{MessageID: "om-" + strconv.Itoa(index), CreatedAt: anchor.Add(-time.Duration(index+1) * time.Minute), Text: "ordinary context"}, Readable: true}}})
+	}
+	provider := &downloadProvider{id: "lark", connector: "main", conversationSearchVersion: uvim.ConversationSearchVersionV1, conversationSearchPages: pages}
+	c, closeAPI, request, _ := newConversationSearchTestClient(t, provider, anchor)
+	defer closeAPI()
+	request.Limit = 1
+	request.Filter = &uvim.ConversationSearchFilter{Keywords: []string{"needle"}}
+	result, err := c.ConversationSearch(t.Context(), request)
+	if err != nil || result.Status != "scan_limited" || result.Reason != "search_scan_limited" || !result.HasMore || result.NextCursor == "" || result.PageCount != conversationSearchMaxPages || result.CandidateCount != conversationSearchMaxPages || result.MatchCount != 0 || provider.conversationSearchCalls != conversationSearchMaxPages {
+		t.Fatalf("five-page result=%+v calls=%d err=%v", result, provider.conversationSearchCalls, err)
+	}
+	if strings.Contains(result.NextCursor, "native-page") {
+		t.Fatalf("native continuation leaked as cursor=%q", result.NextCursor)
+	}
+
+	cycleProvider := &downloadProvider{id: "lark", connector: "main", conversationSearchVersion: uvim.ConversationSearchVersionV1, conversationSearchPages: []uvim.ConversationSearchPage{
+		{Status: "available", Scope: scope, CandidateCount: 1, HasMore: true, NextPageToken: "A", Candidates: []uvim.ConversationSearchCandidate{{Message: uvim.ContextMessage{MessageID: "cycle-1", CreatedAt: anchor.Add(-time.Minute), Text: "ordinary"}, Readable: true}}},
+		{Status: "available", Scope: scope, CandidateCount: 1, HasMore: true, NextPageToken: "B", Candidates: []uvim.ConversationSearchCandidate{{Message: uvim.ContextMessage{MessageID: "cycle-2", CreatedAt: anchor.Add(-2 * time.Minute), Text: "ordinary"}, Readable: true}}},
+		{Status: "available", Scope: scope, CandidateCount: 1, HasMore: true, NextPageToken: "A", Candidates: []uvim.ConversationSearchCandidate{{Message: uvim.ContextMessage{MessageID: "cycle-3", CreatedAt: anchor.Add(-3 * time.Minute), Text: "ordinary"}, Readable: true}}},
+	}}
+	cycleClient, closeCycleAPI, cycleRequest, _ := newConversationSearchTestClient(t, cycleProvider, anchor)
+	defer closeCycleAPI()
+	cycleRequest.Limit = 1
+	cycleRequest.Filter = &uvim.ConversationSearchFilter{Keywords: []string{"needle"}}
+	result, err = cycleClient.ConversationSearch(t.Context(), cycleRequest)
+	if err != nil || result.Status != "unavailable" || result.Reason != "native_unavailable" || len(result.Items) != 0 || result.NextCursor != "" || cycleProvider.conversationSearchCalls != 3 {
+		t.Fatalf("cycle result=%+v calls=%d err=%v", result, cycleProvider.conversationSearchCalls, err)
+	}
+}
+
+func TestConversationSearchCursorBoundsAndUnsupportedProvider(t *testing.T) {
+	anchor := time.Date(2026, time.November, 6, 13, 0, 0, 0, time.UTC)
+	hub := NewHub(nil, nil, nil)
+	expired := conversationSearchCursor{IssuedAt: time.Now().UTC().Add(-conversationSearchCursorTTL - time.Second)}
+	hub.searchCursors["expired"] = expired
+	if cursor, reason := hub.conversationSearchCursor(uvim.ConversationSearchRequest{Cursor: "expired"}); cursor != nil || reason != "cursor_expired" {
+		t.Fatalf("expired cursor=%+v reason=%q", cursor, reason)
+	}
+	hashes := make([]string, conversationSearchCursorCapacity-1)
+	for index := range hashes {
+		hashes[index] = conversationSearchTokenHash("old-" + strconv.Itoa(index))
+	}
+	status, cursor := hub.newConversationSearchCursor(uvim.ConversationSearchRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om", ExpectedEventDigest: "digest", AudienceDigest: "audience"}, conversationSearchFilter{To: anchor}, 1, uvim.ConversationSearchScope{Provider: "lark", Connector: "main", ConversationID: "oc", TriggerMessageID: "om", AnchorTime: anchor}, "next", hashes)
+	if status != "cursor_capacity_limited" || cursor != "" {
+		t.Fatalf("cursor depth status=%q cursor=%q", status, cursor)
+	}
+	// A retained chain near its bound must also stop while skipping a filtered
+	// page, before another native read can return material past that bound.
+	scope := uvim.ConversationSearchScope{Provider: "lark", Connector: "main", ConversationID: "oc-group", TriggerMessageID: "om-trigger", AnchorTime: anchor}
+	depthProvider := &downloadProvider{id: "lark", connector: "main", conversationSearchVersion: uvim.ConversationSearchVersionV1, conversationSearchPages: []uvim.ConversationSearchPage{
+		{Status: "available", Scope: scope, CandidateCount: 1, HasMore: true, NextPageToken: "beyond-depth", Candidates: []uvim.ConversationSearchCandidate{{Message: uvim.ContextMessage{MessageID: "unmatched-at-depth", CreatedAt: anchor.Add(-time.Minute), Text: "ordinary"}, Readable: true}}},
+		{Status: "available", Scope: scope, CandidateCount: 1, Candidates: []uvim.ConversationSearchCandidate{{Message: uvim.ContextMessage{MessageID: "forbidden-after-depth", CreatedAt: anchor.Add(-2 * time.Minute), Text: "needle"}, Readable: true}}},
+	}}
+	depthClient, closeDepth, depthRequest, depthHub := newConversationSearchTestClient(t, depthProvider, anchor)
+	defer closeDepth()
+	depthFilter, err := canonicalConversationSearchFilter(&uvim.ConversationSearchFilter{Keywords: []string{"needle"}}, anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, cursor = depthHub.newConversationSearchCursor(depthRequest, depthFilter, 1, scope, "at-depth", hashes[:len(hashes)-1])
+	if status != "" || cursor == "" {
+		t.Fatalf("prepare depth continuation: status=%q", status)
+	}
+	depthRequest.Cursor = cursor
+	depthResult, err := depthClient.ConversationSearch(t.Context(), depthRequest)
+	if err != nil || depthResult.Status != "scan_limited" || depthResult.Reason != "cursor_capacity_limited" || !depthResult.HasMore || depthResult.NextCursor != "" || len(depthResult.Items) != 0 || depthResult.PageCount != 1 || depthProvider.conversationSearchCalls != 1 {
+		t.Fatalf("skip past depth: result=%+v calls=%d err=%v", depthResult, depthProvider.conversationSearchCalls, err)
+	}
+
+	provider := &downloadProvider{id: "memory", connector: "main"}
+	c, closeAPI, request, _ := newConversationSearchTestClient(t, provider, anchor)
+	defer closeAPI()
+	result, err := c.ConversationSearch(t.Context(), request)
+	if err != nil || result.Status != "unavailable" || result.Reason != "unsupported" || provider.conversationSearchCalls != 0 {
+		t.Fatalf("unsupported result=%+v calls=%d err=%v", result, provider.conversationSearchCalls, err)
+	}
+}
+
+func newConversationSearchTestClient(t *testing.T, provider *downloadProvider, anchor time.Time) (*client.Client, func(), uvim.ConversationSearchRequest, *Hub) {
+	t.Helper()
+	log := mustEventLog(t, filepath.Join(t.TempDir(), "events.jsonl"))
+	hub := NewHub(uvim.NewProviderRegistry(provider), log, nil)
+	if err := hub.Emit(t.Context(), uvim.Event{ID: "evt-trigger", Type: uvim.EventMessageCreate, Provider: provider.id, Connector: provider.connector, Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-user", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-trigger", CreatedAt: anchor}, Addressed: true}); err != nil {
+		t.Fatal(err)
+	}
+	trigger, err := log.ConversationWindowTrigger(t.Context(), uvim.ConversationWindowRequest{Provider: provider.id, Connector: provider.connector, TriggerEventID: "evt-trigger", TriggerMessageID: "om-trigger"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := uvim.ConversationEventDigest(trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.SetAuthToken("token")
+	api := httptest.NewServer(hub.Handler())
+	c := client.New(api.URL)
+	c.Token = "token"
+	return c, api.Close, uvim.ConversationSearchRequest{Provider: provider.id, Connector: provider.connector, TriggerEventID: "evt-trigger", TriggerMessageID: "om-trigger", ExpectedEventDigest: digest, AudienceDigest: "audience"}, hub
+}
+
 func TestHubWebhookRoutesToProviderAndStoresEvent(t *testing.T) {
 	dir := t.TempDir()
 	provider, err := slack.New(slack.Config{WebhookSecret: "secret"})
@@ -1450,13 +1650,17 @@ func mustEventLog(t *testing.T, path string) *uvim.EventLog {
 }
 
 type downloadProvider struct {
-	id                        string
-	connector                 string
-	sendErr                   error
-	conversationWindowVersion string
-	conversationWindowResult  uvim.ConversationWindowResult
-	conversationWindowCalls   int
-	conversationWindowTrigger uvim.Event
+	id                         string
+	connector                  string
+	sendErr                    error
+	conversationWindowVersion  string
+	conversationWindowResult   uvim.ConversationWindowResult
+	conversationWindowCalls    int
+	conversationWindowTrigger  uvim.Event
+	conversationSearchVersion  string
+	conversationSearchPages    []uvim.ConversationSearchPage
+	conversationSearchCalls    int
+	conversationSearchRequests []uvim.ConversationSearchPageRequest
 }
 
 func (p *downloadProvider) ID() string          { return p.id }
@@ -1471,6 +1675,7 @@ func (p *downloadProvider) Capabilities() uvim.Capabilities {
 		DownloadResource:          true,
 		ResourceKinds:             []string{uvim.ElementFile},
 		ConversationWindowVersion: p.conversationWindowVersion,
+		ConversationSearchVersion: p.conversationSearchVersion,
 	}
 }
 func (p *downloadProvider) Run(ctx context.Context, sink uvim.EventSink) error {
@@ -1492,6 +1697,15 @@ func (p *downloadProvider) ReadConversationWindow(_ context.Context, trigger uvi
 	p.conversationWindowCalls++
 	p.conversationWindowTrigger = trigger
 	return p.conversationWindowResult
+}
+func (p *downloadProvider) ReadConversationSearchPage(_ context.Context, request uvim.ConversationSearchPageRequest) uvim.ConversationSearchPage {
+	p.conversationSearchRequests = append(p.conversationSearchRequests, request)
+	index := p.conversationSearchCalls
+	p.conversationSearchCalls++
+	if index >= len(p.conversationSearchPages) {
+		return uvim.ConversationSearchPage{Status: "unavailable", Reason: "native_unavailable"}
+	}
+	return p.conversationSearchPages[index]
 }
 func (p *downloadProvider) Health(context.Context) uvim.Health {
 	return uvim.Health{Provider: p.id, Connector: p.connector, State: "ok", CheckedAt: time.Now().UTC(), Capabilities: p.Capabilities()}

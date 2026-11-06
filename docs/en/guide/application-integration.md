@@ -101,6 +101,24 @@ Stable `category` values are `invalid-request`, `authentication`, `permission`, 
 
 Callers should not call provider-native send APIs directly. Provider-specific send behavior belongs in provider adapters.
 
+## Candidate explicit native conversation search
+
+`conversation_search_version=v1` is a candidate, trusted-infrastructure-only
+surface for a future current-Run lookup. It is separate from the automatic
+conversation window. A caller would send the persisted trigger tuple and
+sanitized-trigger digest, plus the SHA-256 audience digest of its currently
+authorized Run capability. Agents and users never choose chat/thread scope,
+native page tokens, or the connector service Bearer.
+
+The connector would return only an opaque, short-lived Hub cursor. It is bound
+to the verified trigger, local filters, verified native scope, and current
+capability audience; a capability rotation invalidates it. Candidate output
+would report native provenance, immutable anchor, effective bounds, and bounded
+scan coverage so that `none`, partial scans, expiry, permission/rate limits, and
+unavailability are not represented as complete-history absence. This document
+does not claim that the associated caller CLI or TaskService handoff has
+shipped.
+
 ## Complete text, reply streams, and editing
 
 `capabilities.text_max_bytes` bounds normalized UTF-8 text bytes per send or edit, including visible prefixes and formatting added by the caller. WeCom declares 20480 bytes for [passive stream](https://developer.work.weixin.qq.com/document/path/101031) `stream.content` and [long-connection proactive](https://developer.work.weixin.qq.com/document/path/101463) `markdown.content`, and validates it before upload or send. Oversized text returns `category=payload-too-large`, `delivery_state=not-attempted`, and a safe detail containing the exact limit. Zero or an absent field means unknown. Lark's native limits apply to serialized request bodies and cannot be declared accurately as a fixed raw UTF-8 text budget, so its `text_max_bytes` remains unknown and the native API validates the request body. The connector does not truncate or paginate; callers should page complete logical content and use a supported file resource when further pages cannot legally be sent.

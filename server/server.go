@@ -30,9 +30,11 @@ type Hub struct {
 	identityMapper *uvim.UserIdentityMapper
 	identityLinks  *identityLinks
 
-	mu          sync.Mutex
-	subscribers map[chan uvim.Event]struct{}
-	upgrader    websocket.Upgrader
+	mu            sync.Mutex
+	subscribers   map[chan uvim.Event]struct{}
+	upgrader      websocket.Upgrader
+	searchMu      sync.Mutex
+	searchCursors map[string]conversationSearchCursor
 }
 
 func NewHub(registry *uvim.ProviderRegistry, eventLog *uvim.EventLog, resources *uvim.ResourceStore) *Hub {
@@ -46,11 +48,12 @@ func NewHub(registry *uvim.ProviderRegistry, eventLog *uvim.EventLog, resources 
 		resources = &uvim.ResourceStore{}
 	}
 	hub := &Hub{
-		registry:    registry,
-		eventLog:    eventLog,
-		resources:   resources,
-		subscribers: map[chan uvim.Event]struct{}{},
-		upgrader:    websocket.Upgrader{},
+		registry:      registry,
+		eventLog:      eventLog,
+		resources:     resources,
+		subscribers:   map[chan uvim.Event]struct{}{},
+		searchCursors: map[string]conversationSearchCursor{},
+		upgrader:      websocket.Upgrader{},
 	}
 	hub.upgrader.CheckOrigin = hub.checkOrigin
 	return hub
@@ -146,6 +149,7 @@ func (h *Hub) Handler() http.Handler {
 	mux.HandleFunc("/v1/message.create", h.handleMessageCreate)
 	mux.HandleFunc("/v1/message.update", h.handleMessageUpdate)
 	mux.HandleFunc("/v1/conversation.window", h.handleConversationWindow)
+	mux.HandleFunc("/v1/conversation.search", h.handleConversationSearch)
 	mux.HandleFunc("/v1/identity.link", h.handleIdentity)
 	mux.HandleFunc("/v1/identity.resolve", h.handleIdentity)
 	mux.HandleFunc("/v1/identity.unlink", h.handleIdentity)
@@ -175,7 +179,9 @@ func (h *Hub) handleMeta(w http.ResponseWriter, req *http.Request) {
 		health := provider.Health(req.Context())
 		if strings.TrimSpace(h.authToken) == "" {
 			capabilities.ConversationWindowVersion = ""
+			capabilities.ConversationSearchVersion = ""
 			health.Capabilities.ConversationWindowVersion = ""
+			health.Capabilities.ConversationSearchVersion = ""
 		}
 		providers = append(providers, uvim.ProviderMeta{
 			Provider:     provider.ID(),

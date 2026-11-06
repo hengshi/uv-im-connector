@@ -187,6 +187,29 @@ func TestConversationWindowUsesTypedAuthenticatedRoute(t *testing.T) {
 	}
 }
 
+func TestConversationSearchUsesTypedAuthenticatedRoute(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost || req.URL.Path != "/v1/conversation.search" || req.Header.Get("Authorization") != "Bearer token" {
+			t.Errorf("request=%s %s authorization=%q", req.Method, req.URL.Path, req.Header.Get("Authorization"))
+		}
+		var input uvim.ConversationSearchRequest
+		if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+			t.Error(err)
+		}
+		if input.Provider != "lark" || input.Connector != "main" || input.TriggerEventID != "evt" || input.TriggerMessageID != "om" || input.ExpectedEventDigest != "event-sha" || input.AudienceDigest != "cap-sha" || input.Filter != nil || input.Limit != 0 || input.Cursor != "cursor" {
+			t.Errorf("input=%+v", input)
+		}
+		_ = json.NewEncoder(w).Encode(uvim.ConversationSearchResult{Version: uvim.ConversationSearchVersionV1, Source: "native", Status: "none", EventDigest: "event-sha"})
+	}))
+	defer api.Close()
+	c := New(api.URL)
+	c.Token = "token"
+	result, err := c.ConversationSearch(t.Context(), uvim.ConversationSearchRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om", ExpectedEventDigest: "event-sha", AudienceDigest: "cap-sha", Cursor: "cursor"})
+	if err != nil || result.Version != uvim.ConversationSearchVersionV1 || result.Status != "none" || result.EventDigest != "event-sha" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
 func TestUpdatePreservesExactMessageAndFailureFacts(t *testing.T) {
 	for _, status := range []int{200, 502, 404} {
 		t.Run(http.StatusText(status), func(t *testing.T) {

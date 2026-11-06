@@ -745,6 +745,68 @@ func TestNativeWindowFailureNormalizesKnownCodes(t *testing.T) {
 	}
 }
 
+func TestReadConversationSearchPageUsesVerifiedScopeAndPrivateContinuation(t *testing.T) {
+	var lists int
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+		case "/open-apis/im/v1/messages/current":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []any{map[string]any{"message_id": "current", "chat_id": "group", "thread_id": "topic", "create_time": "10001", "msg_type": "text", "body": map[string]any{"content": `{"text":"current"}`}}}}})
+		case "/open-apis/im/v1/messages":
+			lists++
+			query := req.URL.Query()
+			if req.Header.Get("Authorization") != "Bearer token" || query.Get("container_id_type") != "thread" || query.Get("container_id") != "topic" || query.Get("page_size") != "2" || query.Get("sort_type") != "ByCreateTimeDesc" {
+				t.Errorf("native search query=%v authorization=%q", query, req.Header.Get("Authorization"))
+			}
+			if lists == 1 {
+				if query.Get("page_token") != "" {
+					t.Errorf("first page token=%q", query.Get("page_token"))
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"has_more": true, "page_token": "native-next-secret", "items": []any{
+					map[string]any{"message_id": "current", "chat_id": "group", "thread_id": "topic", "create_time": "10001", "msg_type": "text", "body": map[string]any{"content": `{"text":"trigger"}`}},
+					map[string]any{"message_id": "older", "chat_id": "group", "thread_id": "topic", "create_time": "10000", "msg_type": "text", "sender": map[string]any{"id": "ou-older", "id_type": "open_id", "sender_type": "user"}, "body": map[string]any{"content": `{"text":"needle fact"}`}},
+				}}})
+				return
+			}
+			if lists == 2 {
+				if query.Get("page_token") != "native-next-secret" {
+					t.Errorf("second page token=%q", query.Get("page_token"))
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []any{map[string]any{"message_id": "oldest", "chat_id": "group", "thread_id": "topic", "create_time": "9999", "msg_type": "text", "body": map[string]any{"content": `{"text":"older fact"}`}}}}})
+				return
+			}
+			if lists == 3 {
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"has_more": true, "items": []any{map[string]any{"message_id": "malformed", "chat_id": "group", "thread_id": "topic", "create_time": "9998", "msg_type": "text", "body": map[string]any{"content": `{"text":"must not publish"}`}}}}})
+				return
+			}
+			t.Errorf("unexpected list request %d", lists)
+		default:
+			t.Errorf("unexpected native search request %s", req.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer api.Close()
+	provider, err := New(Config{ConnectorID: "main", AppID: "app", AppSecret: "secret", BaseURL: api.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := time.UnixMilli(10001).UTC()
+	trigger := uvim.Event{Provider: "lark", Connector: "main", Login: uvim.Login{Platform: "lark", Connector: "main", ID: "app"}, Channel: uvim.Channel{ID: "group", Type: uvim.ChannelGroup}, Message: uvim.Message{ID: "current", CreatedAt: anchor}, Referrer: uvim.Referrer{MessageID: "current", ChannelID: "group"}}
+	first := provider.ReadConversationSearchPage(t.Context(), uvim.ConversationSearchPageRequest{Trigger: trigger, Limit: 2})
+	if first.Status != "available" || first.Scope.ThreadID != "topic" || first.Scope.ConversationID != "group" || !first.HasMore || first.NextPageToken != "native-next-secret" || first.CandidateCount != 2 || first.BoundaryOmitted != 1 || len(first.Candidates) != 1 || first.Candidates[0].Message.MessageID != "older" || !first.Candidates[0].Readable {
+		t.Fatalf("first search page=%+v", first)
+	}
+	second := provider.ReadConversationSearchPage(t.Context(), uvim.ConversationSearchPageRequest{Trigger: trigger, Limit: 2, PageToken: first.NextPageToken, ExpectedScope: &first.Scope})
+	if second.Status != "available" || second.HasMore || second.NextPageToken != "" || len(second.Candidates) != 1 || second.Candidates[0].Message.MessageID != "oldest" || lists != 2 {
+		t.Fatalf("second search page=%+v lists=%d", second, lists)
+	}
+	malformed := provider.ReadConversationSearchPage(t.Context(), uvim.ConversationSearchPageRequest{Trigger: trigger, Limit: 2, PageToken: "unexpected", ExpectedScope: &first.Scope})
+	if malformed.Status != "unavailable" || malformed.Reason != "native_unavailable" || len(malformed.Candidates) != 0 || malformed.NextPageToken != "" || lists != 3 {
+		t.Fatalf("malformed continuation page=%+v lists=%d", malformed, lists)
+	}
+}
+
 func TestReadConversationWindowUsesCeilingBoundaryForChat(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {

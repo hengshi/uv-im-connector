@@ -72,6 +72,16 @@ WeCom 的可选企业身份查询在事件发送 worker 中完成；应用 token
 
 `available` 只说明该页可用，`none` 是该页无符合项，不能宣称完整历史。时间边界排除且还有更多或页面已满时用 `scan_limited`；`permission_denied`、`rate_limited`、`unavailable` 分别表示拒读、限流与不可用，原因经过归一化，不返回原生错误正文。调用方保留显式材料并显示缺失/覆盖说明，不将背景当作新指令、引用绑定或 Task 权限。该接口不提供 received 历史搜索、分页检索、历史媒体下载或全群转录。
 
+## 显式原生会话搜索
+
+`conversation_search_version=v1` 是独立的可选能力，目前只由 Lark/Feishu 提供。它不改变 `conversation_window_version` 的四字段请求、单页预算或自动调用行为。Hub 未配置服务 Bearer 时，`/v1/meta` 同时隐藏两个能力；未声明搜索能力的 connector 在通过 Bearer 认证后仅返回规范化 `unsupported`，不读取原生历史。
+
+`POST /v1/conversation.search` 仅供已完成自身 ACL 和当前 Run 授权的可信基础设施调用。请求必须带精确 Bearer、已持久触发的 provider/connector/event/message 元组、该脱敏触发事件的 SHA-256 摘要及当前 Run capability 的 SHA-256 audience 摘要；不接受 chat、thread、路径或原生 `page_token`。Hub 重新证明触发和摘要后，Lark 每次重新核对原生触发、chat、时间及真实话题；令牌轮换后的 audience 不能重用旧 cursor。
+
+筛选仅在已验证 scope 内本地执行：`from` 包含、`to` 排除且不得晚于不可变锚点，sender 为 OR，keywords 为 Unicode 小写后的 AND 子串。搜索固定原生时间倒序和 `page_size=1..10`，输出按时间正序；每次至多扫描五页，首次含匹配的页面不会和其他非空页面合并。结果只暴露 Hub 的随机短期 cursor，绝不暴露原生 continuation、凭据、下载句柄或媒体字节。cursor 绑定触发摘要、过滤器/limit、scope 和当前 audience；15 分钟后或重启失效，过滤器不能借 continuation 扩大范围。
+
+覆盖字段记录有效请求时间和实际扫描的安全候选时间区间、页数、候选/匹配/返回/边界省略计数。`has_more` 而没有 `next_cursor` 只表示明确的 cursor 元数据/链深度容量边界；其余可继续的 `available` 或 `scan_limited` 结果必须有 Hub cursor。未知、错误、循环或畸形 continuation 均不返回行或 cursor；零匹配、部分扫描和容量边界均不得表述为完整群历史为空。
+
 ## Provider 能力矩阵
 
 下表只列 16 个外部 provider，不包含用于测试和本地开发的 `memory`。`有条件` 表示 adapter 已支持该操作，但必须满足“限制”列的平台条件。
@@ -147,6 +157,7 @@ ResourceRef
 | `POST /v1/message.create` | 发送出站消息。 |
 | `POST /v1/message.update` | 编辑精确 connector 的本 bot 文本消息，需能力和 `MessageUpdater` 实现。 |
 | `POST /v1/conversation.window` | 在已持久触发的原生 scope 下读取单页近期背景；强制 Bearer 认证及可选 provider 能力。 |
+| `POST /v1/conversation.search` | 在同一已验证触发 scope 下按本地筛选读取有限的显式原生历史；强制 Bearer、audience 摘要和可选 provider 能力。 |
 | `POST /v1/upload.create` | 从本地字节创建内部资源。 |
 | `POST /v1/resource.download` | 可信请求：把 provider-private resource 解析为内部资源。 |
 | `POST /v1/webhook/{provider}/{connector}` | Provider webhook ingress。Webhook verification 由 provider adapter 负责。 |

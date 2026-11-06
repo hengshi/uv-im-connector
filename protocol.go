@@ -302,6 +302,10 @@ type Capabilities struct {
 	// authenticated bounded conversation-window read. An empty value means the
 	// adapter cannot provide background conversation material.
 	ConversationWindowVersion string `json:"conversation_window_version,omitempty"`
+	// ConversationSearchVersion is advertised only by providers with a native,
+	// authenticated paginated conversation search. An empty value means that
+	// the adapter cannot provide the explicit, bounded history reader.
+	ConversationSearchVersion string `json:"conversation_search_version,omitempty"`
 }
 
 type OutboundTarget struct {
