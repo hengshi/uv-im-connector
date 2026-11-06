@@ -16,12 +16,13 @@ const (
 )
 
 // quotedMessageAncestors follows only native parent_id values from the
-// selected, validated quote. It produces reference text only: ancestor files
-// remain descriptors because the Hub eagerly downloads every flat resource.
-func (p *Provider) quotedMessageAncestors(ctx context.Context, token string, selected quotedMessageItem, triggerID, chatID string) string {
+// selected, validated quote. IDs identify only complete ancestor nodes actually
+// appended to the returned reference text; ancestor files remain descriptors
+// because the Hub eagerly downloads every flat resource.
+func (p *Provider) quotedMessageAncestors(ctx context.Context, token string, selected quotedMessageItem, triggerID, chatID string) (string, []string) {
 	nextID := strings.TrimSpace(selected.ParentID)
 	if nextID == "" {
-		return ""
+		return "", nil
 	}
 
 	chainCtx, cancel := context.WithTimeout(ctx, quotedMessageAncestorTimeout)
@@ -33,6 +34,7 @@ func (p *Provider) quotedMessageAncestors(ctx context.Context, token string, sel
 	var rendered strings.Builder
 	rendered.WriteString("\nEarlier replies (newest to oldest; media descriptions only):\n")
 	usedBytes := 0
+	var ids []string
 
 	for reads := 0; nextID != ""; {
 		if seen[nextID] {
@@ -82,10 +84,11 @@ func (p *Provider) quotedMessageAncestors(ctx context.Context, token string, sel
 		}
 		rendered.WriteString(node)
 		usedBytes += len(node)
+		ids = append(ids, ancestor.ID)
 		seen[ancestor.ID] = true
 		nextID = strings.TrimSpace(ancestor.ParentID)
 	}
-	return rendered.String()
+	return rendered.String(), ids
 }
 
 func quotedMessageAncestorLookupStatus(ctx context.Context, err error) string {

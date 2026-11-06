@@ -40,7 +40,7 @@ WeCom、Lark WebSocket 断线及 DingTalk Stream 首次启动失败由共享监�
 - `Event`：入站事件 envelope，包含 provider、connector、channel、user、message 和 referrer。
 - `User.Identities`：带类型、作用域和来源的账户身份，详见 [用户身份与原生地址](./identities.md)；与会话、发送地址分别建模。
 - `Message`：文本、结构化 elements 和 resource references。
-- `ResourceRef`：文件 / 图片 / 音频 / 视频引用，包含 sanitized internal URL 和 provider-private 字段；可选 `source_message_id` 保留显式引用材料的消息来源，不赋予任务或执行权限。
+- `ResourceRef`：文件 / 图片 / 音频 / 视频引用，包含 sanitized internal URL 和 provider-private 字段；可选 `source_message_id` 保留显式引用材料的消息来源；成功的合成引用上下文可选 `referenced_message_ids` 标识其中实际交付的祖先材料。两者都不赋予任务、访问或执行权限。
 - `OutboundMessage`：显式 `target`、text/elements/resources，以及用于 reply/thread 的可选 referrer。
 - `MessageUpdate`：嵌入 `OutboundMessage`，顶层 `message_id` 指定本 bot 已发送的精确消息，只替换文本。
 - `SendResult`：已发消息 ID，及 provider 已确认时的 `publications` native 定位符；定位符不是由收件人地址推测出来的。
@@ -67,6 +67,8 @@ WeCom 的可选企业身份查询在事件发送 worker 中完成；应用 token
 请求仅含 `provider`、`connector`、`trigger_event_id`、`trigger_message_id`，不接受会话、话题、时间或路径覆盖。Hub 只在事件日志尾部 64 MiB、最后 10,000 条记录内核对同一已持久化、被唤起的群触发消息；缺失、损坏或身份冲突时不访问原生历史。事件日志用于触发证明，不是历史来源，也不建立另一份正文索引。Lark 再以当前 bot 权限读取精确触发消息，核对会话、时间和真实 `thread_id`；root/parent 不提供话题证明。
 
 随后只取原生接口的一页、至多 10 个候选，固定倒序查询，再按时间顺序返回严格早于触发的同群/同话题消息。触发本身、明确父引用、同时间与未来项、重复、删除、错误 scope 及 app 卡片被排除；话题失败不退回全群，不翻页或重试。自动元数据读取总期限为 5 秒，不限制显式附件下载。结果 `version=v1` 含来源、状态、scope、锚点、候选数量、边界省略数、`has_more` 及消息的原生身份/时间/可读正文。背景资源只返回 kind/name 描述，不含下载 key、URL、资源句柄或文件字节；图文复用引用的可读表示，转发不递归展开。
+
+近期窗口的请求和原生筛选不接收也不使用 `referenced_message_ids`。调用方若在自己的已准备引用材料中避免重复，只能在已取得准确的 `quoted-message.txt` 字节、并与同一脱敏 `ResourceRef.sha256` 核验一致后，将列表中的精确 ID 从已验证的窗口结果移除；不得按正文、文件名或位置 ID 推断。该列表没有访问或 Task 权限，缺少、错误或未验证时必须保留窗口项。调用方局部移除后若该页没有剩余项，可将其本地参考表述为 `none`，但不得改变原始候选数量、边界省略数、`has_more` 或 `scan_limited`，也不得翻页、重试或扩大原生读取。
 
 `available` 只说明该页可用，`none` 是该页无符合项，不能宣称完整历史。时间边界排除且还有更多或页面已满时用 `scan_limited`；`permission_denied`、`rate_limited`、`unavailable` 分别表示拒读、限流与不可用，原因经过归一化，不返回原生错误正文。调用方保留显式材料并显示缺失/覆盖说明，不将背景当作新指令、引用绑定或 Task 权限。该接口不提供 received 历史搜索、分页检索、历史媒体下载或全群转录。
 

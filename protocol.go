@@ -13,6 +13,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -230,25 +231,30 @@ type ResourceRef struct {
 	// referenced message belongs to this connector's own bot application.
 	// It can prevent unsafe fallback for an unindexed bot reply, never grant
 	// access to a Task or stand in for a confirmed publication locator.
-	SourceBotAppID string            `json:"source_bot_app_id,omitempty"`
-	ID             string            `json:"id,omitempty"`
-	Provider       string            `json:"provider,omitempty"`
-	Connector      string            `json:"connector,omitempty"`
-	Kind           string            `json:"kind,omitempty"`
-	Name           string            `json:"name,omitempty"`
-	Key            string            `json:"key,omitempty"`
-	URL            string            `json:"url,omitempty"`
-	InternalURL    string            `json:"internal_url,omitempty"`
-	MIME           string            `json:"mime,omitempty"`
-	SizeBytes      int64             `json:"size_bytes,omitempty"`
-	SHA256         string            `json:"sha256,omitempty"`
-	Error          string            `json:"error,omitempty"`
-	Secret         string            `json:"-"`
-	Private        map[string]string `json:"-"`
-	Metadata       map[string]string `json:"metadata,omitempty"`
+	SourceBotAppID string `json:"source_bot_app_id,omitempty"`
+	// ReferencedMessageIDs identifies only accepted ancestor nodes rendered into
+	// a successful synthetic quote context. It is descriptive material identity,
+	// never a resource locator, access grant, or Task authority.
+	ReferencedMessageIDs []string          `json:"referenced_message_ids,omitempty"`
+	ID                   string            `json:"id,omitempty"`
+	Provider             string            `json:"provider,omitempty"`
+	Connector            string            `json:"connector,omitempty"`
+	Kind                 string            `json:"kind,omitempty"`
+	Name                 string            `json:"name,omitempty"`
+	Key                  string            `json:"key,omitempty"`
+	URL                  string            `json:"url,omitempty"`
+	InternalURL          string            `json:"internal_url,omitempty"`
+	MIME                 string            `json:"mime,omitempty"`
+	SizeBytes            int64             `json:"size_bytes,omitempty"`
+	SHA256               string            `json:"sha256,omitempty"`
+	Error                string            `json:"error,omitempty"`
+	Secret               string            `json:"-"`
+	Private              map[string]string `json:"-"`
+	Metadata             map[string]string `json:"metadata,omitempty"`
 }
 
 func (r ResourceRef) Sanitized() ResourceRef {
+	r.ReferencedMessageIDs = slices.Clone(r.ReferencedMessageIDs)
 	r.Key = ""
 	r.URL = ""
 	r.Secret = ""

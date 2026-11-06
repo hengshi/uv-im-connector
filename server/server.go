@@ -12,6 +12,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -697,6 +698,7 @@ func sameResourceDescriptor(a, b uvim.ResourceRef) bool {
 		a.InternalURL == b.InternalURL && a.MIME == b.MIME && a.SizeBytes == b.SizeBytes &&
 		a.SHA256 == b.SHA256 && a.Error == b.Error &&
 		a.SourceMessageID == b.SourceMessageID && a.SourceBotAppID == b.SourceBotAppID &&
+		slices.Equal(a.ReferencedMessageIDs, b.ReferencedMessageIDs) &&
 		a.Secret == b.Secret && maps.Equal(a.Private, b.Private) && maps.Equal(a.Metadata, b.Metadata)
 }
 

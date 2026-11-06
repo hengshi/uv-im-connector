@@ -68,6 +68,17 @@ normalized `quoted_message_*` error; a file download failure remains
 than reporting that the user supplied no attachment. Existing clients can consume
 this through the resource protocol without gaining provider credentials.
 
+A successfully prepared `quoted-message.txt` can carry optional
+`referenced_message_ids`: only exact native IDs of complete earlier-reply nodes
+actually rendered in that context file. It is producer-side material identity,
+not a resource locator, access grant, message binding or Task authority. Jarvis
+may omit exact matching native-window items only after it has obtained that exact
+context attachment for the current Run and verified its bytes against the same
+sanitized `ResourceRef.sha256`, while also retaining the resource's event,
+provider, connector and explicit-parent correspondence. Missing, legacy, errored
+or unverified provenance leaves background candidates unchanged and never blocks
+the Turn.
+
 Lark `folder` messages are recognized as file resources, including when quoted.
 Recognition does not guarantee that Lark's resource API can download the folder.
 If it fails, the context identifies the original folder and asks for a ZIP archive
@@ -121,9 +132,13 @@ The Lark reader verifies the native trigger and uses its real thread identity,
 then returns one time-anchored page with sanitized text, sender/time provenance,
 coverage and media descriptors. It never downloads background media. Jarvis
 keeps a bounded reference file in the selected Run rather than putting history
-arrays into the current command. A denied, limited or unavailable window stays
-visible and does not block explicit materials. Direct/control/unaddressed inputs
-and source-notification preparation do not request it. Window reads do not change
+arrays into the current command. After verified local composition removes every
+item already rendered by a verified quote context, its local reference may say
+`none`; the native candidate count, boundary omissions, `has_more` and any
+`scan_limited` condition remain unchanged, and Jarvis does not refill, paginate,
+retry or widen the query. A denied, limited or unavailable window stays visible
+and does not block explicit materials. Direct/control/unaddressed inputs and
+source-notification preparation do not request it. Window reads do not change
 Task binding, authorize another source, start background work, or create a new
 history store or per-group setting.
 

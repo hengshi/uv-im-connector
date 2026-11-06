@@ -104,7 +104,9 @@ func (p *Provider) quotedMessage(ctx context.Context, id, chatID, triggerID stri
 	if message.Type == "folder" {
 		context.WriteString("This message contains a Lark folder. If its resource download fails, report that the folder was found but could not be downloaded, and ask for a ZIP archive or individual log files. Do not report that no attachment was supplied.\n")
 	}
-	context.WriteString(p.quotedMessageAncestors(ctx, token, message, triggerID, chatID))
+	ancestorText, ancestorIDs := p.quotedMessageAncestors(ctx, token, message, triggerID, chatID)
+	context.WriteString(ancestorText)
+	contextRef.ReferencedMessageIDs = ancestorIDs
 	content.text = context.String()
 	return content, nil
 }
