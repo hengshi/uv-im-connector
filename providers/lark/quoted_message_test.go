@@ -20,7 +20,7 @@ import (
 
 // Runs the real WebSocket adapter and Hub with a local Feishu API stub.
 func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
-	for _, scenario := range []string{"auto-file", "auto-other", "file", "folder", "folder-failed", "text", "interactive", "share-chat", "share-user", "system", "merge-forward", "denied", "deleted", "wrong-chat", "wrong-message", "download-failed", "unaddressed"} {
+	for _, scenario := range []string{"auto-file", "auto-other", "file", "folder", "folder-failed", "text", "interactive", "share-chat", "share-user", "system", "merge-forward", "rich-post", "rich-post-v2-only", "rich-post-fallback", "rich-post-markers", "rich-post-unavailable", "denied", "deleted", "wrong-chat", "wrong-message", "download-failed", "unaddressed"} {
 		t.Run(scenario, func(t *testing.T) {
 			var api *httptest.Server
 			api = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -95,6 +95,21 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 					if scenario == "merge-forward" {
 						kind, content = "merge_forward", "[Merged forward placeholder]"
 					}
+					if scenario == "rich-post" {
+						kind, content = "post", `{"title":"Classic title","content":[[{"tag":"text","text":"before"},{"tag":"a","text":"site","href":"https://example.test/a?x=1"},{"tag":"at","user_id":"ou_123","user_name":"Ada"}],[{"tag":"code_block","language":"go","text":"  fmt.Println(1)\n\t// exact"}],[{"tag":"md","text":"**original markdown**"},{"tag":"hr"},{"tag":"emotion","emoji_type":"SMILE"}]]}`
+					}
+					if scenario == "rich-post-v2-only" {
+						kind, content = "post", `{"content_v2":[[{"tag":"md","text":"v2 only"}]],"files":[{"file_key":"top-file","file_name":"top-file.txt"},{"file_key":"top-folder","file_name":"assets\\\"<unsafe>","is_folder":true}]}`
+					}
+					if scenario == "rich-post-fallback" {
+						kind, content = "post", `{"content_v2":[],"content":[[{"tag":"text","text":"legacy fallback"}]]}`
+					}
+					if scenario == "rich-post-markers" {
+						kind, content = "post", `{"zh_cn":{"content":[[{"tag":"text","text":"known"},{"tag":"mystery","text":"raw unknown"},17],"bad paragraph"]}}`
+					}
+					if scenario == "rich-post-unavailable" {
+						kind, content = "post", `{"zh_cn":{"content":[[{"tag":"mystery"}],"bad paragraph"]}}`
+					}
 					chat, id := "chat", "parent"
 					if scenario == "wrong-chat" {
 						chat = "other-chat"
@@ -134,6 +149,7 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 							map[string]any{"message_id": "cycle-a", "upper_message_id": "cycle-b", "msg_type": "file", "body": map[string]any{"content": `{"file_key":"cycle-a"}`}},
 							map[string]any{"message_id": "cycle-b", "upper_message_id": "cycle-a", "msg_type": "file", "body": map[string]any{"content": `{"file_key":"cycle-b"}`}},
 							map[string]any{"message_id": "malformed", "upper_message_id": "parent", "msg_type": "file", "body": map[string]any{"content": `{`}},
+							map[string]any{"message_id": "post-child", "chat_id": "chat", "upper_message_id": "parent", "msg_type": "post", "body": map[string]any{"content": `{"zh_cn":{"title":"selected zh","content":[[{"tag":"text","text":"legacy text"},{"tag":"media","file_key":"shared-media"}]],"content_v2":[[{"tag":"md","text":"v2 nested body"},{"tag":"img","image_key":"post-image"},{"tag":"media","file_key":"shared-media"}]]},"en_us":{"title":"wrong locale","content":[[{"tag":"text","text":"wrong locale body"}]]}}`}},
 						)
 					}
 					json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": items}})
@@ -166,6 +182,21 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 						t.Error("downloaded an unexpected nested resource")
 					}
 					io.WriteString(w, "nested image\n")
+				case "/open-apis/im/v1/messages/parent/resources/post-image":
+					if scenario != "merge-forward" {
+						t.Error("downloaded an unexpected post image")
+					}
+					io.WriteString(w, "post image\n")
+				case "/open-apis/im/v1/messages/parent/resources/shared-media":
+					if scenario != "merge-forward" {
+						t.Error("downloaded unexpected post media")
+					}
+					io.WriteString(w, "post media\n")
+				case "/open-apis/im/v1/messages/parent/resources/top-file":
+					if scenario != "rich-post-v2-only" {
+						t.Error("downloaded an unexpected top-level post file")
+					}
+					io.WriteString(w, "top file\n")
 				default:
 					t.Errorf("unexpected request %s", req.URL.Path)
 					w.WriteHeader(http.StatusNotFound)
@@ -173,13 +204,19 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 			}))
 			defer api.Close()
 			store := &uvim.ResourceStore{Dir: t.TempDir()}
+			providerStore := store
+			if scenario == "text" {
+				providerStore = nil
+			} else if scenario == "auto-file" {
+				providerStore = &uvim.ResourceStore{Dir: t.TempDir()}
+			}
 			botID := "bot"
 			if strings.HasPrefix(scenario, "auto-") {
 				botID = ""
 			}
 			var identityLogs bytes.Buffer
 			logger := slog.New(slog.NewTextHandler(&identityLogs, nil))
-			provider, err := New(Config{Logger: logger, AppID: "app", AppSecret: "secret", BotOpenID: botID, BaseURL: api.URL, CallbackBaseURL: api.URL, ResourceStore: store})
+			provider, err := New(Config{Logger: logger, AppID: "app", AppSecret: "secret", BotOpenID: botID, BaseURL: api.URL, CallbackBaseURL: api.URL, ResourceStore: providerStore})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -218,8 +255,11 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 			if scenario == "interactive" && len(event.Message.Resources) != 1 {
 				t.Fatalf("interactive resources = %+v", event.Message.Resources)
 			}
-			if scenario == "merge-forward" && len(event.Message.Resources) != 4 {
+			if scenario == "merge-forward" && len(event.Message.Resources) != 6 {
 				t.Fatalf("forwarded resources = %+v", event.Message.Resources)
+			}
+			if scenario == "rich-post-v2-only" && len(event.Message.Resources) != 2 {
+				t.Fatalf("direct v2 post resources = %+v", event.Message.Resources)
 			}
 			if !event.Addressed {
 				t.Fatal("bot mention was not recognized")
@@ -259,7 +299,7 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 				t.Fatalf("folder context missing: %q", contents)
 			}
 			switch scenario {
-			case "auto-file", "file", "folder", "text", "interactive", "share-chat", "share-user", "system", "merge-forward":
+			case "auto-file", "file", "folder", "text", "interactive", "share-chat", "share-user", "system", "merge-forward", "rich-post", "rich-post-v2-only", "rich-post-fallback", "rich-post-markers":
 				if !strings.Contains(contents, "parent") || len(failures) != 0 {
 					t.Fatalf("contents=%q failures=%v", contents, failures)
 				}
@@ -336,11 +376,50 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 				if scenario == "system" && (!strings.Contains(contents, "Sender: unknown") || strings.Contains(contents, "Create time:")) {
 					t.Fatalf("missing native sender/time fallback changed: %q", contents)
 				}
+				if scenario == "rich-post" {
+					for _, want := range []string{
+						"Classic title", "before[site](https://example.test/a?x=1)[Mention: user_id=\"ou_123\" name=\"Ada\"]",
+						"[Code block language=\"go\"]", "fmt.Println(1)\n  \t// exact", "[/Code block]",
+						"**original markdown**", "---", ":SMILE:",
+					} {
+						if !strings.Contains(contents, want) {
+							t.Fatalf("rich post lost %q: %q", want, contents)
+						}
+					}
+					quote := findQuotedElement(event.Message.Elements, "parent")
+					if quote == nil || len(quote.Children) < 2 || quote.Children[1].Type != uvim.ElementText || !strings.Contains(quote.Children[1].Text, "[Code block language=") || !strings.Contains(quote.Children[1].Text, "  fmt.Println(1)\n\t// exact") {
+						t.Fatalf("root quote element lost rich post body: %+v", event.Message.Elements)
+					}
+				}
+				if scenario == "rich-post-v2-only" {
+					if !strings.Contains(contents, "v2 only") || !strings.Contains(contents, "top-file.txt") || !strings.Contains(contents, "ZIP archive") || strings.Contains(contents, "top-folder") {
+						t.Fatalf("direct v2/top-file post was not safely preserved: %q", contents)
+					}
+				}
+				if scenario == "rich-post-fallback" && !strings.Contains(contents, "legacy fallback") {
+					t.Fatalf("empty content_v2 did not fall back: %q", contents)
+				}
+				if scenario == "rich-post-markers" {
+					for _, want := range []string{"Post locale: \"zh_cn\"", "knownraw unknown", "[Unsupported post element: \"mystery\"]", "[Post element unavailable]", "[Post paragraph unavailable]"} {
+						if !strings.Contains(contents, want) {
+							t.Fatalf("rich post diagnostic/material missing %q: %q", want, contents)
+						}
+					}
+				}
+				if scenario == "merge-forward" {
+					if !strings.Contains(contents, "Post locale: \"zh_cn\"") || !strings.Contains(contents, "selected zh") || !strings.Contains(contents, "v2 nested body") || strings.Contains(contents, "legacy text") || strings.Contains(contents, "wrong locale body") || strings.Count(contents, "post media") != 1 {
+						t.Fatalf("nested localized/v2 post was not rendered and deduplicated: %q", contents)
+					}
+					postChild := findQuotedElement(event.Message.Elements, "post-child")
+					if postChild == nil || len(postChild.Children) == 0 || postChild.Children[0].Type != uvim.ElementText || !strings.Contains(postChild.Children[0].Text, "Post locale: \"zh_cn\"") {
+						t.Fatalf("nested quote element lost selected post body: %+v", event.Message.Elements)
+					}
+				}
 			default:
 				if len(failures) == 0 || strings.Contains(contents, "fatal:") || strings.Contains(strings.Join(failures, ""), "private diagnostic") {
 					t.Fatalf("contents=%q failures=%v", contents, failures)
 				}
-				want := map[string]string{"denied": "quoted_message_lookup_failed: code=99991672", "deleted": "quoted_message_deleted", "wrong-chat": "quoted_message_identity_mismatch", "wrong-message": "quoted_message_not_found", "download-failed": "download_failed", "folder-failed": "download_failed"}[scenario]
+				want := map[string]string{"denied": "quoted_message_lookup_failed: code=99991672", "deleted": "quoted_message_deleted", "wrong-chat": "quoted_message_identity_mismatch", "wrong-message": "quoted_message_not_found", "download-failed": "download_failed", "folder-failed": "download_failed", "rich-post-unavailable": "quoted_message_content_unavailable"}[scenario]
 				if len(failures) != 1 || failures[0] != want {
 					t.Fatalf("failure=%v want=%q", failures, want)
 				}
