@@ -147,6 +147,46 @@ func TestServiceMetaReturnsTypedServiceMetadata(t *testing.T) {
 	}
 }
 
+func TestConversationWindowUsesTypedAuthenticatedRoute(t *testing.T) {
+	for _, statusCode := range []int{http.StatusOK, http.StatusUnauthorized} {
+		t.Run(http.StatusText(statusCode), func(t *testing.T) {
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.Method != http.MethodPost || req.URL.Path != "/v1/conversation.window" || req.Header.Get("Authorization") != "Bearer token" {
+					t.Errorf("request=%s %s authorization=%q", req.Method, req.URL.Path, req.Header.Get("Authorization"))
+				}
+				var input uvim.ConversationWindowRequest
+				if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+					t.Error(err)
+				}
+				if input != (uvim.ConversationWindowRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om"}) {
+					t.Errorf("input=%+v", input)
+				}
+				w.WriteHeader(statusCode)
+				if statusCode == http.StatusOK {
+					_ = json.NewEncoder(w).Encode(uvim.ConversationWindowResult{Version: uvim.ConversationWindowVersionV1, Source: "native", Status: "none", TriggerMessageID: "om"})
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+			}))
+			defer api.Close()
+
+			c := New(api.URL)
+			c.Token = "token"
+			result, err := c.ConversationWindow(t.Context(), uvim.ConversationWindowRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om"})
+			if statusCode == http.StatusOK {
+				if err != nil || result.Status != "none" || result.Source != "native" || result.Version != uvim.ConversationWindowVersionV1 {
+					t.Fatalf("result=%+v err=%v", result, err)
+				}
+				return
+			}
+			var httpErr *HTTPError
+			if !errors.As(err, &httpErr) || httpErr.StatusCode != statusCode {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestUpdatePreservesExactMessageAndFailureFacts(t *testing.T) {
 	for _, status := range []int{200, 502, 404} {
 		t.Run(http.StatusText(status), func(t *testing.T) {

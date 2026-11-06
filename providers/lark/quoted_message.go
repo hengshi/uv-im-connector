@@ -14,6 +14,7 @@ import (
 type quotedMessageItem struct {
 	ID             string `json:"message_id"`
 	ChatID         string `json:"chat_id"`
+	ThreadID       string `json:"thread_id"`
 	UpperMessageID string `json:"upper_message_id"`
 	CreateTime     string `json:"create_time"`
 	Type           string `json:"msg_type"`

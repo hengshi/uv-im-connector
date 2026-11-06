@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -101,6 +102,7 @@ func DecodePayload(payload []byte, config DecoderConfig) (uvim.Event, bool, erro
 			MessageID:       messageID,
 			ParentMessageID: evt.Message.ParentID,
 			RootMessageID:   evt.Message.RootID,
+			ThreadID:        evt.Message.ThreadID,
 			ChannelID:       channelID,
 			Target:          &uvim.OutboundTarget{ID: channelID, Kind: uvim.TargetConversation},
 		},
@@ -138,6 +140,7 @@ type messageReceiveEvent struct {
 		MessageID   string    `json:"message_id"`
 		ParentID    string    `json:"parent_id"`
 		RootID      string    `json:"root_id"`
+		ThreadID    string    `json:"thread_id"`
 		ChatID      string    `json:"chat_id"`
 		ChatType    string    `json:"chat_type"`
 		MessageType string    `json:"message_type"`
@@ -444,14 +447,13 @@ func parseMillis(value string) time.Time {
 	if value == "" {
 		return time.Time{}
 	}
-	var n int64
 	for _, ch := range value {
 		if ch < '0' || ch > '9' {
 			return time.Time{}
 		}
-		n = n*10 + int64(ch-'0')
 	}
-	if n == 0 {
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n <= 0 {
 		return time.Time{}
 	}
 	return time.UnixMilli(n).UTC()

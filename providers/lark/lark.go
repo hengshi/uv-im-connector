@@ -143,6 +143,7 @@ func (p *Provider) Capabilities() uvim.Capabilities {
 		ResourceKinds:             []string{uvim.ElementImage, uvim.ElementAudio, uvim.ElementVideo, uvim.ElementFile},
 		ChannelTypes:              []string{uvim.ChannelDirect, uvim.ChannelGroup},
 		PublicationLocatorVersion: uvim.PublicationLocatorVersionV1,
+		ConversationWindowVersion: uvim.ConversationWindowVersionV1,
 	}
 }
 
