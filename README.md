@@ -18,6 +18,8 @@ The core contract treats every channel equally:
 - Provider differences are exposed through capabilities, not product hierarchy.
 - Caller applications consume normalized events and do not parse provider-native payloads.
 
+See [interactive cards and durable callbacks](docs/en/interactions.md) for the neutral protocol, Lark application prerequisites, update recovery and verification boundaries.
+
 ## Documentation Site
 
 This repository is configured to publish the VitePress documentation site with GitHub Pages:
@@ -260,6 +262,7 @@ Provider webhook ingress is intentionally separate from public API auth. Webhook
   "service": "uv-im-connector",
   "connector_version": "v0.0.4",
   "protocol_version": "v1",
+  "publication_locator_version": "v1",
   "providers": []
 }
 ```
@@ -353,7 +356,9 @@ Reply to a known message or thread by carrying the event referrer back:
 
 `target.kind` is one of `user`, `group`, `channel`, or `conversation`. Use a kind declared in the provider's `capabilities.target_kinds`. For a reply, copy the inbound event's complete `referrer`; its target takes precedence over legacy channel fields. The legacy `channel_id` and `channel_type` fields remain accepted for protocol-v1 callers: `direct` resolves to `user`, `group` to `group`, `thread` to `channel`, and `room` or an empty type resolves to `conversation`. The legacy `channel_id` remains the provider-native existing conversation/channel ID; only the semantic kind is mapped, so it is not reinterpreted as a proactive user ID. A legacy request must include a channel ID or a message/reply handle. Unknown non-empty legacy channel types are rejected instead of being guessed.
 
-`GET /v1/meta` exposes `reply_message`, `proactive_direct`, `proactive_group`, and `target_kinds` for each configured provider. Callers should check these fields before displaying or invoking an outbound operation.
+`GET /v1/meta` exposes `reply_message`, `proactive_direct`, `proactive_group`, and `target_kinds` for each configured provider. Callers should check these fields before displaying or invoking an outbound operation. A service-level `publication_locator_version` says which confirmed-publication receipt schema the endpoint can serialize; only a provider's own nonempty `capabilities.publication_locator_version` says that provider can issue one.
+
+An internal notification sender may add `request_publication_locator: true` to `message.create` after checking that exact capability. The successful result then contains `publications` only if the provider has confirmed the native message, owning bot/app, and actual conversation. It never infers a conversation from a proactive recipient. The Lark adapter performs its native GET only for this opt-in request; if that GET is unavailable after the POST succeeded, the original send remains successful with its `message_id` and no publication receipt. Other adapters do not synthesize this evidence. `native_conversation_type` is optional: Lark message lookup does not prove a chat type, so callers must preserve its absence and must not infer `direct` or `group` from a proactive recipient. See [application integration](docs/en/guide/application-integration.md#confirmed-outbound-publication-locators).
 
 Optional `reply_stream` applies only to a live passive reply-token route; `edit_message` requires the provider's genuine `MessageUpdater`. `text_max_bytes` bounds normalized UTF-8 text per send/update, including caller formatting; zero or missing means unknown. WeCom declares 20480 bytes for passive stream and proactive Markdown content and rejects oversized text before upload/send. Lark's native limits apply to serialized request bodies and cannot be declared accurately as a fixed raw UTF-8 text budget, so its text budget remains unknown. Callers own lossless pagination and route-specific presentation. Older metadata without the new capabilities implies append-only behavior.
 
@@ -371,7 +376,7 @@ When a send fails, `POST /v1/message.create` keeps the compatible HTTP `502` and
 
 The connector imposes no additional attachment size limits on storage, downloads, HTTP uploads, or outbound sends. Size policy is enforced by the IM provider or mail server.
 
-Group and direct attachments share the same download path. WeCom includes quoted attachments and quoted text context, DingTalk exchanges inbound `downloadCode` values for temporary file URLs when Stream credentials are configured, and Lark includes images and videos in rich-text posts plus downloadable attachments from quoted parent messages. Lark `folder` messages are recognized as file resources; `merge_forward` (including child messages) and `interactive` cards provide text/summary context only and do not expose child resources. See [Resources](docs/guide/resources.md).
+Group and direct attachments share the same download path. WeCom includes quoted attachments and quoted text context, DingTalk exchanges inbound `downloadCode` values for temporary file URLs when Stream credentials are configured, and Lark includes images and videos in rich-text posts plus downloadable attachments from quoted parent messages. Lark `folder` messages are recognized as file resources; explicitly quoted `merge_forward` messages include supported child resources and nested forwards, downloaded through the top-level container. `interactive` cards still provide text/summary context without child resources. Quote trees are retained alongside the complete flat resource list. See [Resources](docs/guide/resources.md).
 
 Inbound files, images, audio, and video are normalized as sanitized `ResourceRef` values:
 

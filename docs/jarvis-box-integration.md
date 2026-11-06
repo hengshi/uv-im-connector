@@ -40,12 +40,27 @@ opening its WebSocket. Identity lookup failures stop provider startup with an
 explicit error; they must not silently turn bot mentions into unaddressed events. Explicit identity settings still take precedence.
 
 For an addressed Lark message with a parent message ID, the connector reads that
-one parent with its bot identity and verifies the returned message and chat IDs.
-It exposes the quoted text and source ID as a `quoted-message.txt` resource, and
-adds the parent's files to the same resource list. File downloads use each
-resource's source message ID. The current command text, addressing decision and
-reply target are unchanged; quoted text is reference material, not a new command.
-The connector does not walk the root/thread history or recursively fetch quotes.
+selected parent with its bot identity and verifies the returned message and chat
+IDs. It exposes the quoted text and source ID as a `quoted-message.txt` resource,
+and adds the selected parent's files to the same resource list. When the verified
+selected response has a native `parent_id`, it can append older replies to that
+same reference file. Each extra read must uniquely return the requested ID in the
+same chat, be non-deleted and usable, and have the exact native `thread_id` of the
+selected quote (including an empty value). The connector follows only those native
+parent IDs; it does not infer an edge from callback thread data, root IDs, forward
+relations, text, or a list/history request. Up to four extra reads share five
+seconds and append at most 24 KiB of complete ancestor node blocks. An unavailable
+or rejected ancestor ends that chain with a safe reason while retaining the
+selected quote and earlier accepted nodes. Ancestor media are kind/name
+descriptions only: they are not `ResourceRef`s, elements, resource IDs or implicit
+downloads. Older merged forwards remain a placeholder with direct-quote guidance;
+their child messages and files are not expanded. The Hub resolves selected quoted context and provider files into its
+own resource store before event persistence; the optional provider-local store is
+not a second cache owner. File downloads use each resource's source message ID.
+The current command text, addressing decision and reply target are unchanged;
+quoted text is reference material, not a new command. These bounded ancestor
+rules do not limit the selected quote, attachment downloads or provider response
+bytes, and do not create a group-history query.
 
 An unavailable, deleted or inaccessible parent produces a resource with a
 normalized `quoted_message_*` error; a file download failure remains
@@ -53,17 +68,144 @@ normalized `quoted_message_*` error; a file download failure remains
 than reporting that the user supplied no attachment. Existing clients can consume
 this through the resource protocol without gaining provider credentials.
 
+A successfully prepared `quoted-message.txt` can carry optional
+`referenced_message_ids`: only exact native IDs of complete earlier-reply nodes
+actually rendered in that context file. It is producer-side material identity,
+not a resource locator, access grant, message binding or Task authority. Jarvis
+may omit exact matching native-window items only after it has obtained that exact
+context attachment for the current Run and verified its bytes against the same
+sanitized `ResourceRef.sha256`, while also retaining the resource's event,
+provider, connector and explicit-parent correspondence. Missing, legacy, errored
+or unverified provenance leaves background candidates unchanged and never blocks
+the Turn.
+
 Lark `folder` messages are recognized as file resources, including when quoted.
 Recognition does not guarantee that Lark's resource API can download the folder.
 If it fails, the context identifies the original folder and asks for a ZIP archive
 or individual files. Do not claim that folder contents were retrieved based only
 on its metadata or a successful local transport stub.
 
-Quoted `merge_forward` responses may contain the parent and its child messages;
-the connector selects the requested parent and keeps the forwarded message
-context available. Lark's resource API does not support merge-forward messages
-(including child messages) or `interactive` message cards, so those messages
-provide text/summary context but do not expose child resources.
+Quoted `merge_forward` responses include attributable child text and supported
+resources, including nested forwards. Downloads use the selected top-level
+container message ID; child IDs are positions, not download or Task authority.
+Quote elements retain the hierarchy while the complete flat resources remain
+usable by current Jarvis attachment preparation. Resource leaves correlate only
+by opaque IDs or unambiguous internal URLs. Missing/conflicting relations are
+unavailable rather than guessed from names or private keys. Invalid child rows
+are omitted with an unavailable indication without losing valid siblings.
+`quoted-message.txt` renders each accepted root/forwarded node under that same
+hierarchy with its escaped native message/type/sender tuple, the raw native create
+time when present, its quote-specific body representation, and each owned public
+`ResourceRef.ID`, kind and quoted name. An explicitly quoted Lark `post` selects
+one direct or deterministic locale body, prefers nonempty `content_v2`, retains
+legacy and v2 native media references once per kind/key, and preserves title,
+links, stable mentions, Markdown, bounded language-tagged code, separators and
+emotion as reference material. Structured image/media keys and provider metadata maps
+are not rendered as body text; user-authored text, code, URLs and Markdown are
+retained without blanket string-based redaction. Top post files are normal resources; post-zone folders only
+receive ZIP/individual-file guidance and are not fetched. Unsupported or malformed
+parts remain visible but cannot by themselves make an empty quote available. This
+does not offer style/full-schema fidelity or Markdown-URL media downloads, and
+does not change ordinary command decoding. `Container message ID` names the
+selected top-level quote/download container; `Upper message ID` appears only when
+the platform supplied the immediate native relation. A missing sender is `unknown`;
+a missing time is omitted. jarvis-box may use the public resource ID to make an
+attachment correspondence visible, but must obtain bytes through the normalized
+resource and must not treat cache facts, child IDs, names or senders as Task, Run,
+conversation, ACL or identity authority.
+`interactive` cards still provide summary context without child resources.
+Neither representation creates group history or new Task selection rules.
+
+### Native group background
+
+After its existing ACL, native addressing and Task selection, Jarvis may request a
+[recent conversation window](./architecture.md#近期会话窗口) for the persisted
+group trigger. This is separate from explicit quote enrichment. The trusted
+infrastructure request contains only provider/connector and trigger event/message
+IDs; no Agent-selected chat/thread/time. Require the exact provider's
+`conversation_window_version=v1` and the existing service Bearer credential.
+When no native window reader capability exists, that version can instead describe
+the Hub's retained received-ingress fallback: exactly one metadata page of at most
+10 sequence-proved items, with generation/trigger-digest/lower-bound source proof
+and no materialization handle or download. A native permission, rate, timeout or
+other reader result is never replaced by that fallback. Unsupported capability
+preserves explicit inputs and produces an unavailable background note, without
+trying another scope or scanning the full event log.
+
+The Lark reader verifies the native trigger and uses its real thread identity,
+then returns one time-anchored page with sanitized text, sender/time provenance,
+coverage and media descriptors. It never downloads background media. Jarvis
+keeps a bounded reference file in the selected Run rather than putting history
+arrays into the current command. After verified local composition removes every
+item already rendered by a verified quote context, its local reference may say
+`none`; the native candidate count, boundary omissions, `has_more` and any
+`scan_limited` condition remain unchanged, and Jarvis does not refill, paginate,
+retry or widen the query. A denied, limited or unavailable window stays visible
+and does not block explicit materials. Direct/control/unaddressed inputs and
+source-notification preparation do not request it. Window reads do not change
+Task binding, authorize another source, start background work, or create a new
+history store or per-group setting.
+
+### Explicit scoped search and materialization
+
+The connector exposes `conversation_search_version=v1` for a consumer's
+current-Run-only lookup. It is distinct from the automatic window: Jarvis must
+authenticate an internal request with the current
+Run capability, send its SHA-256 as the audience binding together with the
+persisted trigger digest, and request only local time/sender/keyword narrowing.
+Neither an Agent nor a user supplies a chat, topic, provider continuation, or
+service Bearer. A returned cursor is an opaque, short-lived connector value;
+it is invalid after a Run capability rotation and must not be placed in a
+prompt, public status, or durable Run artifact.
+
+Native output identifies source/provider/conversation/verified thread,
+immutable anchor, effective time bounds, and bounded scan coverage. It makes
+`none`, scan limits, cursor expiry, permission, rate and unavailable
+states explicit rather than claiming complete group-history absence. Connector
+API support alone does not establish which Jarvis release consumes it or qualify
+an installed client's capability handoff.
+
+When a search row has media, a trusted caller may use the
+additive `conversation_materialize_version=v1` capability. The row contains
+only an opaque `materialize_handle`, a per-resource `source_epoch`, readable
+descriptor and provenance. `POST /v1/conversation.materialize` repeats the
+same trigger/audience proof and accepts no source message override, URL, key,
+path or native scope. The connector durably records one provider attempt before
+it begins; a crash after that record is `unknown` rather than a retried download.
+Only a revalidated `ready` result carries an internal resource reference. The
+caller must still apply its own exact-Run grant and materialization receipt; the
+connector handle is not Task authority and must never reach an Agent or public
+artifact.
+
+The separate service capability
+`conversation_context_query_version=v1` permits `source="received"` on the
+same search request. This is connector-retained ingress only, not a claim that
+the bot can read older provider history. Its result and every resource include
+generation/digest/sequence source proof, which the caller must seal into its
+own query receipt before materialization. A generation change, missing retained
+entry, deletion or lower-bound limit invalidates that proof; a caller must not
+turn it into a wider native lookup or a retry with a provider key.
+
+### Event-bound inbound identity
+
+Authenticated consumers can call `POST /v1/identity.resolve-inbound` with only
+`provider`, `connector` and `event_id`. The connector reads that exact durable
+event and returns its native actor, canonical digest and the complete current
+set of non-revoked business identities for the same provider, connector and
+native user. The result has no preferred identity; Jarvis must calculate a
+unique permitted intersection with its original Task admission authority.
+Names, an Agent-supplied actor and an arbitrary conversation ID are not inputs.
+
+A direct event additionally reuses the adapter's current private-participant
+proof. Room adapters can return a conversation target without treating it as a
+user target. A changed private-room audience, missing event, explicit non-user
+actor, absent link or uncertain link state returns an unavailable error. A group
+actor can establish identity evidence without obtaining a private reply target.
+The identity set, native target and link revisions remain service-private and
+must not enter public Task views, logs or user messages. This endpoint creates
+no Task grant and does not make identity revocation atomic with a Jarvis input
+transaction; the consumer must bind a short-lived assertion to the exact event
+and recheck authorization before subsequent effects.
 
 ## Release Boundary
 
@@ -76,6 +218,7 @@ jarvis-box does not host, spawn, or auto-update `uv-im-connector`. A connector b
 - Optional sender/conversation display names survive event-log replay and appear in status without replacing provider-native IDs.
 - Startup fails clearly when `/v1/meta` reports a wrong service or unsupported protocol version.
 - File, image, audio, and video resources resolve through `internal_url`.
+- Addressed authorized Lark groups receive scoped, pre-trigger native background as a Run reference; wrong-topic/future items and media downloads are absent, and unavailable/limited coverage remains visible.
 - Reply uses `OutboundMessage.Referrer`.
 - Provider credentials and raw payload fields do not appear in public status or artifacts.
 - Duplicate event IDs do not create duplicate Runs.

@@ -200,7 +200,7 @@ func (h *Hub) identityEvent(ctx context.Context, ref uvim.IdentityEventRef) (uvi
 		if event.ID != ref.EventID || event.Provider != ref.Provider || event.Connector != ref.Connector {
 			continue
 		}
-		if event.Type != uvim.EventMessageCreate || event.Message.ID == "" {
+		if !personalIdentityEvent(event) {
 			return uvim.Event{}, uvim.OutboundTarget{}, errors.New("personal IM message event is required")
 		}
 		if event.User.ID == "" || (event.User.Kind != "" && event.User.Kind != uvim.UserKindUser) {
@@ -216,7 +216,7 @@ func (h *Hub) identityEvent(ctx context.Context, ref uvim.IdentityEventRef) (uvi
 			if err != nil {
 				return uvim.Event{}, uvim.OutboundTarget{}, err
 			}
-		} else if event.Channel.Type != uvim.ChannelDirect || event.Referrer.Target == nil {
+		} else if event.Type != uvim.EventMessageCreate || event.Channel.Type != uvim.ChannelDirect || event.Referrer.Target == nil {
 			return uvim.Event{}, uvim.OutboundTarget{}, errors.New("verified private IM target is required")
 		} else {
 			target = *event.Referrer.Target

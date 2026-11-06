@@ -87,6 +87,9 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	defer func() {
 		err = uvim.NewProviderSendOperationError("whatsapp send", err)
 	}()
+	if err := uvim.ValidateOutboundInteraction(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, err
+	}
 	if len(msg.Resources) == 0 {
 		return p.base.Send(ctx, msg)
 	}

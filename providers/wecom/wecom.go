@@ -372,6 +372,9 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	defer func() {
 		err = uvim.NewProviderSendOperationError("wecom send", err)
 	}()
+	if err := uvim.ValidateOutboundInteraction(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, err
+	}
 	if err := uvim.ValidateOutboundText(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, err
 	}
@@ -624,12 +627,20 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 	msgType := uvim.StringValue(body["msgtype"])
 	text := p.messageText(body, msgType)
 	resources := p.messageResources(body, msgType)
+	ensureResourceIDs(resources)
+	elements := elementsFromTextAndResources(text, resources)
 	if quote := uvim.MapStringAny(body["quote"]); len(quote) > 0 {
 		quoteType := uvim.StringValue(quote["msgtype"])
-		resources = append(resources, p.messageResources(quote, quoteType)...)
+		quotedResources := p.messageResources(quote, quoteType)
 		if quoteText := quotedMessageText(quote, quoteType); quoteText != "" {
-			resources = append(resources, p.quotedTextResource(quoteType, quoteText))
+			quotedResources = append(quotedResources, p.quotedTextResource(quoteType, quoteText))
 		}
+		ensureResourceIDs(quotedResources)
+		resources = append(resources, quotedResources...)
+		// WeCom quote payloads do not carry a trustworthy native parent ID. Keep
+		// the relation explicit without promoting callback maps into Task, thread,
+		// or referrer authority.
+		elements = append(elements, uvim.Element{Type: uvim.ElementQuote, Children: elementsFromTextAndResources("", quotedResources)})
 	}
 	if strings.TrimSpace(text) == "" && len(resources) == 0 {
 		return uvim.Event{}, false
@@ -666,7 +677,7 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 			ID:        messageID,
 			Type:      msgType,
 			Text:      text,
-			Elements:  elementsFromTextAndResources(text, resources),
+			Elements:  elements,
 			Resources: resources,
 		},
 		Referrer: uvim.Referrer{MessageID: messageID, ChannelID: channelID, ReplyToken: in.Headers.ReqID, ExpiresAt: &expiresAt, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
@@ -795,6 +806,14 @@ func resourceFromBody(body map[string]any, msgType, provider, connector string) 
 		Secret:    uvim.StringValue(payload["aeskey"]),
 	}
 	return ref, ref.URL != ""
+}
+
+func ensureResourceIDs(resources []uvim.ResourceRef) {
+	for i := range resources {
+		if resources[i].ID == "" && resources[i].InternalURL == "" {
+			resources[i].ID = uvim.NewID("res")
+		}
+	}
 }
 
 func elementsFromTextAndResources(text string, refs []uvim.ResourceRef) []uvim.Element {

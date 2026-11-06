@@ -14,7 +14,7 @@ import (
 // Resolve identity before opening the socket, so every event uses the same
 // verified mention identity without delaying ACKs or mutating shared config.
 func (p *Provider) decoderConfig(ctx context.Context) (DecoderConfig, error) {
-	config := DecoderConfig{AppID: p.config.AppID, Connector: p.ConnectorID(),
+	config := DecoderConfig{AppID: p.config.AppID, Connector: p.ConnectorID(), Now: p.config.Now,
 		BotOpenID: strings.TrimSpace(p.config.BotOpenID), BotUnionID: strings.TrimSpace(p.config.BotUnionID)}
 	if config.BotOpenID != "" || config.BotUnionID != "" {
 		p.config.Logger.Info("lark bot identity resolved", "connector", p.ConnectorID(), "source", "configured", "open_id", config.BotOpenID, "union_id", config.BotUnionID)
