@@ -126,9 +126,35 @@ func (p *Provider) nativeWindowMessage(ctx context.Context, token, id string) (q
 }
 
 func (p *Provider) nativeWindowList(ctx context.Context, token string, trigger quotedMessageItem) ([]quotedMessageItem, bool, int, error) {
+	page, code, err := p.nativeConversationList(ctx, token, trigger, nativeWindowPageSize, "")
+	if err != nil || code != 0 {
+		return nil, false, code, err
+	}
+	// The automatic window remains a one-call reader. In particular, an older
+	// provider response with has_more but no page_token is still a valid window
+	// response: the token is neither requested nor consumed here.
+	return page.Items, page.HasMore, 0, nil
+}
+
+type nativeConversationPage struct {
+	Items     []quotedMessageItem
+	HasMore   bool
+	PageToken string
+}
+
+// nativeConversationList is the single native page target/decoder used by the
+// automatic one-page window and explicit search. Callers decide whether a
+// continuation token is meaningful for their own contract.
+func (p *Provider) nativeConversationList(ctx context.Context, token string, trigger quotedMessageItem, pageSize int, pageToken string) (nativeConversationPage, int, error) {
+	if pageSize < 1 || pageSize > nativeWindowPageSize {
+		return nativeConversationPage{}, 0, errors.New("invalid native page size")
+	}
 	query := url.Values{}
-	query.Set("page_size", strconv.Itoa(nativeWindowPageSize))
+	query.Set("page_size", strconv.Itoa(pageSize))
 	query.Set("sort_type", "ByCreateTimeDesc")
+	if strings.TrimSpace(pageToken) != "" {
+		query.Set("page_token", pageToken)
+	}
 	if trigger.ThreadID != "" {
 		query.Set("container_id_type", "thread")
 		query.Set("container_id", trigger.ThreadID)
@@ -140,25 +166,26 @@ func (p *Provider) nativeWindowList(ctx context.Context, token string, trigger q
 	}
 	raw, err := p.nativeWindowGet(ctx, token, "/open-apis/im/v1/messages?"+query.Encode())
 	if err != nil {
-		return nil, false, 0, err
+		return nativeConversationPage{}, 0, err
 	}
 	var response struct {
 		Code int `json:"code"`
 		Data struct {
-			Items   []quotedMessageItem `json:"items"`
-			HasMore bool                `json:"has_more"`
+			Items     []quotedMessageItem `json:"items"`
+			HasMore   bool                `json:"has_more"`
+			PageToken string              `json:"page_token"`
 		} `json:"data"`
 	}
 	if json.Unmarshal(raw, &response) != nil {
-		return nil, false, 0, errors.New("invalid native message list response")
+		return nativeConversationPage{}, 0, errors.New("invalid native message list response")
 	}
 	if response.Code != 0 {
-		return nil, false, response.Code, nil
+		return nativeConversationPage{}, response.Code, nil
 	}
-	if len(response.Data.Items) > nativeWindowPageSize {
-		return nil, false, 0, errors.New("native message page exceeds requested limit")
+	if len(response.Data.Items) > pageSize {
+		return nativeConversationPage{}, 0, errors.New("native message page exceeds requested limit")
 	}
-	return response.Data.Items, response.Data.HasMore, 0, nil
+	return nativeConversationPage{Items: response.Data.Items, HasMore: response.Data.HasMore, PageToken: response.Data.PageToken}, 0, nil
 }
 
 func (p *Provider) nativeWindowGet(ctx context.Context, token, path string) (json.RawMessage, error) {
