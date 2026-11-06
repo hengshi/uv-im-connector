@@ -237,6 +237,25 @@ func TestDecodePayloadPostResources(t *testing.T) {
 	}
 }
 
+func TestDecodePayloadPreservesNativeThreadID(t *testing.T) {
+	payload := []byte(`{
+		"header":{"event_id":"evt-thread","event_type":"im.message.receive_v1"},
+		"event":{"sender":{"sender_id":{"open_id":"ou-sender"}},"message":{
+			"message_id":"om-thread-message","chat_id":"oc-group","chat_type":"group",
+			"thread_id":"omt-topic","message_type":"text","content":"{\"text\":\"@bot summarize\"}",
+			"mentions":[{"key":"@bot","id":{"open_id":"ou-bot"}}],"create_time":"1700000000000"
+		}}
+	}`)
+
+	event, ok, err := DecodePayload(payload, DecoderConfig{Connector: "main", BotOpenID: "ou-bot"})
+	if err != nil || !ok {
+		t.Fatalf("ok=%t err=%v", ok, err)
+	}
+	if event.Referrer.ThreadID != "omt-topic" {
+		t.Fatalf("thread_id=%q, want native thread", event.Referrer.ThreadID)
+	}
+}
+
 func TestDecodePayloadTextMention(t *testing.T) {
 	event := map[string]any{
 		"schema": "2.0",
@@ -957,13 +976,16 @@ func TestSendPublicationLocatorIsBestEffortAndOptIn(t *testing.T) {
 	}
 }
 
-func TestCapabilitiesAdvertisePublicationLocatorV1(t *testing.T) {
+func TestCapabilitiesAdvertiseNativeMetadataVersions(t *testing.T) {
 	provider, err := New(Config{AppID: "app", AppSecret: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := provider.Capabilities().PublicationLocatorVersion; got != uvim.PublicationLocatorVersionV1 {
 		t.Fatalf("publication locator capability = %q", got)
+	}
+	if got := provider.Capabilities().ConversationWindowVersion; got != uvim.ConversationWindowVersionV1 {
+		t.Fatalf("conversation window capability = %q", got)
 	}
 }
 

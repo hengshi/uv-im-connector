@@ -93,6 +93,28 @@ conversation, ACL or identity authority.
 `interactive` cards still provide summary context without child resources.
 Neither representation creates group history or new Task selection rules.
 
+### Native group background
+
+After its existing ACL, native addressing and Task selection, Jarvis may request a
+[recent conversation window](./architecture.md#近期会话窗口) for the persisted
+group trigger. This is separate from explicit quote enrichment. The trusted
+infrastructure request contains only provider/connector and trigger event/message
+IDs; no Agent-selected chat/thread/time. Require the exact provider's
+`conversation_window_version=v1` and the existing service Bearer credential.
+Old or unsupported capability preserves explicit inputs and produces an
+unavailable background note, without trying another scope or scanning the full
+event log.
+
+The Lark reader verifies the native trigger and uses its real thread identity,
+then returns one time-anchored page with sanitized text, sender/time provenance,
+coverage and media descriptors. It never downloads background media. Jarvis
+keeps a bounded reference file in the selected Run rather than putting history
+arrays into the current command. A denied, limited or unavailable window stays
+visible and does not block explicit materials. Direct/control/unaddressed inputs
+and source-notification preparation do not request it. Window reads do not change
+Task binding, authorize another source, start background work, or create a new
+history store or per-group setting.
+
 ## Release Boundary
 
 jarvis-box does not host, spawn, or auto-update `uv-im-connector`. A connector bugfix that keeps `protocol_version` compatible is deployed by upgrading the connector service. jarvis-box needs a dependency bump and release only when it consumes new Go client/API behavior or when the connector protocol becomes incompatible with the supported protocol set.
@@ -104,6 +126,7 @@ jarvis-box does not host, spawn, or auto-update `uv-im-connector`. A connector b
 - Optional sender/conversation display names survive event-log replay and appear in status without replacing provider-native IDs.
 - Startup fails clearly when `/v1/meta` reports a wrong service or unsupported protocol version.
 - File, image, audio, and video resources resolve through `internal_url`.
+- Addressed authorized Lark groups receive scoped, pre-trigger native background as a Run reference; wrong-topic/future items and media downloads are absent, and unavailable/limited coverage remains visible.
 - Reply uses `OutboundMessage.Referrer`.
 - Provider credentials and raw payload fields do not appear in public status or artifacts.
 - Duplicate event IDs do not create duplicate Runs.

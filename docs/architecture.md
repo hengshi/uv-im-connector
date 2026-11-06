@@ -60,6 +60,16 @@ WeCom 的可选企业身份查询在事件发送 worker 中完成；应用 token
 
 `reply_stream` 只适用于有效被动 reply token；`edit_message` 要求真实的可选 `MessageUpdater` 实现；`text_max_bytes` 是单次标准化 UTF-8 文本的字节预算，零值或缺失表示未知。流式更新、编辑和长内容的集成及兼容性见[应用接入](./guide/application-integration.md#完整文本流式回复和编辑)。
 
+## 近期会话窗口
+
+`conversation_window_version=v1` 是可选的 provider 能力，当前由 Lark/Feishu 的 `ConversationWindowReader` 提供；不改变必需的 `Provider` 接口。Hub 只有在既有服务访问令牌非空时才对外声明此能力。`POST /v1/conversation.window` 必须携带匹配的 Bearer 请求头，未配置认证时也拒绝读取；不能用 URL token 代替。调用方先完成自己的用户/会话准入，再以受信基础设施身份调用，不能把服务令牌交给 Agent 或将此接口当作 Task 授权。
+
+请求仅含 `provider`、`connector`、`trigger_event_id`、`trigger_message_id`，不接受会话、话题、时间或路径覆盖。Hub 只在事件日志尾部 64 MiB、最后 10,000 条记录内核对同一已持久化、被唤起的群触发消息；缺失、损坏或身份冲突时不访问原生历史。事件日志用于触发证明，不是历史来源，也不建立另一份正文索引。Lark 再以当前 bot 权限读取精确触发消息，核对会话、时间和真实 `thread_id`；root/parent 不提供话题证明。
+
+随后只取原生接口的一页、至多 10 个候选，固定倒序查询，再按时间顺序返回严格早于触发的同群/同话题消息。触发本身、明确父引用、同时间与未来项、重复、删除、错误 scope 及 app 卡片被排除；话题失败不退回全群，不翻页或重试。自动元数据读取总期限为 5 秒，不限制显式附件下载。结果 `version=v1` 含来源、状态、scope、锚点、候选数量、边界省略数、`has_more` 及消息的原生身份/时间/可读正文。背景资源只返回 kind/name 描述，不含下载 key、URL、资源句柄或文件字节；图文复用引用的可读表示，转发不递归展开。
+
+`available` 只说明该页可用，`none` 是该页无符合项，不能宣称完整历史。时间边界排除且还有更多或页面已满时用 `scan_limited`；`permission_denied`、`rate_limited`、`unavailable` 分别表示拒读、限流与不可用，原因经过归一化，不返回原生错误正文。调用方保留显式材料并显示缺失/覆盖说明，不将背景当作新指令、引用绑定或 Task 权限。该接口不提供 received 历史搜索、分页检索、历史媒体下载或全群转录。
+
 ## Provider 能力矩阵
 
 下表只列 16 个外部 provider，不包含用于测试和本地开发的 `memory`。`有条件` 表示 adapter 已支持该操作，但必须满足“限制”列的平台条件。
@@ -134,6 +144,7 @@ ResourceRef
 | `GET /v1/events/ws?after=<seq>` | 订阅标准事件。 |
 | `POST /v1/message.create` | 发送出站消息。 |
 | `POST /v1/message.update` | 编辑精确 connector 的本 bot 文本消息，需能力和 `MessageUpdater` 实现。 |
+| `POST /v1/conversation.window` | 在已持久触发的原生 scope 下读取单页近期背景；强制 Bearer 认证及可选 provider 能力。 |
 | `POST /v1/upload.create` | 从本地字节创建内部资源。 |
 | `POST /v1/resource.download` | 可信请求：把 provider-private resource 解析为内部资源。 |
 | `POST /v1/webhook/{provider}/{connector}` | Provider webhook ingress。Webhook verification 由 provider adapter 负责。 |

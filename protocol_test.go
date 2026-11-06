@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -140,6 +141,129 @@ func TestEventLogDedupesAfterSuccessfulAppend(t *testing.T) {
 	}
 	if _, fresh, err := log.Append(nil, event); err != nil || fresh {
 		t.Fatalf("second append fresh=%v err=%v", fresh, err)
+	}
+}
+
+func TestEventLogConversationWindowTriggerRequiresExactAddressedGroupMessage(t *testing.T) {
+	log, err := NewEventLog(filepath.Join(t.TempDir(), "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Date(2026, time.November, 6, 9, 0, 0, 0, time.UTC)
+	valid, fresh, err := log.Append(t.Context(), Event{
+		ID:        "evt-window",
+		Type:      EventMessageCreate,
+		Provider:  "lark",
+		Connector: "main",
+		Channel:   Channel{ID: "oc-group", Type: ChannelGroup},
+		User:      User{ID: "ou-user", Kind: UserKindUser},
+		Message:   Message{ID: "om-window", CreatedAt: createdAt},
+		Addressed: true,
+	})
+	if err != nil || !fresh {
+		t.Fatalf("append valid trigger fresh=%v err=%v", fresh, err)
+	}
+	if _, fresh, err = log.Append(t.Context(), Event{
+		ID:        "evt-direct",
+		Type:      EventMessageCreate,
+		Provider:  "lark",
+		Connector: "main",
+		Channel:   Channel{ID: "ou-direct", Type: ChannelDirect},
+		User:      User{ID: "ou-user", Kind: UserKindUser},
+		Message:   Message{ID: "om-direct", CreatedAt: createdAt},
+		Addressed: true,
+	}); err != nil || !fresh {
+		t.Fatalf("append direct event fresh=%v err=%v", fresh, err)
+	}
+	if _, fresh, err = log.Append(t.Context(), Event{
+		ID:        "evt-bot",
+		Type:      EventMessageCreate,
+		Provider:  "lark",
+		Connector: "main",
+		Channel:   Channel{ID: "oc-group", Type: ChannelGroup},
+		User:      User{ID: "ou-bot", Kind: "BOT"},
+		Message:   Message{ID: "om-bot", CreatedAt: createdAt},
+		Addressed: true,
+	}); err != nil || !fresh {
+		t.Fatalf("append bot event fresh=%v err=%v", fresh, err)
+	}
+
+	got, err := log.ConversationWindowTrigger(t.Context(), ConversationWindowRequest{
+		Provider:         "LARK",
+		Connector:        "MAIN",
+		TriggerEventID:   valid.ID,
+		TriggerMessageID: valid.Message.ID,
+	})
+	if err != nil || got.Sequence != valid.Sequence || got.Channel.ID != "oc-group" || !got.Message.CreatedAt.Equal(createdAt) {
+		t.Fatalf("trigger=%+v err=%v", got, err)
+	}
+	if _, err := log.ConversationWindowTrigger(t.Context(), ConversationWindowRequest{
+		Provider:         "lark",
+		Connector:        "main",
+		TriggerEventID:   "evt-direct",
+		TriggerMessageID: "om-direct",
+	}); err == nil {
+		t.Fatal("direct event was accepted as a conversation-window trigger")
+	}
+	if _, err := log.ConversationWindowTrigger(t.Context(), ConversationWindowRequest{
+		Provider:         "lark",
+		Connector:        "main",
+		TriggerEventID:   "evt-bot",
+		TriggerMessageID: "om-bot",
+	}); err == nil {
+		t.Fatal("bot event was accepted as a conversation-window trigger")
+	}
+
+	file, err := os.OpenFile(log.Path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRecord := func(event Event) {
+		t.Helper()
+		raw, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write(append(raw, '\n')); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeRecord(valid)
+	if err := file.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := log.ConversationWindowTrigger(t.Context(), ConversationWindowRequest{
+		Provider:         "lark",
+		Connector:        "main",
+		TriggerEventID:   valid.ID,
+		TriggerMessageID: valid.Message.ID,
+	}); err == nil {
+		t.Fatal("duplicate exact trigger was accepted")
+	}
+	for i := 0; i < conversationWindowLogRecords; i++ {
+		id := strconv.Itoa(i)
+		writeRecord(Event{
+			Sequence:  int64(i + 10),
+			ID:        "evt-tail-" + id,
+			Type:      EventMessageCreate,
+			Provider:  "other",
+			Connector: "main",
+			Channel:   Channel{ID: "oc-tail", Type: ChannelGroup},
+			User:      User{ID: "ou-user", Kind: UserKindUser},
+			Message:   Message{ID: "om-tail-" + id, CreatedAt: createdAt},
+			Addressed: true,
+		})
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := log.ConversationWindowTrigger(t.Context(), ConversationWindowRequest{
+		Provider:         "lark",
+		Connector:        "main",
+		TriggerEventID:   valid.ID,
+		TriggerMessageID: valid.Message.ID,
+	}); err == nil {
+		t.Fatal("exact trigger older than final log window was accepted")
 	}
 }
 

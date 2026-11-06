@@ -60,6 +60,16 @@ Optional WeCom enterprise lookup runs in the event-emission worker, with bounded
 
 `reply_stream` applies only to live passive reply-token routes. `edit_message` requires a genuine optional `MessageUpdater`. `text_max_bytes` bounds normalized UTF-8 text bytes per call; zero or absent means unknown. See [application integration](./guide/application-integration.md#complete-text-reply-streams-and-editing) for streaming, editing, long content, and compatibility.
 
+## Recent conversation window
+
+Optional provider capability `conversation_window_version=v1` is currently implemented by the Lark/Feishu `ConversationWindowReader`, without extending the mandatory `Provider` method set. The Hub advertises it only when its existing service token is configured. `POST /v1/conversation.window` requires a matching Bearer header even when older local APIs permit empty authentication; a URL token is insufficient. Trusted caller infrastructure must first authorize the user and conversation. Do not give this service credential to an Agent or treat the endpoint as Task authority.
+
+Requests contain only `provider`, `connector`, `trigger_event_id` and `trigger_message_id`, with no caller-selected conversation, thread, time or path. Within the last 64 MiB and final 10,000 event-log records, the Hub verifies the exact persisted, addressed group trigger. Missing, corrupt or conflicting evidence causes zero native-history calls. The log proves ingress, not chat history, and no second body index is created. Lark then reads the exact native trigger under current bot permissions and verifies chat, time and real `thread_id`; parent/root IDs are not thread evidence.
+
+One native page contains at most 10 candidates, queried newest-first and returned oldest-first after strict pre-trigger chat/thread filtering. Trigger, explicit parent, equal/future-time items, duplicate/deleted/wrong-scope messages and app cards are excluded. A failed thread query never widens to the chat, paginates or retries. The automatic metadata operation has a 5-second deadline, independent of explicit attachment downloads. Results have `version=v1`, source/status/scope/anchor, candidate and boundary-omission counts, `has_more`, and messages with native sender identity/time/readable text. Media has kind/name descriptors only: no download keys, URLs, handles or bytes. Posts reuse readable quote rendering; forwards are not expanded recursively.
+
+`available` describes one usable page; `none` means no matching item on that page, never complete-history absence. Boundary omissions with more results or a full page produce `scan_limited`; `permission_denied`, `rate_limited` and `unavailable` distinguish failures using normalized reasons rather than vendor response bodies. Callers retain explicit materials and expose missing/coverage information. Background grants no command, message binding or Task authority. This endpoint provides no received-history search, query pagination, history-media download or permanent group transcript.
+
 ## Provider Capability Matrix
 
 This table covers the 16 external providers and excludes `memory`, which is used for tests and local development. `Conditional` means the adapter supports the operation when the platform condition in the last column is met.
@@ -134,6 +144,7 @@ ResourceRef
 | `GET /v1/events/ws?after=<seq>` | Watch normalized events. |
 | `POST /v1/message.create` | Send outbound message. |
 | `POST /v1/message.update` | Edit an exact connector's bot-created text message; requires capability and `MessageUpdater`. |
+| `POST /v1/conversation.window` | Read one recent native page under a persisted trigger's scope; requires Bearer authentication and optional provider capability. |
 | `POST /v1/upload.create` | Create internal resource from local bytes. |
 | `POST /v1/resource.download` | Trusted request to resolve a provider-private resource into an internal resource. |
 | `POST /v1/webhook/{provider}/{connector}` | Provider webhook ingress. Webhook verification is owned by the provider adapter. |

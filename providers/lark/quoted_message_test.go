@@ -434,6 +434,217 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 	}
 }
 
+func TestReadConversationWindowUsesVerifiedNativeThread(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		overflow bool
+	}{
+		{name: "interactive card is excluded"},
+		{name: "overflow timestamp is excluded", overflow: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var triggerCalls, listCalls int
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				switch req.URL.Path {
+				case "/open-apis/auth/v3/tenant_access_token/internal":
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+				case "/open-apis/im/v1/messages/current":
+					triggerCalls++
+					if req.Method != http.MethodGet || req.Header.Get("Authorization") != "Bearer token" {
+						t.Errorf("trigger request method=%s authorization=%q", req.Method, req.Header.Get("Authorization"))
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"code": 0,
+						"data": map[string]any{
+							"items": []any{map[string]any{
+								"message_id": "current", "chat_id": "group", "thread_id": "topic", "create_time": "10001", "msg_type": "text", "body": map[string]any{"content": `{"text":"current"}`},
+							}},
+						},
+					})
+				case "/open-apis/im/v1/messages":
+					listCalls++
+					query := req.URL.Query()
+					if req.Method != http.MethodGet || req.Header.Get("Authorization") != "Bearer token" || query.Get("container_id_type") != "thread" || query.Get("container_id") != "topic" || query.Get("page_size") != "10" || query.Get("sort_type") != "ByCreateTimeDesc" || query.Get("end_time") != "" || query.Get("page_token") != "" {
+						t.Errorf("list request method=%s authorization=%q query=%v", req.Method, req.Header.Get("Authorization"), query)
+					}
+					item := func(id, threadID, createTime, messageType, content string) map[string]any {
+						return map[string]any{"message_id": id, "chat_id": "group", "thread_id": threadID, "create_time": createTime, "msg_type": messageType, "sender": map[string]any{"id": "ou-" + id, "id_type": "open_id", "sender_type": "user"}, "body": map[string]any{"content": content}}
+					}
+					items := []any{
+						item("current", "topic", "10001", "text", `{"text":"trigger duplicate"}`),
+						item("future", "topic", "10002", "text", `{"text":"future"}`),
+						item("sibling", "other-topic", "10000", "text", `{"text":"sibling secret"}`),
+						item("parent", "topic", "9999", "text", `{"text":"quoted parent"}`),
+						item("duplicate", "topic", "9998", "text", `{"text":"duplicate one"}`),
+						item("duplicate", "topic", "9997", "text", `{"text":"duplicate two"}`),
+						item("deleted", "topic", "9996", "text", `{"text":"deleted"}`),
+						item("card", "topic", "9995", "interactive", `{"elements":[]}`),
+						item("older-text", "topic", "9994", "text", `{"text":"older text"}`),
+						item("older-post", "topic", "9993", "post", `{"zh_cn":{"content":[[{"tag":"text","text":"older post"},{"tag":"img","image_key":"image-key"}]]}}`),
+					}
+					items[6].(map[string]any)["deleted"] = true
+					if tc.overflow {
+						items[7] = item("overflow", "topic", "18446744073709561615", "text", `{"text":"overflow timestamp leaked"}`)
+					} else {
+						items[7].(map[string]any)["sender"] = map[string]any{"id": "app", "id_type": "app_id", "sender_type": "app"}
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"has_more": true, "items": items}})
+				default:
+					t.Errorf("unexpected native window request %s", req.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer api.Close()
+
+			provider, err := New(Config{ConnectorID: "main", AppID: "app", AppSecret: "secret", BaseURL: api.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			triggerTime := time.UnixMilli(10001).UTC()
+			result := provider.ReadConversationWindow(t.Context(), uvim.Event{
+				Provider:  "lark",
+				Connector: "main",
+				Login:     uvim.Login{Platform: "lark", Connector: "main", ID: "app"},
+				Channel:   uvim.Channel{ID: "group", Type: uvim.ChannelGroup},
+				Message:   uvim.Message{ID: "current", CreatedAt: triggerTime},
+				// Older retained callbacks did not have a thread_id. The native GET is
+				// authoritative and must recover it before choosing the list container.
+				Referrer: uvim.Referrer{MessageID: "current", ParentMessageID: "parent", ChannelID: "group"},
+			})
+			if triggerCalls != 1 || listCalls != 1 {
+				t.Fatalf("native calls trigger=%d list=%d, want one each", triggerCalls, listCalls)
+			}
+			if result.Version != uvim.ConversationWindowVersionV1 || result.Source != "native" || result.Status != "scan_limited" || result.Reason != "window_scan_limited" || result.ConversationID != "group" || result.ThreadID != "topic" || result.TriggerMessageID != "current" || !result.AnchorTime.Equal(triggerTime) || result.CandidateCount != 10 || result.BoundaryOmitted != 2 || !result.HasMore {
+				t.Fatalf("window result=%+v", result)
+			}
+			if len(result.Items) != 2 || result.Items[0].MessageID != "older-post" || result.Items[1].MessageID != "older-text" || result.Items[0].Text != "Post locale: \"zh_cn\"\nolder post[Image]" || len(result.Items[0].Resources) != 1 || result.Items[0].Resources[0].Kind != uvim.ElementImage || result.Items[0].Resources[0].Name != "" {
+				t.Fatalf("filtered native window items=%+v", result.Items)
+			}
+			encoded, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{"image-key", "token", "sibling secret", "quoted parent", "duplicate one", "deleted", "overflow timestamp leaked"} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("native window leaked %q: %s", forbidden, encoded)
+				}
+			}
+			wrongBot := provider.ReadConversationWindow(t.Context(), uvim.Event{
+				Provider: "lark", Connector: "main", Login: uvim.Login{Platform: "lark", Connector: "main", ID: "other-app"},
+				Channel: uvim.Channel{ID: "group", Type: uvim.ChannelGroup}, Message: uvim.Message{ID: "current", CreatedAt: triggerTime},
+				Referrer: uvim.Referrer{MessageID: "current", ParentMessageID: "parent", ThreadID: "topic", ChannelID: "group"},
+			})
+			if wrongBot.Status != "unavailable" || wrongBot.Reason != "native_unavailable" || triggerCalls != 1 || listCalls != 1 {
+				t.Fatalf("wrong current bot should make no native call: result=%+v trigger=%d list=%d", wrongBot, triggerCalls, listCalls)
+			}
+			mismatchedThread := provider.ReadConversationWindow(t.Context(), uvim.Event{
+				Provider: "lark", Connector: "main", Login: uvim.Login{Platform: "lark", Connector: "main", ID: "app"},
+				Channel: uvim.Channel{ID: "group", Type: uvim.ChannelGroup}, Message: uvim.Message{ID: "current", CreatedAt: triggerTime},
+				Referrer: uvim.Referrer{MessageID: "current", ParentMessageID: "parent", ThreadID: "other-topic", ChannelID: "group"},
+			})
+			if mismatchedThread.Status != "unavailable" || mismatchedThread.Reason != "native_unavailable" || triggerCalls != 2 || listCalls != 1 {
+				t.Fatalf("mismatched native thread should fail closed before list: result=%+v trigger=%d list=%d", mismatchedThread, triggerCalls, listCalls)
+			}
+		})
+	}
+}
+
+func TestNativeWindowFailureNormalizesKnownCodes(t *testing.T) {
+	base := uvim.ConversationWindowResult{Version: uvim.ConversationWindowVersionV1, Source: "native"}
+	for _, tc := range []struct {
+		name, status, reason string
+		code                 int
+	}{
+		{name: "permission", code: 99991672, status: "permission_denied", reason: "native_permission_denied"},
+		{name: "rate", code: 230020, status: "rate_limited", reason: "native_rate_limited"},
+		{name: "unknown", code: 12345, status: "unavailable", reason: "native_unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := nativeWindowUnavailable(base, tc.code, nil)
+			if got.Status != tc.status || got.Reason != tc.reason {
+				t.Fatalf("normalized result=%+v", got)
+			}
+		})
+	}
+}
+
+func TestReadConversationWindowUsesCeilingBoundaryForChat(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+		case "/open-apis/im/v1/messages/current":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []any{map[string]any{
+				"message_id": "current", "chat_id": "group", "create_time": "10001", "msg_type": "text", "body": map[string]any{"content": `{"text":"current"}`},
+			}}}})
+		case "/open-apis/im/v1/messages":
+			query := req.URL.Query()
+			if query.Get("container_id_type") != "chat" || query.Get("container_id") != "group" || query.Get("page_size") != "10" || query.Get("sort_type") != "ByCreateTimeDesc" || query.Get("end_time") != "11" || query.Get("page_token") != "" {
+				t.Errorf("chat list query=%v", query)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []any{
+				map[string]any{"message_id": "current", "chat_id": "group", "create_time": "10001", "msg_type": "text", "body": map[string]any{"content": `{"text":"equal"}`}},
+				map[string]any{"message_id": "topic", "chat_id": "group", "thread_id": "other-topic", "create_time": "10000", "msg_type": "text", "body": map[string]any{"content": `{"text":"topic leak"}`}},
+				map[string]any{"message_id": "older", "chat_id": "group", "create_time": "9999", "msg_type": "text", "body": map[string]any{"content": `{"text":"ordinary chat context"}`}},
+			}}})
+		default:
+			t.Errorf("unexpected request %s", req.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer api.Close()
+
+	provider, err := New(Config{ConnectorID: "main", AppID: "app", AppSecret: "secret", BaseURL: api.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	triggerTime := time.UnixMilli(10001).UTC()
+	result := provider.ReadConversationWindow(t.Context(), uvim.Event{
+		Provider: "lark", Connector: "main", Login: uvim.Login{Platform: "lark", Connector: "main", ID: "app"},
+		Channel: uvim.Channel{ID: "group", Type: uvim.ChannelGroup}, Message: uvim.Message{ID: "current", CreatedAt: triggerTime},
+		Referrer: uvim.Referrer{MessageID: "current", ChannelID: "group"},
+	})
+	if result.Status != "available" || result.BoundaryOmitted != 1 || len(result.Items) != 1 || result.Items[0].MessageID != "older" || result.Items[0].Text != "ordinary chat context" {
+		t.Fatalf("chat result=%+v", result)
+	}
+}
+
+func TestReadConversationWindowRejectsOverfullNativePage(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+		case "/open-apis/im/v1/messages/current":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []any{map[string]any{
+				"message_id": "current", "chat_id": "group", "create_time": "10001", "msg_type": "text", "body": map[string]any{"content": `{"text":"current"}`},
+			}}}})
+		case "/open-apis/im/v1/messages":
+			items := make([]any, nativeWindowPageSize+1)
+			for i := range items {
+				items[i] = map[string]any{"message_id": fmt.Sprintf("older-%d", i), "chat_id": "group", "create_time": "9999", "msg_type": "text", "body": map[string]any{"content": `{"text":"unexpected overfull page"}`}}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": items}})
+		default:
+			t.Errorf("unexpected request %s", req.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer api.Close()
+
+	provider, err := New(Config{ConnectorID: "main", AppID: "app", AppSecret: "secret", BaseURL: api.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := provider.ReadConversationWindow(t.Context(), uvim.Event{
+		Provider: "lark", Connector: "main", Login: uvim.Login{Platform: "lark", Connector: "main", ID: "app"},
+		Channel: uvim.Channel{ID: "group", Type: uvim.ChannelGroup}, Message: uvim.Message{ID: "current", CreatedAt: time.UnixMilli(10001).UTC()},
+		Referrer: uvim.Referrer{MessageID: "current", ChannelID: "group"},
+	})
+	if result.Status != "unavailable" || result.Reason != "native_unavailable" || result.CandidateCount != 0 || len(result.Items) != 0 {
+		t.Fatalf("overfull native page should be rejected: %+v", result)
+	}
+}
+
 func findQuotedElement(elements []uvim.Element, id string) *uvim.Element {
 	for i := range elements {
 		if elements[i].Type == uvim.ElementQuote && elements[i].ID == id {

@@ -4,7 +4,7 @@
 
 Connector 不对附件大小设置额外上限：入站下载、本地存储、HTTP 上传和出站发送均不按字节数拦截，大小限制由 IM 平台或邮件服务器执行。
 
-群聊和私聊使用相同的附件下载链路，资源会在事件持久化前下载。企业微信会提取消息本身以及 `quote` 中的文件、图片、视频和引用文本，支持引用群文件后 @ 机器人；DingTalk 在配置 Stream 凭据时会用入站 `downloadCode` 换取临时文件 URL；飞书会提取图文消息中的图片和视频，也会提取被引用父消息的可下载附件。飞书 `folder` 会作为文件资源识别，但平台资源 API 不保证可以下载文件夹。显式引用的 `merge_forward` 会提取同一响应中可归属的子消息正文及支持的图片、文件等资源，包括嵌套转发；下载使用顶层转发容器的 message ID。`interactive` 消息卡片仍只提供正文/摘要，不提取卡片子资源。企业微信 AI Bot 回调标记为 `addressed=true`，飞书群消息仍按是否 @ 机器人设置该字段。Connector 只能处理平台实际投递的消息；文件内容识别由调用方应用负责。
+群聊和私聊使用相同的附件下载链路，资源会在事件持久化前下载。企业微信会提取消息本身以及 `quote` 中的文件、图片、视频和引用文本，支持引用群文件后 @ 机器人；DingTalk 在配置 Stream 凭据时会用入站 `downloadCode` 换取临时文件 URL；飞书会提取图文消息中的图片和视频，也会提取被引用父消息的可下载附件。飞书 `folder` 会作为文件资源识别，但平台资源 API 不保证可以下载文件夹。显式引用的 `merge_forward` 会提取同一响应中可归属的子消息正文及支持的图片、文件等资源，包括嵌套转发；下载使用顶层转发容器的 message ID。`interactive` 消息卡片仍只提供正文/摘要，不提取卡片子资源。企业微信 AI Bot 回调标记为 `addressed=true`，飞书群消息仍按是否 @ 机器人设置该字段。入站事件只处理平台实际投递的消息；原生近期窗口是另行授权的只读查询。文件内容识别由调用方应用负责。
 
 ## 公开形态
 
@@ -30,7 +30,7 @@ Connector 不对附件大小设置额外上限：入站下载、本地存储、H
 
 对显式引用的飞书 `post`，正文使用仅限引用材料的富文本表示，不复用普通入站 post 的展平命令正文。它选择直接原生正文，或依次选择 `zh_cn`、`en_us`、`ja_jp`、其余按排序的一个 locale，并标出所选 locale。非空 `content_v2` 优先于 legacy `content`；两种表示中的原生图片/媒体引用都会保留，并按 kind/key 去重一次。标题、相邻文本、链接及其 href、稳定的 @ ID 和原生提供的名称、Markdown、带语言且有边界的代码、分隔线和表情都会作为引用材料保留。图片/媒体只显示安全的种类占位符，不把结构化资源中的私有 key 或 provider metadata map 渲染成正文；用户正文、代码、链接和 Markdown 本身按原文保留，不承诺按字符串匹配做全文脱敏。post 顶层文件会成为常规脱敏资源；post 附件区的文件夹只给出请求 ZIP 或单个文件的提示，不会被作为一个资源下载。未知或格式错误的部分会以诊断形式可见，但仅有诊断不能让空引用变为可用内容。不提供样式或完整原始 schema 保真，也不会根据 Markdown URL 推测下载媒体。这些规则同时适用于根引用和转发引用节点，不改变普通命令解码。它们只提供描述性的引用材料，不恢复来源 Task、thread、用户身份或权限，也不授予访问权限。
 
-飞书缺少 `upper_message_id` 的子项按原生 CLI 作为顶层直子；明确断链、重复、环、已删除或会话冲突的项不提供正文/资源，并在引用说明中标记不可用，合法兄弟材料仍可读取。下载及关系规则参照[飞书官方 CLI 资源合同](https://github.com/larksuite/cli/blob/05ac58ffa089fe7a171205ac1d1e97ee50196ec8/skills/lark-im/references/lark-im-message-enrichment.md)与[关系构建实现](https://github.com/larksuite/cli/blob/05ac58ffa089fe7a171205ac1d1e97ee50196ec8/shortcuts/im/convert_lib/merge.go)。这不授予来源系统权限，也不自动读取群历史。
+飞书缺少 `upper_message_id` 的子项按原生 CLI 作为顶层直子；明确断链、重复、环、已删除或会话冲突的项不提供正文/资源，并在引用说明中标记不可用，合法兄弟材料仍可读取。下载及关系规则参照[飞书官方 CLI 资源合同](https://github.com/larksuite/cli/blob/05ac58ffa089fe7a171205ac1d1e97ee50196ec8/skills/lark-im/references/lark-im-message-enrichment.md)与[关系构建实现](https://github.com/larksuite/cli/blob/05ac58ffa089fe7a171205ac1d1e97ee50196ec8/shortcuts/im/convert_lib/merge.go)。引用处理自身不遍历群历史，也不授予来源系统权限。另行授权的[近期会话窗口](/architecture.html#近期会话窗口)只提供背景媒体的种类和名称说明，不下载文件；需要实际媒体时仍使用显式引用或当前附件通道。
 
 公开事件会移除 provider-private 字段：
 

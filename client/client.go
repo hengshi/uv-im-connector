@@ -166,6 +166,16 @@ func (c *Client) DownloadProviderResource(ctx context.Context, req uvim.Resource
 	return out, c.postJSON(ctx, "/v1/resource.download", req, &out)
 }
 
+// ConversationWindow reads bounded native reference material for a retained
+// inbound trigger. Provider-level unavailability is represented in the result;
+// an error means the connector HTTP request did not complete successfully.
+func (c *Client) ConversationWindow(ctx context.Context, request uvim.ConversationWindowRequest) (uvim.ConversationWindowResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, uvim.ConversationWindowTimeout)
+	defer cancel()
+	var out uvim.ConversationWindowResult
+	return out, c.postJSON(ctx, "/v1/conversation.window", request, &out)
+}
+
 func (c *Client) ResolveInternalURL(ctx context.Context, internalURL string) (*http.Response, error) {
 	id := strings.TrimPrefix(strings.TrimSpace(internalURL), "internal://")
 	if id == "" {

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"maps"
 	"math/rand/v2"
@@ -143,6 +144,7 @@ func (h *Hub) Handler() http.Handler {
 	mux.HandleFunc("/v1/events/ws", h.handleEventsWS)
 	mux.HandleFunc("/v1/message.create", h.handleMessageCreate)
 	mux.HandleFunc("/v1/message.update", h.handleMessageUpdate)
+	mux.HandleFunc("/v1/conversation.window", h.handleConversationWindow)
 	mux.HandleFunc("/v1/identity.link", h.handleIdentity)
 	mux.HandleFunc("/v1/identity.resolve", h.handleIdentity)
 	mux.HandleFunc("/v1/identity.unlink", h.handleIdentity)
@@ -168,11 +170,17 @@ func (h *Hub) handleMeta(w http.ResponseWriter, req *http.Request) {
 	}
 	var providers []uvim.ProviderMeta
 	for _, provider := range h.registry.List() {
+		capabilities := provider.Capabilities()
+		health := provider.Health(req.Context())
+		if strings.TrimSpace(h.authToken) == "" {
+			capabilities.ConversationWindowVersion = ""
+			health.Capabilities.ConversationWindowVersion = ""
+		}
 		providers = append(providers, uvim.ProviderMeta{
 			Provider:     provider.ID(),
 			Connector:    provider.ConnectorID(),
-			Capabilities: provider.Capabilities(),
-			Health:       provider.Health(req.Context()),
+			Capabilities: capabilities,
+			Health:       health,
 		})
 	}
 	meta := uvim.NewServiceMeta(providers)
@@ -333,6 +341,139 @@ func (h *Hub) handleMessageUpdate(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Hub) handleConversationWindow(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	if !h.conversationWindowAuthOK(req) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var input uvim.ConversationWindowRequest
+	decoder := json.NewDecoder(req.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid_conversation_window_request")
+		return
+	}
+	input.Provider = strings.TrimSpace(input.Provider)
+	input.Connector = strings.TrimSpace(input.Connector)
+	input.TriggerEventID = strings.TrimSpace(input.TriggerEventID)
+	input.TriggerMessageID = strings.TrimSpace(input.TriggerMessageID)
+	if input.Provider == "" || input.Connector == "" || input.TriggerEventID == "" || input.TriggerMessageID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_conversation_window_request")
+		return
+	}
+	provider := h.registry.Get(input.Provider, input.Connector)
+	if provider == nil || provider.Capabilities().ConversationWindowVersion != uvim.ConversationWindowVersionV1 {
+		writeJSON(w, http.StatusOK, unavailableConversationWindow(input, "unsupported"))
+		return
+	}
+	reader, ok := provider.(uvim.ConversationWindowReader)
+	if !ok {
+		writeJSON(w, http.StatusOK, unavailableConversationWindow(input, "unsupported"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), uvim.ConversationWindowTimeout)
+	defer cancel()
+	trigger, err := h.eventLog.ConversationWindowTrigger(ctx, input)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		writeJSON(w, http.StatusOK, unavailableConversationWindow(input, "window_timeout"))
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusOK, unavailableConversationWindow(input, "trigger_unavailable"))
+		return
+	}
+	result := reader.ReadConversationWindow(ctx, trigger)
+	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
+	if timedOut {
+		writeJSON(w, http.StatusOK, unavailableConversationWindow(input, "window_timeout"))
+		return
+	}
+	writeJSON(w, http.StatusOK, normalizeConversationWindow(input, trigger, result))
+}
+
+func (h *Hub) conversationWindowAuthOK(req *http.Request) bool {
+	if h == nil || strings.TrimSpace(h.authToken) == "" || req == nil {
+		return false
+	}
+	value := strings.TrimSpace(req.Header.Get("Authorization"))
+	if !strings.HasPrefix(strings.ToLower(value), "bearer ") {
+		return false
+	}
+	return strings.TrimSpace(value[7:]) == h.authToken
+}
+
+func unavailableConversationWindow(request uvim.ConversationWindowRequest, reason string) uvim.ConversationWindowResult {
+	return uvim.ConversationWindowResult{
+		Version:          uvim.ConversationWindowVersionV1,
+		Source:           "native",
+		Status:           "unavailable",
+		Reason:           reason,
+		TriggerMessageID: request.TriggerMessageID,
+	}
+}
+
+func normalizeConversationWindow(request uvim.ConversationWindowRequest, trigger uvim.Event, result uvim.ConversationWindowResult) uvim.ConversationWindowResult {
+	if result.Version != uvim.ConversationWindowVersionV1 || result.Source != "native" || result.TriggerMessageID != trigger.Message.ID || result.ConversationID != trigger.Channel.ID || !result.AnchorTime.Equal(trigger.Message.CreatedAt) || (trigger.Referrer.ThreadID != "" && result.ThreadID != trigger.Referrer.ThreadID) || result.CandidateCount < 0 || result.BoundaryOmitted < 0 || !validConversationWindowStatus(result.Status, result.Reason) {
+		return unavailableConversationWindow(request, "native_unavailable")
+	}
+	if !validConversationWindowItems(result, trigger) {
+		return unavailableConversationWindow(request, "native_unavailable")
+	}
+	return result
+}
+
+func validConversationWindowItems(result uvim.ConversationWindowResult, trigger uvim.Event) bool {
+	if result.CandidateCount > 10 || result.BoundaryOmitted > result.CandidateCount || len(result.Items) > 10 || result.CandidateCount < len(result.Items) {
+		return false
+	}
+	switch result.Status {
+	case "available":
+		if len(result.Items) == 0 {
+			return false
+		}
+	case "none", "permission_denied", "rate_limited", "unavailable":
+		if len(result.Items) != 0 {
+			return false
+		}
+	}
+	seen := make(map[string]struct{}, len(result.Items))
+	parentID := strings.TrimSpace(trigger.Referrer.ParentMessageID)
+	for _, item := range result.Items {
+		messageID := strings.TrimSpace(item.MessageID)
+		if messageID == "" || item.CreatedAt.IsZero() || !item.CreatedAt.Before(trigger.Message.CreatedAt) || messageID == trigger.Message.ID || (parentID != "" && messageID == parentID) {
+			return false
+		}
+		if _, duplicate := seen[messageID]; duplicate {
+			return false
+		}
+		seen[messageID] = struct{}{}
+	}
+	return true
+}
+
+func validConversationWindowStatus(status, reason string) bool {
+	switch status {
+	case "available", "none":
+		return reason == ""
+	case "scan_limited":
+		return reason == "window_scan_limited"
+	case "permission_denied":
+		return reason == "native_permission_denied"
+	case "rate_limited":
+		return reason == "native_rate_limited"
+	case "unavailable":
+		switch reason {
+		case "window_timeout", "native_unavailable":
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Hub) handleUploadCreate(w http.ResponseWriter, req *http.Request) {

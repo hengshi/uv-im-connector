@@ -879,6 +879,154 @@ func TestHubMetaIncludesServiceAndProtocolVersion(t *testing.T) {
 	}
 }
 
+func TestHubConversationWindowUsesStrictBearerAndTrustedTrigger(t *testing.T) {
+	anchor := time.Date(2026, time.November, 6, 10, 0, 0, 0, time.UTC)
+	provider := &downloadProvider{
+		id:                        "lark",
+		connector:                 "main",
+		conversationWindowVersion: uvim.ConversationWindowVersionV1,
+		conversationWindowResult: uvim.ConversationWindowResult{
+			Version:          uvim.ConversationWindowVersionV1,
+			Source:           "native",
+			Status:           "available",
+			ConversationID:   "oc-group",
+			TriggerMessageID: "om-trigger",
+			AnchorTime:       anchor,
+			CandidateCount:   1,
+			Items: []uvim.ContextMessage{{
+				MessageID: "om-before",
+				CreatedAt: anchor.Add(-time.Second),
+				Text:      "earlier context",
+			}},
+		},
+	}
+	log := mustEventLog(t, filepath.Join(t.TempDir(), "events.jsonl"))
+	hub := NewHub(uvim.NewProviderRegistry(provider), log, nil)
+	if err := hub.Emit(t.Context(), uvim.Event{
+		ID:        "evt-trigger",
+		Type:      uvim.EventMessageCreate,
+		Provider:  "lark",
+		Connector: "main",
+		Channel:   uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup},
+		User:      uvim.User{ID: "ou-user", Kind: uvim.UserKindUser},
+		Message:   uvim.Message{ID: "om-trigger", CreatedAt: anchor},
+		Addressed: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+
+	resp, err := http.Get(api.URL + "/v1/meta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta uvim.ServiceMeta
+	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(meta.Providers) != 1 || meta.Providers[0].Capabilities.ConversationWindowVersion != "" || meta.Providers[0].Health.Capabilities.ConversationWindowVersion != "" {
+		t.Fatalf("unauthenticated metadata exposed conversation window capability: %+v", meta.Providers)
+	}
+
+	input := uvim.ConversationWindowRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-trigger", TriggerMessageID: "om-trigger"}
+	post := func(url, authorization string) *http.Response {
+		t.Helper()
+		raw, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if authorization != "" {
+			req.Header.Set("Authorization", authorization)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	resp = post(api.URL+"/v1/conversation.window", "Bearer token")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized || provider.conversationWindowCalls != 0 {
+		t.Fatalf("empty-token route status=%d calls=%d", resp.StatusCode, provider.conversationWindowCalls)
+	}
+
+	hub.SetAuthToken("token")
+	resp = post(api.URL+"/v1/conversation.window", "token")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized || provider.conversationWindowCalls != 0 {
+		t.Fatalf("raw authorization status=%d calls=%d", resp.StatusCode, provider.conversationWindowCalls)
+	}
+	resp = post(api.URL+"/v1/conversation.window?access_token=token", "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized || provider.conversationWindowCalls != 0 {
+		t.Fatalf("query authorization status=%d calls=%d", resp.StatusCode, provider.conversationWindowCalls)
+	}
+
+	metaReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, api.URL+"/v1/meta", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metaReq.Header.Set("Authorization", "Bearer token")
+	resp, err = http.DefaultClient.Do(metaReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta = uvim.ServiceMeta{}
+	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(meta.Providers) != 1 || meta.Providers[0].Capabilities.ConversationWindowVersion != uvim.ConversationWindowVersionV1 || meta.Providers[0].Health.Capabilities.ConversationWindowVersion != uvim.ConversationWindowVersionV1 {
+		t.Fatalf("authenticated metadata=%+v", meta.Providers)
+	}
+
+	c := client.New(api.URL)
+	c.Token = "token"
+	result, err := c.ConversationWindow(t.Context(), input)
+	if err != nil || result.Source != "native" || result.Status != "available" || len(result.Items) != 1 || result.TriggerMessageID != input.TriggerMessageID || provider.conversationWindowCalls != 1 || provider.conversationWindowTrigger.ID != input.TriggerEventID {
+		t.Fatalf("result=%+v calls=%d trigger=%+v err=%v", result, provider.conversationWindowCalls, provider.conversationWindowTrigger, err)
+	}
+
+	provider.conversationWindowResult.Status = "unavailable"
+	provider.conversationWindowResult.Reason = "vendor-response-token"
+	provider.conversationWindowResult.CandidateCount = 0
+	provider.conversationWindowResult.Items = nil
+	result, err = c.ConversationWindow(t.Context(), input)
+	if err != nil || result.Status != "unavailable" || result.Reason != "native_unavailable" || provider.conversationWindowCalls != 2 {
+		t.Fatalf("untrusted result=%+v calls=%d err=%v", result, provider.conversationWindowCalls, err)
+	}
+
+	provider.conversationWindowResult.Status = "available"
+	provider.conversationWindowResult.Reason = ""
+	provider.conversationWindowResult.CandidateCount = 1
+	provider.conversationWindowResult.Items = []uvim.ContextMessage{{MessageID: "om-before", CreatedAt: anchor}}
+	result, err = c.ConversationWindow(t.Context(), input)
+	if err != nil || result.Status != "unavailable" || result.Reason != "native_unavailable" || provider.conversationWindowCalls != 3 {
+		t.Fatalf("post-trigger result=%+v calls=%d err=%v", result, provider.conversationWindowCalls, err)
+	}
+
+	provider.conversationWindowResult.Items[0].CreatedAt = anchor.Add(-time.Second)
+	provider.conversationWindowResult.CandidateCount = 11
+	result, err = c.ConversationWindow(t.Context(), input)
+	if err != nil || result.Status != "unavailable" || result.Reason != "native_unavailable" || provider.conversationWindowCalls != 4 {
+		t.Fatalf("overfull result=%+v calls=%d err=%v", result, provider.conversationWindowCalls, err)
+	}
+
+	input.TriggerEventID = "missing"
+	result, err = c.ConversationWindow(t.Context(), input)
+	if err != nil || result.Status != "unavailable" || result.Reason != "trigger_unavailable" || provider.conversationWindowCalls != 4 {
+		t.Fatalf("missing trigger result=%+v calls=%d err=%v", result, provider.conversationWindowCalls, err)
+	}
+}
+
 func TestHubWebhookRoutesToProviderAndStoresEvent(t *testing.T) {
 	dir := t.TempDir()
 	provider, err := slack.New(slack.Config{WebhookSecret: "secret"})
@@ -1269,22 +1417,27 @@ func mustEventLog(t *testing.T, path string) *uvim.EventLog {
 }
 
 type downloadProvider struct {
-	id        string
-	connector string
-	sendErr   error
+	id                        string
+	connector                 string
+	sendErr                   error
+	conversationWindowVersion string
+	conversationWindowResult  uvim.ConversationWindowResult
+	conversationWindowCalls   int
+	conversationWindowTrigger uvim.Event
 }
 
 func (p *downloadProvider) ID() string          { return p.id }
 func (p *downloadProvider) ConnectorID() string { return p.connector }
 func (p *downloadProvider) Capabilities() uvim.Capabilities {
 	return uvim.Capabilities{
-		Inbound:          true,
-		Outbound:         true,
-		ReplyMessage:     true,
-		ProactiveGroup:   true,
-		TargetKinds:      []string{uvim.TargetConversation},
-		DownloadResource: true,
-		ResourceKinds:    []string{uvim.ElementFile},
+		Inbound:                   true,
+		Outbound:                  true,
+		ReplyMessage:              true,
+		ProactiveGroup:            true,
+		TargetKinds:               []string{uvim.TargetConversation},
+		DownloadResource:          true,
+		ResourceKinds:             []string{uvim.ElementFile},
+		ConversationWindowVersion: p.conversationWindowVersion,
 	}
 }
 func (p *downloadProvider) Run(ctx context.Context, sink uvim.EventSink) error {
@@ -1301,6 +1454,11 @@ func (p *downloadProvider) Download(ctx context.Context, req uvim.ResourceDownlo
 	store := &uvim.ResourceStore{Dir: req.Dir}
 	ref := req.Resource
 	return store.Save(ctx, strings.NewReader("downloaded"), ref)
+}
+func (p *downloadProvider) ReadConversationWindow(_ context.Context, trigger uvim.Event) uvim.ConversationWindowResult {
+	p.conversationWindowCalls++
+	p.conversationWindowTrigger = trigger
+	return p.conversationWindowResult
 }
 func (p *downloadProvider) Health(context.Context) uvim.Health {
 	return uvim.Health{Provider: p.id, Connector: p.connector, State: "ok", CheckedAt: time.Now().UTC(), Capabilities: p.Capabilities()}

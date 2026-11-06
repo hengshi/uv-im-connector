@@ -292,6 +292,10 @@ type Capabilities struct {
 	// confirm the native message and conversation that a successful send
 	// published. An empty value means no locator is available.
 	PublicationLocatorVersion string `json:"publication_locator_version,omitempty"`
+	// ConversationWindowVersion is advertised only by providers with a native,
+	// authenticated bounded conversation-window read. An empty value means the
+	// adapter cannot provide background conversation material.
+	ConversationWindowVersion string `json:"conversation_window_version,omitempty"`
 }
 
 type OutboundTarget struct {
