@@ -75,6 +75,39 @@ type Event struct {
 	BotMentionPrefix *bool `json:"bot_mention_prefix,omitempty"`
 }
 
+// EventSourceTime is the immutable time anchor for connector-source context.
+// Message.CreatedAt is preferred, while Event.Time is the durable fallback for
+// providers that omit per-message time. It deliberately returns a value rather
+// than normalizing Event in place: callers must preserve the exact persisted
+// event when calculating trigger and entry digests.
+func EventSourceTime(event Event) (time.Time, bool) {
+	if !event.Message.CreatedAt.IsZero() {
+		return event.Message.CreatedAt.UTC(), true
+	}
+	if !event.Time.IsZero() {
+		return event.Time.UTC(), true
+	}
+	return time.Time{}, false
+}
+
+const (
+	EventSourceTimeMessageCreatedAt = "message_created_at"
+	EventSourceTimeEventTime        = "event_time"
+)
+
+// EventSourceTimeSource reports which persisted field supplied EventSourceTime.
+// It is display/provenance metadata only and does not normalize or otherwise
+// alter the event used for digests.
+func EventSourceTimeSource(event Event) string {
+	if !event.Message.CreatedAt.IsZero() {
+		return EventSourceTimeMessageCreatedAt
+	}
+	if !event.Time.IsZero() {
+		return EventSourceTimeEventTime
+	}
+	return ""
+}
+
 func (e Event) DedupeKey() string {
 	eventType := strings.TrimSpace(e.Type)
 	if eventType == "" {
@@ -306,6 +339,10 @@ type Capabilities struct {
 	// authenticated paginated conversation search. An empty value means that
 	// the adapter cannot provide the explicit, bounded history reader.
 	ConversationSearchVersion string `json:"conversation_search_version,omitempty"`
+	// ConversationMaterializeVersion is advertised only by providers that can
+	// revalidate a selected native resource and turn the Hub-private reference
+	// into an internal resource. It never authorizes a caller-selected URL/key.
+	ConversationMaterializeVersion string `json:"conversation_materialize_version,omitempty"`
 }
 
 type OutboundTarget struct {

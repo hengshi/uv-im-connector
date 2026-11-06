@@ -58,6 +58,9 @@ func RuntimeBuildMetadata() BuildMetadata {
 
 type ServiceMeta struct {
 	IdentityLinks bool `json:"identity_links,omitempty"`
+	// ConversationContextQueryVersion is a service capability because received
+	// context is backed by the Hub EventLog rather than an adapter-native API.
+	ConversationContextQueryVersion string `json:"conversation_context_query_version,omitempty"`
 	// PublicationLocatorVersion describes the highest receipt schema the
 	// service can serialize. Provider support remains capability-specific.
 	PublicationLocatorVersion string         `json:"publication_locator_version,omitempty"`

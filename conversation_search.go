@@ -10,6 +10,7 @@ import (
 
 const (
 	ConversationSearchVersionV1 = "v1"
+	ConversationContextQueryVersionV1 = "v1"
 	ConversationSearchTimeout   = 5 * time.Second
 )
 
@@ -45,6 +46,9 @@ type ConversationSearchRequest struct {
 	TriggerMessageID    string                    `json:"trigger_message_id"`
 	ExpectedEventDigest string                    `json:"expected_event_digest"`
 	AudienceDigest      string                    `json:"audience_digest"`
+	// Source defaults to native for compatibility. received is an explicit
+	// EventLog-only read and never asks the provider for history.
+	Source              string                    `json:"source,omitempty"`
 	Filter              *ConversationSearchFilter `json:"filter,omitempty"`
 	Limit               int                       `json:"limit,omitempty"`
 	Cursor              string                    `json:"cursor,omitempty"`
@@ -58,12 +62,21 @@ type ConversationSearchResult struct {
 	Status           string           `json:"status"`
 	Reason           string           `json:"reason,omitempty"`
 	EventDigest      string           `json:"event_digest,omitempty"`
+	// EventLogGeneration and TriggerEntryDigest are populated only when a
+	// result contains received EventLog material. They are durable source proof,
+	// not an authorization grant or a provider history cursor.
+	EventLogGeneration      string           `json:"event_log_generation,omitempty"`
+	TriggerEntryDigest      string           `json:"trigger_entry_digest,omitempty"`
+	IndexLowerBoundSequence int64            `json:"index_lower_bound_sequence,omitempty"`
 	Provider         string           `json:"provider,omitempty"`
 	Connector        string           `json:"connector,omitempty"`
 	ConversationID   string           `json:"conversation_id,omitempty"`
 	ThreadID         string           `json:"thread_id,omitempty"`
 	TriggerMessageID string           `json:"trigger_message_id,omitempty"`
 	AnchorTime       time.Time        `json:"anchor_time,omitempty"`
+	// AnchorTimeSource is message_created_at or event_time when an immutable
+	// persisted source timestamp was available for the trigger.
+	AnchorTimeSource string           `json:"anchor_time_source,omitempty"`
 	EffectiveFrom    *time.Time       `json:"effective_from,omitempty"`
 	EffectiveTo      *time.Time       `json:"effective_to,omitempty"`
 	ScannedOldest    *time.Time       `json:"scanned_oldest,omitempty"`

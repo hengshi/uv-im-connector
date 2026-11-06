@@ -3,11 +3,15 @@ package uvim
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +23,52 @@ const (
 )
 
 var errConversationWindowTriggerUnavailable = errors.New("conversation window trigger unavailable")
+
+var errConversationContextUnavailable = errors.New("conversation context unavailable")
+
+// ConversationContextTail is the bounded EventLog evidence window used by a
+// received-context projection. It stores no second copy of message text; its
+// generation and entry digests let projections fail closed after replacement,
+// truncation or corruption.
+type ConversationContextTail struct {
+	Generation         string
+	LowerBoundSequence int64
+	Events             []Event
+	Cursor             ConversationContextCursor
+}
+
+// ConversationContextCursor is a persisted, metadata-only position in the
+// bounded EventLog tail. It contains file offsets and sequence numbers, never
+// a second copy of message bodies or provider-private material. FileIdentity,
+// generation and EOF make an append-only fast path fail closed on replacement,
+// truncation or an unexpected file object.
+type ConversationContextCursor struct {
+	Version            int                         `json:"version"`
+	Generation         string                      `json:"generation,omitempty"`
+	FileIdentity       string                      `json:"file_identity,omitempty"`
+	EOFOffset          int64                       `json:"eof_offset,omitempty"`
+	LowerBoundSequence int64                       `json:"lower_bound_sequence,omitempty"`
+	Records            []ConversationContextRecord `json:"records,omitempty"`
+}
+
+// ConversationContextRecord identifies one complete sanitized EventLog line.
+// Offset and EndOffset are byte offsets in the exact file identified by the
+// cursor; they are revalidated before a selected body is read.
+type ConversationContextRecord struct {
+	Sequence  int64 `json:"sequence"`
+	Offset    int64 `json:"offset"`
+	EndOffset int64 `json:"end_offset"`
+}
+
+// ConversationContextDelta returns either appended records since Cursor or a
+// rebuilt tail after an identity/generation/truncation guard failed. Events are
+// returned only for the new/rebuilt tail; callers persist their own sanitized
+// metadata projection and read selected bodies separately.
+type ConversationContextDelta struct {
+	Cursor ConversationContextCursor
+	Events []Event
+	Reset  bool
+}
 
 type EventLog struct {
 	Path string
@@ -135,6 +185,338 @@ func (l *EventLog) ReadAfter(ctx context.Context, sequence int64) ([]Event, erro
 			out = append(out, event)
 		}
 	}
+}
+
+// ConversationContextTail reads at most the final 64 MiB and 10,000 complete
+// EventLog records. New callers should retain Cursor and use
+// ConversationContextAdvance; this wrapper preserves the original full-tail
+// API for the initial/rebuild path.
+func (l *EventLog) ConversationContextTail(ctx context.Context) (ConversationContextTail, error) {
+	delta, err := l.ConversationContextAdvance(ctx, ConversationContextCursor{})
+	if err != nil {
+		return ConversationContextTail{}, err
+	}
+	return ConversationContextTail{Generation: delta.Cursor.Generation, LowerBoundSequence: delta.Cursor.LowerBoundSequence, Events: delta.Events, Cursor: delta.Cursor}, nil
+}
+
+// ConversationContextAdvance reads only complete records appended after a
+// previously persisted EOF cursor. A changed inode, first-record generation,
+// invalid prior EOF, or truncation returns a complete bounded rebuild with
+// Reset=true. This keeps ordinary received-context queries from reparsing the
+// full EventLog while retaining a fail-closed recovery path.
+func (l *EventLog) ConversationContextAdvance(ctx context.Context, cursor ConversationContextCursor) (ConversationContextDelta, error) {
+	if l == nil || strings.TrimSpace(l.Path) == "" {
+		return ConversationContextDelta{}, errConversationContextUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	file, err := os.Open(l.Path)
+	if err != nil {
+		return ConversationContextDelta{}, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || info.Size() <= 0 {
+		if err != nil {
+			return ConversationContextDelta{}, err
+		}
+		return ConversationContextDelta{}, errConversationContextUnavailable
+	}
+	generation, identity, err := conversationContextFileProof(file, info, l.Path)
+	if err != nil {
+		return ConversationContextDelta{}, errConversationContextUnavailable
+	}
+	if !validConversationContextCursor(cursor) || cursor.Generation != generation || cursor.FileIdentity != identity || info.Size() < cursor.EOFOffset || !conversationContextCursorEOFValid(cursor) {
+		next, events, err := conversationContextTailLocked(ctx, file, info, l.Path, generation, identity)
+		if err != nil {
+			return ConversationContextDelta{}, err
+		}
+		return ConversationContextDelta{Cursor: next, Events: events, Reset: true}, nil
+	}
+	if info.Size() == cursor.EOFOffset {
+		return ConversationContextDelta{Cursor: cloneConversationContextCursor(cursor)}, nil
+	}
+	// A catch-up is itself bounded.  Do not decode an arbitrarily large append
+	// just because the cursor's file identity remains valid: a projection can
+	// rebuild its retained tail without treating every missed body as metadata.
+	if info.Size()-cursor.EOFOffset > conversationWindowLogBytes {
+		next, events, tailErr := conversationContextTailLocked(ctx, file, info, l.Path, generation, identity)
+		if tailErr != nil {
+			return ConversationContextDelta{}, tailErr
+		}
+		return ConversationContextDelta{Cursor: next, Events: events, Reset: true}, nil
+	}
+	next, events, overrun, err := conversationContextAppendLocked(ctx, file, info.Size(), cursor)
+	if err != nil {
+		return ConversationContextDelta{}, err
+	}
+	if overrun {
+		next, events, tailErr := conversationContextTailLocked(ctx, file, info, l.Path, generation, identity)
+		if tailErr != nil {
+			return ConversationContextDelta{}, tailErr
+		}
+		return ConversationContextDelta{Cursor: next, Events: events, Reset: true}, nil
+	}
+	return ConversationContextDelta{Cursor: next, Events: events}, nil
+}
+
+// ConversationContextSelected reads and revalidates only the caller-selected
+// EventLog bodies under a previously proved cursor. It does not traverse the
+// retained tail or copy its bodies into the received-context index.
+func (l *EventLog) ConversationContextSelected(ctx context.Context, cursor ConversationContextCursor, records []ConversationContextRecord) (map[int64]Event, error) {
+	if l == nil || strings.TrimSpace(l.Path) == "" || len(records) == 0 {
+		return nil, errConversationContextUnavailable
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	file, err := os.Open(l.Path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || info.Size() < cursor.EOFOffset {
+		return nil, errConversationContextUnavailable
+	}
+	generation, identity, err := conversationContextFileProof(file, info, l.Path)
+	if err != nil || !validConversationContextCursor(cursor) || cursor.Generation != generation || cursor.FileIdentity != identity || !conversationContextCursorEOFValid(cursor) {
+		return nil, errConversationContextUnavailable
+	}
+	known := make(map[int64]ConversationContextRecord, len(cursor.Records))
+	for _, record := range cursor.Records {
+		known[record.Sequence] = record
+	}
+	selected := make(map[int64]Event, len(records))
+	for _, record := range records {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		knownRecord, ok := known[record.Sequence]
+		if !ok || knownRecord.Offset != record.Offset || knownRecord.EndOffset != record.EndOffset || record.Offset < 0 || record.EndOffset <= record.Offset || record.EndOffset > cursor.EOFOffset || record.EndOffset-record.Offset > conversationWindowLogBytes {
+			return nil, errConversationContextUnavailable
+		}
+		raw := make([]byte, record.EndOffset-record.Offset)
+		if _, err := file.ReadAt(raw, record.Offset); err != nil {
+			return nil, errConversationContextUnavailable
+		}
+		if len(raw) == 0 || raw[len(raw)-1] != '\n' {
+			return nil, errConversationContextUnavailable
+		}
+		var event Event
+		if err := json.Unmarshal(raw, &event); err != nil || event.Sequence != record.Sequence {
+			return nil, errConversationContextUnavailable
+		}
+		selected[event.Sequence] = event
+	}
+	return selected, nil
+}
+
+func conversationContextTailLocked(ctx context.Context, file *os.File, info os.FileInfo, path, generation, identity string) (ConversationContextCursor, []Event, error) {
+	offset := max(int64(0), info.Size()-conversationWindowLogBytes)
+	// Select a bounded raw tail first.  JSON decoding message bodies before
+	// trimming would turn a 64 MiB EventLog window into unbounded projection
+	// allocation when it contains many small lines.
+	rawRecords, _, err := conversationContextRawRecords(ctx, file, offset, info.Size(), offset > 0)
+	if err != nil {
+		return ConversationContextCursor{}, nil, err
+	}
+	events, records, err := conversationContextDecodeRawRecords(rawRecords, 0)
+	if err != nil {
+		return ConversationContextCursor{}, nil, err
+	}
+	if len(events) == 0 || len(records) != len(events) {
+		return ConversationContextCursor{}, nil, errConversationContextUnavailable
+	}
+	cursor := ConversationContextCursor{Version: 1, Generation: generation, FileIdentity: identity, EOFOffset: info.Size(), LowerBoundSequence: records[0].Sequence, Records: records}
+	return cursor, events, nil
+}
+
+func conversationContextAppendLocked(ctx context.Context, file *os.File, eof int64, cursor ConversationContextCursor) (ConversationContextCursor, []Event, bool, error) {
+	rawRecords, overrun, err := conversationContextRawRecords(ctx, file, cursor.EOFOffset, eof, false)
+	if err != nil {
+		return ConversationContextCursor{}, nil, false, err
+	}
+	if overrun {
+		return ConversationContextCursor{}, nil, true, nil
+	}
+	lastSequence := cursor.Records[len(cursor.Records)-1].Sequence
+	events, records, err := conversationContextDecodeRawRecords(rawRecords, lastSequence)
+	if err != nil {
+		return ConversationContextCursor{}, nil, false, err
+	}
+	next := cloneConversationContextCursor(cursor)
+	next.Records = append(next.Records, records...)
+	next.EOFOffset = eof
+	for len(next.Records) > conversationWindowLogRecords || len(next.Records) > 1 && next.Records[len(next.Records)-1].EndOffset-next.Records[0].Offset > conversationWindowLogBytes {
+		next.Records = next.Records[1:]
+	}
+	if len(next.Records) == 0 {
+		return ConversationContextCursor{}, nil, false, errConversationContextUnavailable
+	}
+	next.LowerBoundSequence = next.Records[0].Sequence
+	return next, events, false, nil
+}
+
+type conversationContextRawRecord struct {
+	raw    []byte
+	offset int64
+	end    int64
+}
+
+// conversationContextRawRecords retains at most the reader's final 10,000
+// complete records, before JSON decoding any message body.  start may be in
+// the middle of a record only for a tail rebuild; append readers always begin
+// at a proved line boundary.
+func conversationContextRawRecords(ctx context.Context, file *os.File, start, end int64, skipFirstPartial bool) ([]conversationContextRawRecord, bool, error) {
+	if start < 0 || end <= start {
+		return nil, false, errConversationContextUnavailable
+	}
+	reader := bufio.NewReader(io.NewSectionReader(file, start, end-start))
+	position := start
+	if skipFirstPartial {
+		partial, err := reader.ReadBytes('\n')
+		position += int64(len(partial))
+		if err != nil {
+			return nil, false, errConversationContextUnavailable
+		}
+	}
+	ring := make([]conversationContextRawRecord, conversationWindowLogRecords)
+	count, next, overrun := 0, 0, false
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		default:
+		}
+		raw, readErr := reader.ReadBytes('\n')
+		if len(raw) == 0 && errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil || len(raw) == 0 || raw[len(raw)-1] != '\n' {
+			return nil, false, errConversationContextUnavailable
+		}
+		if count == conversationWindowLogRecords {
+			overrun = true
+		} else {
+			count++
+		}
+		ring[next] = conversationContextRawRecord{raw: append([]byte(nil), raw...), offset: position, end: position + int64(len(raw))}
+		next = (next + 1) % conversationWindowLogRecords
+		position += int64(len(raw))
+	}
+	if position != end || count == 0 {
+		return nil, false, errConversationContextUnavailable
+	}
+	result := make([]conversationContextRawRecord, count)
+	first := 0
+	if overrun {
+		first = next
+	}
+	for index := range result {
+		result[index] = ring[(first+index)%conversationWindowLogRecords]
+	}
+	return result, overrun, nil
+}
+
+func conversationContextDecodeRawRecords(rawRecords []conversationContextRawRecord, previousSequence int64) ([]Event, []ConversationContextRecord, error) {
+	events := make([]Event, 0, len(rawRecords))
+	records := make([]ConversationContextRecord, 0, len(rawRecords))
+	for _, raw := range rawRecords {
+		var event Event
+		if err := json.Unmarshal(raw.raw, &event); err != nil || event.Sequence <= previousSequence {
+			return nil, nil, errConversationContextUnavailable
+		}
+		previousSequence = event.Sequence
+		events = append(events, event)
+		records = append(records, ConversationContextRecord{Sequence: event.Sequence, Offset: raw.offset, EndOffset: raw.end})
+	}
+	return events, records, nil
+}
+
+func conversationContextFileProof(file *os.File, info os.FileInfo, path string) (string, string, error) {
+	identity := conversationContextFileIdentity(info)
+	if identity == "" {
+		return "", "", errConversationContextUnavailable
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", "", err
+	}
+	first, err := bufio.NewReader(file).ReadBytes('\n')
+	if err != nil || len(first) == 0 || !json.Valid(first) {
+		return "", "", errConversationContextUnavailable
+	}
+	// Generation is source evidence, not merely the first event digest.  Bind
+	// it to the file object as well so an inode replacement that repeats the
+	// trigger bytes invalidates received descriptors and opaque continuations.
+	sum := sha256.Sum256(append([]byte(path+"\x00"+identity+"\x00"), first...))
+	return hex.EncodeToString(sum[:]), identity, nil
+}
+
+func conversationContextFileIdentity(info os.FileInfo) string {
+	value := reflect.ValueOf(info.Sys())
+	if !value.IsValid() {
+		return ""
+	}
+	if value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return ""
+		}
+		value = value.Elem()
+	}
+	if value.Kind() != reflect.Struct {
+		return ""
+	}
+	dev, inode := value.FieldByName("Dev"), value.FieldByName("Ino")
+	devValue, devOK := conversationContextNumericField(dev)
+	inodeValue, inodeOK := conversationContextNumericField(inode)
+	if !devOK || !inodeOK {
+		return ""
+	}
+	return fmt.Sprintf("%x:%x", devValue, inodeValue)
+}
+
+func conversationContextNumericField(value reflect.Value) (uint64, bool) {
+	if !value.IsValid() {
+		return 0, false
+	}
+	if value.CanUint() {
+		return value.Uint(), true
+	}
+	if value.CanInt() && value.Int() >= 0 {
+		return uint64(value.Int()), true
+	}
+	return 0, false
+}
+
+func validConversationContextCursor(cursor ConversationContextCursor) bool {
+	return cursor.Version == 1 && cursor.Generation != "" && cursor.FileIdentity != "" && cursor.EOFOffset > 0 && cursor.LowerBoundSequence > 0 && len(cursor.Records) > 0 && cursor.Records[0].Sequence == cursor.LowerBoundSequence
+}
+
+func conversationContextCursorEOFValid(cursor ConversationContextCursor) bool {
+	if !validConversationContextCursor(cursor) || cursor.Records[len(cursor.Records)-1].EndOffset != cursor.EOFOffset {
+		return false
+	}
+	var previous ConversationContextRecord
+	for index, record := range cursor.Records {
+		if record.Sequence <= 0 || record.Offset < 0 || record.EndOffset <= record.Offset || record.EndOffset > cursor.EOFOffset || index > 0 && (record.Sequence <= previous.Sequence || record.Offset < previous.EndOffset) {
+			return false
+		}
+		previous = record
+	}
+	return true
+}
+
+func cloneConversationContextCursor(cursor ConversationContextCursor) ConversationContextCursor {
+	cursor.Records = append([]ConversationContextRecord(nil), cursor.Records...)
+	return cursor
 }
 
 // ConversationWindowTrigger returns one retained, addressed group-message

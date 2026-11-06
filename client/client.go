@@ -135,6 +135,11 @@ func (c *Client) ResolveIdentity(ctx context.Context, request uvim.IdentityResol
 	return out, c.postJSON(ctx, "/v1/identity.resolve", request, &out)
 }
 
+func (c *Client) ResolveInboundIdentity(ctx context.Context, request uvim.IdentityInboundResolveRequest) (uvim.IdentityInboundResolveResult, error) {
+	var out uvim.IdentityInboundResolveResult
+	return out, c.postJSON(ctx, "/v1/identity.resolve-inbound", request, &out)
+}
+
 func (c *Client) UnlinkIdentity(ctx context.Context, request uvim.IdentityLinkRequest) (uvim.IdentityResolveResult, error) {
 	var out uvim.IdentityResolveResult
 	return out, c.postJSON(ctx, "/v1/identity.unlink", request, &out)
@@ -184,6 +189,13 @@ func (c *Client) ConversationSearch(ctx context.Context, request uvim.Conversati
 	defer cancel()
 	var out uvim.ConversationSearchResult
 	return out, c.postJSON(ctx, "/v1/conversation.search", request, &out)
+}
+
+// ConversationMaterialize turns one opaque, current-query resource handle into
+// an internal resource. It does not accept a native resource key or URL.
+func (c *Client) ConversationMaterialize(ctx context.Context, request uvim.ConversationMaterializeRequest) (uvim.ConversationMaterializeResult, error) {
+	var out uvim.ConversationMaterializeResult
+	return out, c.postJSON(ctx, "/v1/conversation.materialize", request, &out)
 }
 
 func (c *Client) ResolveInternalURL(ctx context.Context, internalURL string) (*http.Response, error) {

@@ -145,6 +145,7 @@ func (p *Provider) Capabilities() uvim.Capabilities {
 		PublicationLocatorVersion: uvim.PublicationLocatorVersionV1,
 		ConversationWindowVersion: uvim.ConversationWindowVersionV1,
 		ConversationSearchVersion: uvim.ConversationSearchVersionV1,
+		ConversationMaterializeVersion: uvim.ConversationMaterializeVersionV1,
 	}
 }
 

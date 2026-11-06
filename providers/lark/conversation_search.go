@@ -47,18 +47,20 @@ func (p *Provider) ReadConversationSearchPage(ctx context.Context, request uvim.
 }
 
 func validNativeSearchTrigger(event uvim.Event, item quotedMessageItem) bool {
+	anchor, hasSourceTime := uvim.EventSourceTime(event)
 	nativeTime := parseMillis(item.CreateTime)
-	return item.ID == event.Message.ID && item.ChatID == event.Channel.ID && !item.Deleted && !nativeTime.IsZero() && nativeTime.Equal(event.Message.CreatedAt) && (event.Referrer.ThreadID == "" || item.ThreadID == event.Referrer.ThreadID)
+	return hasSourceTime && item.ID == event.Message.ID && item.ChatID == event.Channel.ID && !item.Deleted && !nativeTime.IsZero() && nativeTime.Equal(anchor) && (event.Referrer.ThreadID == "" || item.ThreadID == event.Referrer.ThreadID)
 }
 
 func nativeSearchScope(p *Provider, event uvim.Event, trigger quotedMessageItem) uvim.ConversationSearchScope {
+	anchor, _ := uvim.EventSourceTime(event)
 	return uvim.ConversationSearchScope{
 		Provider:         p.ID(),
 		Connector:        p.ConnectorID(),
 		ConversationID:   trigger.ChatID,
 		ThreadID:         trigger.ThreadID,
 		TriggerMessageID: event.Message.ID,
-		AnchorTime:       event.Message.CreatedAt.UTC(),
+		AnchorTime:       anchor,
 	}
 }
 

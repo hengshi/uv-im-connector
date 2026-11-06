@@ -62,7 +62,7 @@ Optional WeCom enterprise lookup runs in the event-emission worker, with bounded
 
 ## Recent conversation window
 
-Optional provider capability `conversation_window_version=v1` is currently implemented by the Lark/Feishu `ConversationWindowReader`, without extending the mandatory `Provider` method set. The Hub advertises it only when its existing service token is configured. `POST /v1/conversation.window` requires a matching Bearer header even when older local APIs permit empty authentication; a URL token is insufficient. Trusted caller infrastructure must first authorize the user and conversation. Do not give this service credential to an Agent or treat the endpoint as Task authority.
+Optional provider capability `conversation_window_version=v1` is implemented by the Lark/Feishu `ConversationWindowReader`, without extending the mandatory `Provider` method set. If that native reader capability is absent, an authenticated Hub with its durable received-context projection advertises the same window version for a retained-ingress fallback. `POST /v1/conversation.window` requires a matching Bearer header even when older local APIs permit empty authentication; a URL token is insufficient. Trusted caller infrastructure must first authorize the user and conversation. Do not give this service credential to an Agent or treat the endpoint as Task authority.
 
 Requests contain only `provider`, `connector`, `trigger_event_id` and `trigger_message_id`, with no caller-selected conversation, thread, time or path. Within the last 64 MiB and final 10,000 event-log records, the Hub verifies the exact persisted, addressed group trigger. Missing, corrupt or conflicting evidence causes zero native-history calls. The log proves ingress, not chat history, and no second body index is created. Lark then reads the exact native trigger under current bot permissions and verifies chat, time and real `thread_id`; parent/root IDs are not thread evidence.
 
@@ -70,7 +70,7 @@ One native page contains at most 10 candidates, queried newest-first and returne
 
 The recent-window request and native filtering neither accept nor use `referenced_message_ids`. A caller that avoids repeated material in its own prepared references may remove only those exact IDs from an already validated window result after it has obtained the exact `quoted-message.txt` bytes and verified them against the same sanitized `ResourceRef.sha256`; it must not infer identity from body text, filenames, or positional IDs. The list grants no access or Task authority, and missing, errored, or unverified provenance leaves window items intact. If caller-local removal leaves this page empty, it may render local `none`, but must retain the source candidate count, boundary omissions, `has_more`, and any `scan_limited` condition; it must not paginate, retry, or widen the native read.
 
-`available` describes one usable page; `none` means no matching item on that page, never complete-history absence. Boundary omissions with more results or a full page produce `scan_limited`; `permission_denied`, `rate_limited` and `unavailable` distinguish failures using normalized reasons rather than vendor response bodies. Callers retain explicit materials and expose missing/coverage information. Background grants no command, message binding or Task authority. This endpoint provides no received-history search, query pagination, history-media download or permanent group transcript.
+`available` describes one usable page; `none` means no matching item on that page, never complete-history absence. Boundary omissions with more results or a full page produce `scan_limited`; `permission_denied`, `rate_limited` and `unavailable` distinguish failures using normalized reasons rather than vendor response bodies. When selected because the native reader was absent, the received fallback takes exactly one 10-item metadata page from the same generation-bound EventLog projection, identifies source generation/trigger digest/lower bound, uses ingress `sequence` rather than timestamp as its pre-trigger proof, and retains only safe media descriptors (kind/name/MIME/availability/provenance): never a resource handle, private reference or download. A native reader failure never falls back. Background grants no command, message binding or Task authority.
 
 ## Explicit native conversation search
 
@@ -78,7 +78,37 @@ The recent-window request and native filtering neither accept nor use `reference
 
 `POST /v1/conversation.search` is for trusted infrastructure that has already applied its own ACL and current-Run authorization. A request carries an exact Bearer, persisted provider/connector/event/message trigger tuple, SHA-256 of the sanitized trigger, and the SHA-256 audience digest of the currently authorized Run capability. It accepts no chat, thread, path, or native `page_token`. The Hub re-proves the trigger and digest; Lark revalidates the exact native trigger, chat, time, and actual thread on every page. A rotated capability audience cannot reuse an older cursor.
 
-Filtering is local to verified scope: `from` is inclusive, `to` is exclusive and capped by the immutable anchor, sender IDs are ORed, and Unicode-lowercased keywords are ANDed substrings. Search keeps native descending time order and `page_size=1..10`, returns rows oldest-first, scans at most five source pages per call, and never merges multiple nonempty pages. It exposes only a random, short-lived Hub cursor—never a native continuation, credential, download handle, or media byte. Cursors bind trigger digest, filter/limit, verified scope, and current audience; they expire after 15 minutes or restart and cannot widen scope.
+`conversation_materialize_version=v1` is a separate optional companion for a
+selected search-media descriptor. Search returns only an opaque
+`materialize_handle`, per-resource `source_epoch`, sanitized provenance and
+readable metadata; it never returns a provider key, private URL, `internal://`
+value or bytes. Trusted infrastructure may call
+`POST /v1/conversation.materialize` with that handle, the exact same trigger
+proof and audience digest. The Hub journals the private reference under its
+EventLog-owned state directory before presentation, binds it to the verified
+scope, and records `effect_started` before its single provider attempt. A
+restart at that point returns `unknown`, never a second download. Each opaque
+handle binds exactly one source record/provenance tuple; equal physical bytes
+may be reused only after each distinct source record has separately revalidated.
+Lark proves
+the trigger and exact source message/resource still belong to that scope before
+download; a mismatch, expiry or withdrawal returns a normalized unavailable or
+revoked result. Only `ready` returns a sanitized internal `ResourceRef` to the
+trusted caller. This route grants neither Task/Run authority nor arbitrary
+provider resource access.
+
+The additive service capability `conversation_context_query_version=v1` also
+permits `source="received"` on `conversation.search`. It reads only the
+connector's retained EventLog projection, never provider history, and is
+separate from the default native source. Each received result identifies its
+`event_log_generation`, exact `trigger_entry_digest`, and index lower bound;
+each received resource additionally carries its source generation, entry digest
+and sequence. Those fields are required source proof for a caller that elects
+to use received material. The projection is capped at the EventLog's final
+64 MiB/10,000 records, stores no second body copy, and invalidates resources on
+generation, entry-digest, sequence or deletion mismatch.
+
+Native filtering is local to verified scope: `from` is inclusive, `to` is exclusive and capped by the immutable anchor, sender IDs are ORed, and Unicode-lowercased keywords are ANDed substrings. The immutable source time prefers persisted `Message.CreatedAt` and falls back to persisted `Event.Time` without rewriting the digested event. Results expose that choice as optional `anchor_time_source` (`message_created_at` or `event_time`). Received filtering uses the same explicit predicates but has no implicit timestamp upper bound: ingress sequence alone proves that an item precedes the trigger, while timestamps are sorting/display data. Received search scans at most five 1–10-item metadata pages (at most 50 candidates), stops at the first matching page, returns rows oldest-first, and reports its actual scanned/candidate/match/returned counts. Its projection persists exact-scope ordered metadata plus an EventLog EOF/inode/generation cursor: a warm read advances only appended records, then rereads and revalidates only the selected candidates; replacement, truncation, or invalid source proof rebuilds fail closed. It exposes only a random, short-lived Hub cursor—never a native continuation, credential, download handle, or media byte. Cursor records live in the Hub-private 0600 journal with a ciphertext native continuation and may survive a restart only while their trigger digest, filter/limit, verified scope, audience, source generation/lower bound (for received), and 15-minute expiry remain valid; they cannot widen scope.
 
 Coverage reports effective requested bounds, safe scanned candidate bounds, page and candidate/match/return/boundary counts. `has_more` without `next_cursor` is permitted only at the explicit cursor metadata/chain-depth capacity boundary; other continuable `available` or `scan_limited` results must provide a Hub cursor. Unknown, malformed, or cyclic native continuations return neither rows nor cursor. Zero matches, partial scans, and capacity boundaries never claim that full group history is empty.
 
@@ -156,8 +186,9 @@ ResourceRef
 | `GET /v1/events/ws?after=<seq>` | Watch normalized events. |
 | `POST /v1/message.create` | Send outbound message. |
 | `POST /v1/message.update` | Edit an exact connector's bot-created text message; requires capability and `MessageUpdater`. |
-| `POST /v1/conversation.window` | Read one recent native page under a persisted trigger's scope; requires Bearer authentication and optional provider capability. |
-| `POST /v1/conversation.search` | Read bounded explicit native history under the same verified trigger scope and local filters; requires Bearer, audience digest, and optional provider capability. |
+| `POST /v1/conversation.window` | Read one recent native page, or the retained received fallback only when native capability is absent, under a persisted trigger's scope; requires Bearer authentication and optional provider capability. |
+| `POST /v1/conversation.search` | Read bounded explicit native or explicitly requested retained received material under the same verified trigger scope and local filters; requires Bearer, audience digest, and optional provider capability. |
+| `POST /v1/conversation.materialize` | Materialize one opaque, current-query context resource after trigger/source revalidation; requires Bearer, audience digest and optional provider capability. |
 | `POST /v1/upload.create` | Create internal resource from local bytes. |
 | `POST /v1/resource.download` | Trusted request to resolve a provider-private resource into an internal resource. |
 | `POST /v1/webhook/{provider}/{connector}` | Provider webhook ingress. Webhook verification is owned by the provider adapter. |

@@ -124,9 +124,13 @@ group trigger. This is separate from explicit quote enrichment. The trusted
 infrastructure request contains only provider/connector and trigger event/message
 IDs; no Agent-selected chat/thread/time. Require the exact provider's
 `conversation_window_version=v1` and the existing service Bearer credential.
-Old or unsupported capability preserves explicit inputs and produces an
-unavailable background note, without trying another scope or scanning the full
-event log.
+When no native window reader capability exists, that version can instead describe
+the Hub's retained received-ingress fallback: exactly one metadata page of at most
+10 sequence-proved items, with generation/trigger-digest/lower-bound source proof
+and no materialization handle or download. A native permission, rate, timeout or
+other reader result is never replaced by that fallback. Unsupported capability
+preserves explicit inputs and produces an unavailable background note, without
+trying another scope or scanning the full event log.
 
 The Lark reader verifies the native trigger and uses its real thread identity,
 then returns one time-anchored page with sanitized text, sender/time provenance,
@@ -142,11 +146,11 @@ source-notification preparation do not request it. Window reads do not change
 Task binding, authorize another source, start background work, or create a new
 history store or per-group setting.
 
-### Candidate explicit native search (not a released Jarvis behavior)
+### Explicit scoped search and materialization
 
-The connector also defines a candidate `conversation_search_version=v1` surface
-for a future current-Run-only CLI lookup. It is deliberately distinct from the
-automatic window: Jarvis would authenticate an internal request with the current
+The connector exposes `conversation_search_version=v1` for a consumer's
+current-Run-only lookup. It is distinct from the automatic window: Jarvis must
+authenticate an internal request with the current
 Run capability, send its SHA-256 as the audience binding together with the
 persisted trigger digest, and request only local time/sender/keyword narrowing.
 Neither an Agent nor a user supplies a chat, topic, provider continuation, or
@@ -154,12 +158,54 @@ service Bearer. A returned cursor is an opaque, short-lived connector value;
 it is invalid after a Run capability rotation and must not be placed in a
 prompt, public status, or durable Run artifact.
 
-Candidate output would identify source/provider/conversation/verified thread,
-immutable anchor, effective time bounds, and bounded scan coverage. It would
-make `none`, scan limits, cursor expiry, permission, rate and unavailable
-states explicit rather than claiming complete group-history absence. This
-document does not claim that the CLI, TaskService capability handoff, or this
-search behavior has shipped.
+Native output identifies source/provider/conversation/verified thread,
+immutable anchor, effective time bounds, and bounded scan coverage. It makes
+`none`, scan limits, cursor expiry, permission, rate and unavailable
+states explicit rather than claiming complete group-history absence. Connector
+API support alone does not establish which Jarvis release consumes it or qualify
+an installed client's capability handoff.
+
+When a search row has media, a trusted caller may use the
+additive `conversation_materialize_version=v1` capability. The row contains
+only an opaque `materialize_handle`, a per-resource `source_epoch`, readable
+descriptor and provenance. `POST /v1/conversation.materialize` repeats the
+same trigger/audience proof and accepts no source message override, URL, key,
+path or native scope. The connector durably records one provider attempt before
+it begins; a crash after that record is `unknown` rather than a retried download.
+Only a revalidated `ready` result carries an internal resource reference. The
+caller must still apply its own exact-Run grant and materialization receipt; the
+connector handle is not Task authority and must never reach an Agent or public
+artifact.
+
+The separate service capability
+`conversation_context_query_version=v1` permits `source="received"` on the
+same search request. This is connector-retained ingress only, not a claim that
+the bot can read older provider history. Its result and every resource include
+generation/digest/sequence source proof, which the caller must seal into its
+own query receipt before materialization. A generation change, missing retained
+entry, deletion or lower-bound limit invalidates that proof; a caller must not
+turn it into a wider native lookup or a retry with a provider key.
+
+### Event-bound inbound identity
+
+Authenticated consumers can call `POST /v1/identity.resolve-inbound` with only
+`provider`, `connector` and `event_id`. The connector reads that exact durable
+event and returns its native actor, canonical digest and the complete current
+set of non-revoked business identities for the same provider, connector and
+native user. The result has no preferred identity; Jarvis must calculate a
+unique permitted intersection with its original Task admission authority.
+Names, an Agent-supplied actor and an arbitrary conversation ID are not inputs.
+
+A direct event additionally reuses the adapter's current private-participant
+proof. Room adapters can return a conversation target without treating it as a
+user target. A changed private-room audience, missing event, explicit non-user
+actor, absent link or uncertain link state returns an unavailable error. A group
+actor can establish identity evidence without obtaining a private reply target.
+The identity set, native target and link revisions remain service-private and
+must not enter public Task views, logs or user messages. This endpoint creates
+no Task grant and does not make identity revocation atomic with a Jarvis input
+transaction; the consumer must bind a short-lived assertion to the exact event
+and recheck authorization before subsequent effects.
 
 ## Release Boundary
 

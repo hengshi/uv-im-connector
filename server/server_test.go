@@ -1155,6 +1155,527 @@ func TestHubConversationSearchBindsTriggerCursorAndAudience(t *testing.T) {
 	}
 }
 
+func TestHubConversationSearchMaterializesOpaqueNativeResourceOnce(t *testing.T) {
+	dir := t.TempDir()
+	anchor := time.Date(2026, time.November, 6, 11, 30, 0, 0, time.UTC)
+	scope := uvim.ConversationSearchScope{Provider: "lark", Connector: "main", ConversationID: "oc-group", TriggerMessageID: "om-trigger", AnchorTime: anchor}
+	provider := &downloadProvider{
+		id: "lark", connector: "main", conversationSearchVersion: uvim.ConversationSearchVersionV1,
+		conversationMaterializeVersion: uvim.ConversationMaterializeVersionV1,
+		conversationSearchPages: []uvim.ConversationSearchPage{{Status: "available", Scope: scope, CandidateCount: 1, Candidates: []uvim.ConversationSearchCandidate{{
+			Message: uvim.ContextMessage{MessageID: "om-source", CreatedAt: anchor.Add(-time.Minute), Text: "file", Resources: []uvim.ContextResource{{
+				Kind: uvim.ElementFile, Name: "report.txt", Source: "native", SourceMessageID: "om-source",
+				Resource: uvim.ResourceRef{Provider: "lark", Connector: "main", Kind: uvim.ElementFile, Name: "report.txt", Key: "private-resource-key", SourceMessageID: "om-source"},
+			}}}, Readable: true,
+		}}}},
+	}
+	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
+	hub := NewHub(uvim.NewProviderRegistry(provider), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	if err := hub.Emit(t.Context(), uvim.Event{ID: "evt-trigger", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-user", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-trigger", CreatedAt: anchor}, Addressed: true}); err != nil {
+		t.Fatal(err)
+	}
+	trigger, err := log.ConversationWindowTrigger(t.Context(), uvim.ConversationWindowRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-trigger", TriggerMessageID: "om-trigger"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := uvim.ConversationEventDigest(trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.SetAuthToken("token")
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	c := client.New(api.URL)
+	c.Token = "token"
+	search := uvim.ConversationSearchRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-trigger", TriggerMessageID: "om-trigger", ExpectedEventDigest: digest, AudienceDigest: "audience", Limit: 1}
+	result, err := c.ConversationSearch(t.Context(), search)
+	if err != nil || result.Status != "available" || len(result.Items) != 1 || len(result.Items[0].Resources) != 1 {
+		t.Fatalf("search result=%+v err=%v", result, err)
+	}
+	resource := result.Items[0].Resources[0]
+	if resource.MaterializeHandle == "" || resource.SourceEpoch == "" || resource.Availability != "available" || resource.Source != "native" || resource.SourceMessageID != "om-source" {
+		t.Fatalf("resource descriptor=%+v", resource)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "private-resource-key") || strings.Contains(string(encoded), "internal://") {
+		t.Fatalf("search leaked private resource: %s", encoded)
+	}
+	request := uvim.ConversationMaterializeRequest{Provider: search.Provider, Connector: search.Connector, TriggerEventID: search.TriggerEventID, TriggerMessageID: search.TriggerMessageID, ExpectedEventDigest: search.ExpectedEventDigest, AudienceDigest: search.AudienceDigest, SourceEpoch: resource.SourceEpoch, MaterializeHandle: resource.MaterializeHandle}
+	materialized, err := c.ConversationMaterialize(t.Context(), request)
+	if err != nil || materialized.State != "ready" || materialized.Resource.InternalURL == "" || provider.conversationMaterializeCalls != 1 {
+		t.Fatalf("first materialize=%+v calls=%d err=%v", materialized, provider.conversationMaterializeCalls, err)
+	}
+	again, err := c.ConversationMaterialize(t.Context(), request)
+	if err != nil || again.State != "ready" || again.Resource.InternalURL != materialized.Resource.InternalURL || provider.conversationMaterializeCalls != 1 {
+		t.Fatalf("second materialize=%+v calls=%d err=%v", again, provider.conversationMaterializeCalls, err)
+	}
+	wrongEpoch := request
+	wrongEpoch.SourceEpoch = "wrong"
+	blocked, err := c.ConversationMaterialize(t.Context(), wrongEpoch)
+	if err != nil || blocked.State != "unavailable" || provider.conversationMaterializeCalls != 1 {
+		t.Fatalf("wrong epoch=%+v calls=%d err=%v", blocked, provider.conversationMaterializeCalls, err)
+	}
+}
+
+func TestConversationMaterialJournalRestartsAsUnknownWithoutPrivateReferenceLeak(t *testing.T) {
+	dir := t.TempDir()
+	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
+	registry := newConversationMaterialRegistry(log)
+	anchor := time.Date(2026, time.November, 6, 11, 45, 0, 0, time.UTC)
+	trigger := uvim.Event{ID: "evt", Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc", Type: uvim.ChannelGroup}, Message: uvim.Message{ID: "om-trigger", CreatedAt: anchor}, Addressed: true}
+	input := uvim.ConversationSearchRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om-trigger", ExpectedEventDigest: "digest", AudienceDigest: "audience"}
+	result := uvim.ConversationSearchResult{Provider: "lark", Connector: "main", Source: "native", ConversationID: "oc", TriggerMessageID: "om-trigger", AnchorTime: anchor, Items: []uvim.ContextMessage{{MessageID: "om-source", CreatedAt: anchor.Add(-time.Minute), Resources: []uvim.ContextResource{{Kind: uvim.ElementFile, Source: "native", SourceMessageID: "om-source", Resource: uvim.ResourceRef{Provider: "lark", Connector: "main", Kind: uvim.ElementFile, Key: "restart-private-key", SourceMessageID: "om-source"}}}}}}
+	if err := registry.present("token", input, trigger, &result); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := result.Items[0].Resources[0]
+	request := uvim.ConversationMaterializeRequest{Provider: input.Provider, Connector: input.Connector, TriggerEventID: input.TriggerEventID, TriggerMessageID: input.TriggerMessageID, ExpectedEventDigest: input.ExpectedEventDigest, AudienceDigest: input.AudienceDigest, SourceEpoch: descriptor.SourceEpoch, MaterializeHandle: descriptor.MaterializeHandle}
+	record, private, started, err := registry.reserve("token", request)
+	if err != nil || !started || record.State != "effect_started" || private.Key != "restart-private-key" {
+		t.Fatalf("reserve record=%+v started=%t private=%+v err=%v", record, started, private.Sanitized(), err)
+	}
+	raw, err := os.ReadFile(registry.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "restart-private-key") {
+		t.Fatalf("journal leaked provider key: %s", raw)
+	}
+	restarted := newConversationMaterialRegistry(log)
+	record, private, started, err = restarted.reserve("token", request)
+	if err != nil || started || record.State != "unknown" || private.Key != "" {
+		t.Fatalf("restart record=%+v started=%t private=%+v err=%v", record, started, private.Sanitized(), err)
+	}
+}
+
+func TestHubReceivedContextIsLazyGenerationBoundAndMaterializesOnce(t *testing.T) {
+	dir := t.TempDir()
+	anchor := time.Date(2026, time.November, 6, 12, 15, 0, 0, time.UTC)
+	provider := &downloadProvider{id: "lark", connector: "main", conversationMaterializeVersion: uvim.ConversationMaterializeVersionV1}
+	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
+	hub := NewHub(uvim.NewProviderRegistry(provider), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	hub.SetAuthToken("token")
+	ambient := uvim.Event{ID: "evt-ambient", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-peer", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-ambient", Text: "prior file", CreatedAt: anchor.Add(-time.Minute), Resources: []uvim.ResourceRef{{Provider: "lark", Connector: "main", Kind: uvim.ElementFile, Name: "prior.txt", Key: "received-private-key"}}}}
+	if err := hub.Emit(t.Context(), ambient); err != nil {
+		t.Fatal(err)
+	}
+	if provider.downloadCalls != 0 {
+		t.Fatalf("ambient resource downloaded eagerly: %d", provider.downloadCalls)
+	}
+	if err := hub.Emit(t.Context(), uvim.Event{ID: "evt-trigger", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-user", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-trigger", CreatedAt: anchor}, Addressed: true}); err != nil {
+		t.Fatal(err)
+	}
+	trigger, err := log.ConversationWindowTrigger(t.Context(), uvim.ConversationWindowRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-trigger", TriggerMessageID: "om-trigger"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := uvim.ConversationEventDigest(trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	c := client.New(api.URL)
+	c.Token = "token"
+	search := uvim.ConversationSearchRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-trigger", TriggerMessageID: "om-trigger", ExpectedEventDigest: digest, AudienceDigest: "audience", Source: "received", Limit: 1}
+	result, err := c.ConversationSearch(t.Context(), search)
+	if err != nil || result.Source != "received" || result.EventLogGeneration == "" || result.TriggerEntryDigest != digest || result.IndexLowerBoundSequence == 0 || result.PageCount != 1 || result.CandidateCount != 1 || result.MatchCount != 1 || result.ReturnedCount != 1 || result.EffectiveTo != nil || len(result.Items) != 1 || len(result.Items[0].Resources) != 1 {
+		t.Fatalf("received search=%+v err=%v", result, err)
+	}
+	resource := result.Items[0].Resources[0]
+	if result.Items[0].Sequence == 0 || result.Items[0].Sequence >= trigger.Sequence || resource.Source != "received" || resource.SourceGeneration != result.EventLogGeneration || resource.SourceEntryDigest == "" || resource.SourceSequence != result.Items[0].Sequence || resource.MaterializeHandle == "" || resource.SourceEpoch == "" || resource.Availability != "available" {
+		t.Fatalf("received resource=%+v", resource)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "received-private-key") || strings.Contains(string(encoded), "internal://") {
+		t.Fatalf("received result leaked private resource: %s", encoded)
+	}
+	request := uvim.ConversationMaterializeRequest{Provider: search.Provider, Connector: search.Connector, TriggerEventID: search.TriggerEventID, TriggerMessageID: search.TriggerMessageID, ExpectedEventDigest: search.ExpectedEventDigest, AudienceDigest: search.AudienceDigest, SourceEpoch: resource.SourceEpoch, MaterializeHandle: resource.MaterializeHandle}
+	materialized, err := c.ConversationMaterialize(t.Context(), request)
+	if err != nil || materialized.State != "ready" || materialized.Resource.InternalURL == "" || provider.downloadCalls != 1 {
+		t.Fatalf("received materialize=%+v downloads=%d err=%v", materialized, provider.downloadCalls, err)
+	}
+	again, err := c.ConversationMaterialize(t.Context(), request)
+	if err != nil || again.State != "ready" || provider.downloadCalls != 1 {
+		t.Fatalf("received duplicate=%+v downloads=%d err=%v", again, provider.downloadCalls, err)
+	}
+	// A replacement retaining the same trigger bytes has a new EventLog
+	// generation.  The settled handle must not treat its old source proof as
+	// authority, and it must not download again.
+	rawLog, err := os.ReadFile(log.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := log.Path + ".replacement"
+	if err := os.WriteFile(replacement, rawLog, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, log.Path); err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := c.ConversationMaterialize(t.Context(), request)
+	if err != nil || rotated.State != "revoked" || rotated.Reason != "source_unavailable" || provider.downloadCalls != 1 {
+		t.Fatalf("rotated ready replay=%+v downloads=%d err=%v", rotated, provider.downloadCalls, err)
+	}
+}
+
+func TestHubReceivedConversationSearchUsesSequenceNotClockAndStopsAtFiftyCandidates(t *testing.T) {
+	dir := t.TempDir()
+	anchor := time.Date(2026, time.November, 6, 12, 30, 0, 0, time.UTC)
+	provider := &downloadProvider{id: "lark", connector: "main"}
+	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
+	hub := NewHub(uvim.NewProviderRegistry(provider), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	hub.SetAuthToken("token")
+	for index := 0; index < 51; index++ {
+		event := uvim.Event{ID: fmt.Sprintf("evt-ambient-%d", index), Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-peer", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: fmt.Sprintf("om-ambient-%d", index), Text: "unrelated", CreatedAt: anchor.Add(time.Duration(index+1) * time.Second)}}
+		if err := hub.Emit(t.Context(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := hub.Emit(t.Context(), uvim.Event{ID: "evt-trigger", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-user", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-trigger", CreatedAt: anchor}, Addressed: true}); err != nil {
+		t.Fatal(err)
+	}
+	trigger, err := log.ConversationWindowTrigger(t.Context(), uvim.ConversationWindowRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-trigger", TriggerMessageID: "om-trigger"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := uvim.ConversationEventDigest(trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	c := client.New(api.URL)
+	c.Token = "token"
+	base := uvim.ConversationSearchRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-trigger", TriggerMessageID: "om-trigger", ExpectedEventDigest: digest, AudienceDigest: "audience", Source: "received", Limit: 10}
+	limited := base
+	limited.Filter = &uvim.ConversationSearchFilter{Keywords: []string{"needle"}}
+	result, err := c.ConversationSearch(t.Context(), limited)
+	if err != nil || result.Status != "scan_limited" || result.Reason != "search_scan_limited" || result.PageCount != conversationSearchMaxPages || result.CandidateCount != conversationSearchMaxPages*conversationSearchMaxLimit || result.MatchCount != 0 || result.ReturnedCount != 0 || !result.HasMore || result.NextCursor == "" || result.EffectiveTo != nil {
+		t.Fatalf("bounded received search=%+v err=%v", result, err)
+	}
+	result, err = c.ConversationSearch(t.Context(), base)
+	if err != nil || result.Status != "available" || result.PageCount != 1 || result.CandidateCount != 10 || result.MatchCount != 10 || result.ReturnedCount != 10 || result.EffectiveTo != nil || len(result.Items) != 10 {
+		t.Fatalf("sequence received search=%+v err=%v", result, err)
+	}
+	for _, item := range result.Items {
+		if item.Sequence == 0 || item.Sequence >= trigger.Sequence || !item.CreatedAt.After(anchor) {
+			t.Fatalf("received item lost sequence-only anchor: %+v trigger=%+v", item, trigger)
+		}
+	}
+}
+
+func TestHubReceivedContextIncludesPriorAddressedGroupMessage(t *testing.T) {
+	dir := t.TempDir()
+	anchor := time.Date(2026, time.November, 6, 12, 38, 0, 0, time.UTC)
+	provider := &downloadProvider{id: "lark", connector: "main"}
+	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
+	hub := NewHub(uvim.NewProviderRegistry(provider), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	hub.SetAuthToken("token")
+	if err := hub.Emit(t.Context(), uvim.Event{ID: "evt-prior-addressed", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-user", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-prior-addressed", Text: "previous explicit question", CreatedAt: anchor.Add(-time.Minute)}, Addressed: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.Emit(t.Context(), uvim.Event{ID: "evt-addressed-trigger", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-user", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-addressed-trigger", CreatedAt: anchor}, Addressed: true}); err != nil {
+		t.Fatal(err)
+	}
+	trigger, err := log.ConversationWindowTrigger(t.Context(), uvim.ConversationWindowRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-addressed-trigger", TriggerMessageID: "om-addressed-trigger"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := uvim.ConversationEventDigest(trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	c := client.New(api.URL)
+	c.Token = "token"
+	result, err := c.ConversationSearch(t.Context(), uvim.ConversationSearchRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-addressed-trigger", TriggerMessageID: "om-addressed-trigger", ExpectedEventDigest: digest, AudienceDigest: "audience", Source: "received", Limit: 10})
+	if err != nil || result.Status != "available" || len(result.Items) != 1 || result.Items[0].MessageID != "om-prior-addressed" {
+		t.Fatalf("addressed history result=%+v err=%v", result, err)
+	}
+}
+
+func TestReceivedContextBoundsWithdrawalEvidenceToRetainedProjection(t *testing.T) {
+	index := &receivedContextIndex{state: receivedContextState{
+		Version: 1, LowerBound: 5, Entries: map[int64]receivedContextEntry{}, ScopeOrder: map[string][]int64{}, Pending: map[string]receivedContextPending{},
+		Withdrawn: map[string]time.Time{"old": time.Now().UTC(), "retained": time.Now().UTC()}, WithdrawnSequences: map[string]int64{"old": 4, "retained": 5},
+	}}
+	if !index.pruneRetainedLocked(index.state.LowerBound) || len(index.state.Withdrawn) != 1 || index.state.WithdrawnSequences["retained"] != 5 {
+		t.Fatalf("retained tombstones=%+v sequences=%+v", index.state.Withdrawn, index.state.WithdrawnSequences)
+	}
+	for sequence := 6; sequence < 6+receivedContextResourceCapacity+1; sequence++ {
+		key := fmt.Sprintf("deleted-%d", sequence)
+		index.state.Withdrawn[key] = time.Now().UTC()
+		index.state.WithdrawnSequences[key] = int64(sequence)
+	}
+	if !index.enforceCapacityLocked() || len(index.state.WithdrawnSequences) > receivedContextResourceCapacity || len(index.state.Withdrawn) != len(index.state.WithdrawnSequences) || index.state.LowerBound <= 5 {
+		t.Fatalf("capacity-bounded tombstones=%d lower=%d", len(index.state.WithdrawnSequences), index.state.LowerBound)
+	}
+	for sequence := 30_000; sequence < 38_000; sequence++ {
+		key := strings.Repeat("\"", 1_000) + strconv.Itoa(sequence)
+		index.state.Withdrawn[key] = time.Now().UTC()
+		index.state.WithdrawnSequences[key] = int64(sequence)
+	}
+	if !index.enforceCapacityLocked() || receivedContextMetadataBytes(index.state) > receivedContextResourceBytes {
+		t.Fatalf("encoded metadata exceeded hard bound: bytes=%d retained=%d", receivedContextMetadataBytes(index.state), len(index.state.Withdrawn))
+	}
+}
+
+func TestHubConversationWindowFallsBackToBoundedReceivedProjection(t *testing.T) {
+	dir := t.TempDir()
+	anchor := time.Date(2026, time.November, 6, 12, 45, 0, 0, time.UTC)
+	provider := &downloadProvider{id: "lark", connector: "main"}
+	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
+	hub := NewHub(uvim.NewProviderRegistry(provider), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	hub.SetAuthToken("token")
+	for index := 0; index < 11; index++ {
+		resources := []uvim.ResourceRef(nil)
+		if index == 10 {
+			resources = []uvim.ResourceRef{{Provider: "lark", Connector: "main", Kind: uvim.ElementFile, Name: "window.txt", MIME: "text/plain", Key: "window-private-key"}}
+		}
+		event := uvim.Event{ID: fmt.Sprintf("evt-window-%d", index), Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-peer", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: fmt.Sprintf("om-window-%d", index), Text: "prior", CreatedAt: anchor.Add(time.Duration(index+1) * time.Second), Resources: resources}}
+		if err := hub.Emit(t.Context(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if provider.downloadCalls != 0 {
+		t.Fatalf("ambient window resource downloaded eagerly: %d", provider.downloadCalls)
+	}
+	if err := hub.Emit(t.Context(), uvim.Event{ID: "evt-window-trigger", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-user", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-window-trigger", CreatedAt: anchor}, Addressed: true}); err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	c := client.New(api.URL)
+	c.Token = "token"
+	result, err := c.ConversationWindow(t.Context(), uvim.ConversationWindowRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-window-trigger", TriggerMessageID: "om-window-trigger"})
+	if err != nil || result.Source != "received" || result.Status != "scan_limited" || result.Reason != "window_scan_limited" || result.EventLogGeneration == "" || result.TriggerEntryDigest == "" || result.IndexLowerBoundSequence == 0 || result.CandidateCount != 10 || !result.HasMore || len(result.Items) != 10 || provider.conversationWindowCalls != 0 || provider.downloadCalls != 0 {
+		t.Fatalf("received window=%+v native=%d downloads=%d err=%v", result, provider.conversationWindowCalls, provider.downloadCalls, err)
+	}
+	seenDescriptor := false
+	for _, item := range result.Items {
+		if item.Sequence == 0 {
+			t.Fatalf("received window lost sequence: %+v", item)
+		}
+		for _, resource := range item.Resources {
+			if resource.MaterializeHandle != "" || resource.SourceEpoch != "" || resource.Resource.Key != "" || resource.Resource.InternalURL != "" {
+				t.Fatalf("received window leaked material authority: %+v", resource)
+			}
+			if resource.Name == "" || resource.Source != "received" || resource.SourceSequence != item.Sequence {
+				t.Fatalf("received window lost safe descriptor/provenance: %+v item=%+v", resource, item)
+			}
+			seenDescriptor = true
+		}
+	}
+	if !seenDescriptor {
+		t.Fatal("received window omitted safe media descriptor")
+	}
+}
+
+func TestHubReceivedConversationWindowReportsRetainedCapacityLoss(t *testing.T) {
+	dir := t.TempDir()
+	anchor := time.Date(2026, time.November, 6, 12, 47, 0, 0, time.UTC)
+	provider := &downloadProvider{id: "lark", connector: "main"}
+	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
+	hub := NewHub(uvim.NewProviderRegistry(provider), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	hub.SetAuthToken("token")
+	for index := 0; index < 2; index++ {
+		if err := hub.Emit(t.Context(), uvim.Event{ID: fmt.Sprintf("evt-capacity-%d", index), Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-peer", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: fmt.Sprintf("om-capacity-%d", index), Text: "retained context", CreatedAt: anchor.Add(-time.Duration(2-index) * time.Minute)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := hub.Emit(t.Context(), uvim.Event{ID: "evt-capacity-trigger", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-user", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-capacity-trigger", CreatedAt: anchor}, Addressed: true}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the existing bounded projection evicting only its oldest scoped
+	// row while the trigger and a safe row remain EventLog-retained.
+	hub.receivedContext.mu.Lock()
+	hub.receivedContext.state.LowerBound = 2
+	hub.receivedContext.pruneRetainedLocked(2)
+	hub.receivedContext.rebuildScopeOrderLocked()
+	if err := hub.receivedContext.persistLocked(); err != nil {
+		hub.receivedContext.mu.Unlock()
+		t.Fatal(err)
+	}
+	hub.receivedContext.mu.Unlock()
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	c := client.New(api.URL)
+	c.Token = "token"
+	result, err := c.ConversationWindow(t.Context(), uvim.ConversationWindowRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-capacity-trigger", TriggerMessageID: "om-capacity-trigger"})
+	if err != nil || result.Source != "received" || result.Status != "unavailable" || result.Reason != "index_capacity_limited" || result.IndexLowerBoundSequence != 2 || len(result.Items) != 1 || result.Items[0].MessageID != "om-capacity-1" {
+		t.Fatalf("capacity-limited window=%+v err=%v", result, err)
+	}
+}
+
+func TestHubReceivedMaterialHandlesKeepProvenanceSeparateAndReuseReadyBytes(t *testing.T) {
+	dir := t.TempDir()
+	anchor := time.Date(2026, time.November, 6, 12, 50, 0, 0, time.UTC)
+	provider := &downloadProvider{id: "lark", connector: "main"}
+	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
+	hub := NewHub(uvim.NewProviderRegistry(provider), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	hub.SetAuthToken("token")
+	for index, messageID := range []string{"om-source-one", "om-source-two", "om-source-three"} {
+		event := uvim.Event{ID: "evt-" + messageID, Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-peer", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: messageID, Text: "same file", CreatedAt: anchor.Add(-time.Duration(2-index) * time.Minute), Resources: []uvim.ResourceRef{{Provider: "lark", Connector: "main", Kind: uvim.ElementFile, Name: "shared.txt", Key: "same-private-resource-key"}}}}
+		if err := hub.Emit(t.Context(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := hub.Emit(t.Context(), uvim.Event{ID: "evt-trigger", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-user", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-trigger", CreatedAt: anchor}, Addressed: true}); err != nil {
+		t.Fatal(err)
+	}
+	trigger, err := log.ConversationWindowTrigger(t.Context(), uvim.ConversationWindowRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-trigger", TriggerMessageID: "om-trigger"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := uvim.ConversationEventDigest(trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	c := client.New(api.URL)
+	c.Token = "token"
+	search := uvim.ConversationSearchRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-trigger", TriggerMessageID: "om-trigger", ExpectedEventDigest: digest, AudienceDigest: "audience", Source: "received", Limit: 10}
+	result, err := c.ConversationSearch(t.Context(), search)
+	if err != nil || len(result.Items) != 3 || len(result.Items[0].Resources) != 1 || len(result.Items[1].Resources) != 1 || len(result.Items[2].Resources) != 1 {
+		t.Fatalf("received result=%+v err=%v", result, err)
+	}
+	first, second := result.Items[0].Resources[0], result.Items[1].Resources[0]
+	if first.SourceMessageID == second.SourceMessageID || first.SourceSequence == second.SourceSequence || first.MaterializeHandle == "" || second.MaterializeHandle == "" || first.MaterializeHandle == second.MaterializeHandle || first.SourceEpoch == second.SourceEpoch {
+		t.Fatalf("source provenance collapsed: first=%+v second=%+v", first, second)
+	}
+	materialize := func(descriptor uvim.ContextResource) uvim.ConversationMaterializeResult {
+		t.Helper()
+		out, callErr := c.ConversationMaterialize(t.Context(), uvim.ConversationMaterializeRequest{Provider: search.Provider, Connector: search.Connector, TriggerEventID: search.TriggerEventID, TriggerMessageID: search.TriggerMessageID, ExpectedEventDigest: search.ExpectedEventDigest, AudienceDigest: search.AudienceDigest, SourceEpoch: descriptor.SourceEpoch, MaterializeHandle: descriptor.MaterializeHandle})
+		if callErr != nil {
+			t.Fatal(callErr)
+		}
+		return out
+	}
+	firstReady := materialize(first)
+	secondReady := materialize(second)
+	if firstReady.State != "ready" || secondReady.State != "ready" || firstReady.Resource.InternalURL == "" || secondReady.Resource.InternalURL != firstReady.Resource.InternalURL || firstReady.Resource.SourceMessageID != first.SourceMessageID || secondReady.Resource.SourceMessageID != second.SourceMessageID || provider.downloadCalls != 1 {
+		t.Fatalf("provenance cache first=%+v second=%+v downloads=%d", firstReady, secondReady, provider.downloadCalls)
+	}
+	file, _, err := hub.resources.Open(firstReady.Resource.InternalURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	staleReady := materialize(first)
+	if staleReady.State != "unavailable" || staleReady.Reason != "cached_resource_unavailable" || provider.downloadCalls != 1 {
+		t.Fatalf("ready cache loss retried source: result=%+v downloads=%d", staleReady, provider.downloadCalls)
+	}
+	// Remove the other ready fast path too. Known cache loss must remain
+	// physical-attempt evidence when the last ready record is invalidated.
+	secondLost := materialize(second)
+	if secondLost.State != "unavailable" || provider.downloadCalls != 1 {
+		t.Fatalf("second ready replay=%+v downloads=%d", secondLost, provider.downloadCalls)
+	}
+	third := result.Items[2].Resources[0]
+	thirdResult := materialize(third)
+	if thirdResult.State != "unavailable" || thirdResult.Reason != "cached_resource_unavailable" || provider.downloadCalls != 1 {
+		t.Fatalf("corrupt cache retried source: result=%+v downloads=%d", thirdResult, provider.downloadCalls)
+	}
+}
+
+func TestHubReceivedConflictingLazyIDsKeepPrivateBytesSeparate(t *testing.T) {
+	dir := t.TempDir()
+	anchor := time.Date(2026, time.November, 6, 12, 53, 0, 0, time.UTC)
+	provider := &downloadProvider{id: "lark", connector: "main"}
+	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
+	hub := NewHub(uvim.NewProviderRegistry(provider), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	hub.SetAuthToken("token")
+	if err := hub.Emit(t.Context(), uvim.Event{ID: "evt-conflicting", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-peer", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-conflicting", Text: "two private files", CreatedAt: anchor.Add(-time.Minute), Resources: []uvim.ResourceRef{
+		{ID: "same-ingress-id", Provider: "lark", Connector: "main", Kind: uvim.ElementFile, Name: "same-name.txt", Key: "private-one"},
+		{ID: "same-ingress-id", Provider: "lark", Connector: "main", Kind: uvim.ElementFile, Name: "same-name.txt", Key: "private-two"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.Emit(t.Context(), uvim.Event{ID: "evt-conflicting-trigger", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-user", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-conflicting-trigger", CreatedAt: anchor}, Addressed: true}); err != nil {
+		t.Fatal(err)
+	}
+	trigger, err := log.ConversationWindowTrigger(t.Context(), uvim.ConversationWindowRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-conflicting-trigger", TriggerMessageID: "om-conflicting-trigger"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := uvim.ConversationEventDigest(trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	c := client.New(api.URL)
+	c.Token = "token"
+	search := uvim.ConversationSearchRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-conflicting-trigger", TriggerMessageID: "om-conflicting-trigger", ExpectedEventDigest: digest, AudienceDigest: "audience", Source: "received", Limit: 10}
+	result, err := c.ConversationSearch(t.Context(), search)
+	if err != nil || len(result.Items) != 1 || len(result.Items[0].Resources) != 2 {
+		t.Fatalf("conflicting received result=%+v err=%v", result, err)
+	}
+	materialize := func(descriptor uvim.ContextResource) uvim.ConversationMaterializeResult {
+		t.Helper()
+		out, callErr := c.ConversationMaterialize(t.Context(), uvim.ConversationMaterializeRequest{Provider: search.Provider, Connector: search.Connector, TriggerEventID: search.TriggerEventID, TriggerMessageID: search.TriggerMessageID, ExpectedEventDigest: search.ExpectedEventDigest, AudienceDigest: search.AudienceDigest, SourceEpoch: descriptor.SourceEpoch, MaterializeHandle: descriptor.MaterializeHandle})
+		if callErr != nil {
+			t.Fatal(callErr)
+		}
+		return out
+	}
+	first, second := materialize(result.Items[0].Resources[0]), materialize(result.Items[0].Resources[1])
+	if first.State != "ready" || second.State != "ready" || first.Resource.InternalURL == "" || second.Resource.InternalURL == "" || first.Resource.InternalURL == second.Resource.InternalURL || provider.downloadCalls != 2 {
+		t.Fatalf("conflicting private resources shared bytes: first=%+v second=%+v downloads=%d", first, second, provider.downloadCalls)
+	}
+}
+
+func TestHubReceivedContextUsesEventTimeWhenMessageTimeMissing(t *testing.T) {
+	dir := t.TempDir()
+	anchor := time.Date(2026, time.November, 6, 12, 55, 0, 0, time.UTC)
+	provider := &downloadProvider{id: "lark", connector: "main"}
+	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
+	hub := NewHub(uvim.NewProviderRegistry(provider), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	hub.SetAuthToken("token")
+	if err := hub.Emit(t.Context(), uvim.Event{ID: "evt-fallback-source", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Time: anchor.Add(-time.Minute), Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-peer", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-fallback-source", Text: "event time source"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.Emit(t.Context(), uvim.Event{ID: "evt-fallback-trigger", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Time: anchor, Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-user", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-fallback-trigger"}, Addressed: true}); err != nil {
+		t.Fatal(err)
+	}
+	trigger, err := log.ConversationWindowTrigger(t.Context(), uvim.ConversationWindowRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-fallback-trigger", TriggerMessageID: "om-fallback-trigger"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := uvim.ConversationEventDigest(trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	c := client.New(api.URL)
+	c.Token = "token"
+	search := uvim.ConversationSearchRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-fallback-trigger", TriggerMessageID: "om-fallback-trigger", ExpectedEventDigest: digest, AudienceDigest: "audience", Source: "received", Limit: 10}
+	result, err := c.ConversationSearch(t.Context(), search)
+	if err != nil || result.Status != "available" || !result.AnchorTime.Equal(anchor) || result.AnchorTimeSource != uvim.EventSourceTimeEventTime || len(result.Items) != 1 || !result.Items[0].CreatedAt.Equal(anchor.Add(-time.Minute)) || result.Items[0].Sequence >= trigger.Sequence {
+		t.Fatalf("event-time received search=%+v trigger=%+v err=%v", result, trigger, err)
+	}
+	window, err := c.ConversationWindow(t.Context(), uvim.ConversationWindowRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-fallback-trigger", TriggerMessageID: "om-fallback-trigger"})
+	if err != nil || window.Source != "received" || window.Status != "available" || !window.AnchorTime.Equal(anchor) || window.AnchorTimeSource != uvim.EventSourceTimeEventTime || len(window.Items) != 1 || !window.Items[0].CreatedAt.Equal(anchor.Add(-time.Minute)) {
+		t.Fatalf("event-time received window=%+v err=%v", window, err)
+	}
+}
+
 func TestHubConversationSearchStopsAtFivePagesAndRejectsContinuationCycles(t *testing.T) {
 	anchor := time.Date(2026, time.November, 6, 12, 0, 0, 0, time.UTC)
 	scope := uvim.ConversationSearchScope{Provider: "lark", Connector: "main", ConversationID: "oc-group", TriggerMessageID: "om-trigger", AnchorTime: anchor}
@@ -1192,10 +1713,30 @@ func TestHubConversationSearchStopsAtFivePagesAndRejectsContinuationCycles(t *te
 
 func TestConversationSearchCursorBoundsAndUnsupportedProvider(t *testing.T) {
 	anchor := time.Date(2026, time.November, 6, 13, 0, 0, 0, time.UTC)
-	hub := NewHub(nil, nil, nil)
-	expired := conversationSearchCursor{IssuedAt: time.Now().UTC().Add(-conversationSearchCursorTTL - time.Second)}
-	hub.searchCursors["expired"] = expired
-	if cursor, reason := hub.conversationSearchCursor(uvim.ConversationSearchRequest{Cursor: "expired"}); cursor != nil || reason != "cursor_expired" {
+	hub := NewHub(nil, mustEventLog(t, filepath.Join(t.TempDir(), "events.jsonl")), nil)
+	hub.SetAuthToken("token")
+	if err := hub.Emit(t.Context(), uvim.Event{ID: "evt-cursor-proof", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-user", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-cursor-proof", CreatedAt: anchor}, Addressed: true}); err != nil {
+		t.Fatal(err)
+	}
+	expiredRequest := uvim.ConversationSearchRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om", ExpectedEventDigest: "digest", AudienceDigest: "audience"}
+	expiredScope := uvim.ConversationSearchScope{Provider: "lark", Connector: "main", ConversationID: "oc", TriggerMessageID: "om", AnchorTime: anchor}
+	if status, expiredID := hub.newConversationSearchCursor(expiredRequest, conversationSearchFilter{To: anchor, HasTo: true}, 1, expiredScope, "expired-native-token", nil); status != "" || expiredID == "" {
+		t.Fatalf("prepare expired cursor: status=%q id=%q", status, expiredID)
+	} else {
+		hub.materialResources.mu.Lock()
+		record := hub.materialResources.state.Cursors[expiredID]
+		record.ExpiresAt = time.Now().UTC().Add(-time.Second)
+		hub.materialResources.state.Cursors[expiredID] = record
+		persistErr := hub.materialResources.persistLocked()
+		hub.materialResources.mu.Unlock()
+		if persistErr != nil {
+			t.Fatal(persistErr)
+		}
+		if cursor, reason := hub.conversationSearchCursor(uvim.ConversationSearchRequest{Cursor: expiredID}); cursor != nil || reason != "cursor_expired" {
+			t.Fatalf("expired cursor=%+v reason=%q", cursor, reason)
+		}
+	}
+	if cursor, reason := hub.conversationSearchCursor(uvim.ConversationSearchRequest{Cursor: "unknown"}); cursor != nil || reason != "cursor_expired" {
 		t.Fatalf("expired cursor=%+v reason=%q", cursor, reason)
 	}
 	hashes := make([]string, conversationSearchCursorCapacity-1)
@@ -1235,6 +1776,76 @@ func TestConversationSearchCursorBoundsAndUnsupportedProvider(t *testing.T) {
 	result, err := c.ConversationSearch(t.Context(), request)
 	if err != nil || result.Status != "unavailable" || result.Reason != "unsupported" || provider.conversationSearchCalls != 0 {
 		t.Fatalf("unsupported result=%+v calls=%d err=%v", result, provider.conversationSearchCalls, err)
+	}
+}
+
+func TestConversationSearchCursorPersistsAcrossRestartWithoutNativeTokenLeak(t *testing.T) {
+	dir := t.TempDir()
+	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
+	if _, fresh, err := log.Append(t.Context(), uvim.Event{ID: "evt-cursor-proof", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Channel: uvim.Channel{ID: "oc-group", Type: uvim.ChannelGroup}, User: uvim.User{ID: "ou-user", Kind: uvim.UserKindUser}, Message: uvim.Message{ID: "om-cursor-proof", CreatedAt: time.Date(2026, time.November, 6, 13, 59, 0, 0, time.UTC)}}); err != nil || !fresh {
+		t.Fatalf("cursor proof append fresh=%t err=%v", fresh, err)
+	}
+	hub := NewHub(nil, log, nil)
+	hub.SetAuthToken("token")
+	anchor := time.Date(2026, time.November, 6, 14, 0, 0, 0, time.UTC)
+	request := uvim.ConversationSearchRequest{Provider: "lark", Connector: "main", Source: "native", TriggerEventID: "evt", TriggerMessageID: "om", ExpectedEventDigest: "digest", AudienceDigest: "audience"}
+	filter := conversationSearchFilter{To: anchor, HasTo: true, SenderIDs: []string{"ou-user"}, Keywords: []string{"needle"}}
+	scope := uvim.ConversationSearchScope{Provider: "lark", Connector: "main", ConversationID: "oc-group", TriggerMessageID: "om", AnchorTime: anchor}
+	const nativeContinuation = "provider-page-token-must-not-persist-in-clear"
+	status, id := hub.newConversationSearchCursor(request, filter, 3, scope, nativeContinuation, []string{conversationSearchTokenHash("previous")})
+	if status != "" || id == "" {
+		t.Fatalf("new cursor status=%q id=%q", status, id)
+	}
+	raw, err := os.ReadFile(hub.materialResources.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), nativeContinuation) {
+		t.Fatalf("journal leaked provider continuation: %s", raw)
+	}
+
+	restarted := NewHub(nil, mustEventLog(t, filepath.Join(dir, "events.jsonl")), nil)
+	restarted.SetAuthToken("token")
+	cursor, reason := restarted.conversationSearchCursor(uvim.ConversationSearchRequest{Cursor: id})
+	if reason != "" || cursor == nil || cursor.PageToken != nativeContinuation || cursor.SourceGeneration == "" || cursor.SourceFileIdentity == "" || cursor.IndexLowerBound <= 0 || !sameConversationSearchFilter(cursor.Filter, filter) || cursor.Limit != 3 || !sameConversationSearchScope(cursor.Scope, scope) || !sameConversationSearchCursorIdentity(*cursor, request) {
+		t.Fatalf("restarted cursor=%+v reason=%q", cursor, reason)
+	}
+	wrongAudience := request
+	wrongAudience.AudienceDigest = "other-audience"
+	if sameConversationSearchCursorIdentity(*cursor, wrongAudience) {
+		t.Fatalf("cursor identity accepted changed audience: %+v", cursor)
+	}
+}
+
+func TestHubNativeConversationSearchCursorExpiresOnEventLogReplacement(t *testing.T) {
+	anchor := time.Date(2026, time.November, 6, 14, 15, 0, 0, time.UTC)
+	scope := uvim.ConversationSearchScope{Provider: "lark", Connector: "main", ConversationID: "oc-group", TriggerMessageID: "om-trigger", AnchorTime: anchor}
+	provider := &downloadProvider{id: "lark", connector: "main", conversationSearchVersion: uvim.ConversationSearchVersionV1, conversationSearchPages: []uvim.ConversationSearchPage{
+		{Status: "available", Scope: scope, CandidateCount: 1, HasMore: true, NextPageToken: "provider-token", Candidates: []uvim.ConversationSearchCandidate{{Message: uvim.ContextMessage{MessageID: "om-match", CreatedAt: anchor.Add(-time.Minute), Text: "match"}, Readable: true}}},
+		{Status: "available", Scope: scope, CandidateCount: 1, Candidates: []uvim.ConversationSearchCandidate{{Message: uvim.ContextMessage{MessageID: "om-next", CreatedAt: anchor.Add(-2 * time.Minute), Text: "match"}, Readable: true}}},
+	}}
+	c, closeAPI, request, hub := newConversationSearchTestClient(t, provider, anchor)
+	defer closeAPI()
+	request.Limit = 1
+	first, err := c.ConversationSearch(t.Context(), request)
+	if err != nil || first.Status != "available" || first.NextCursor == "" || provider.conversationSearchCalls != 1 {
+		t.Fatalf("first native cursor result=%+v calls=%d err=%v", first, provider.conversationSearchCalls, err)
+	}
+	raw, err := os.ReadFile(hub.eventLog.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := hub.eventLog.Path + ".replacement"
+	if err := os.WriteFile(replacement, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, hub.eventLog.Path); err != nil {
+		t.Fatal(err)
+	}
+	request.Cursor, request.Filter, request.Limit = first.NextCursor, nil, 0
+	second, err := c.ConversationSearch(t.Context(), request)
+	if err != nil || second.Status != "unavailable" || second.Reason != "cursor_expired" || provider.conversationSearchCalls != 1 {
+		t.Fatalf("replacement cursor result=%+v calls=%d err=%v", second, provider.conversationSearchCalls, err)
 	}
 }
 
@@ -1346,8 +1957,12 @@ func TestHubVerifiedIdentityLinkJourney(t *testing.T) {
 	if err != nil || !meta.IdentityLinks {
 		t.Fatalf("identity capability: %+v %v", meta, err)
 	}
-	emit := func(user, channel, channelType, ts string) uvim.IdentityEventRef {
-		raw, _ := json.Marshal(map[string]any{"type": "event_callback", "event": map[string]any{"type": "message", "user": user, "channel": channel, "channel_type": channelType, "text": "/bind gitlab thomas", "ts": ts}})
+	emit := func(user, channel, channelType, ts string, botID ...string) uvim.IdentityEventRef {
+		message := map[string]any{"type": "message", "user": user, "channel": channel, "channel_type": channelType, "text": "/bind gitlab thomas", "ts": ts}
+		if len(botID) > 0 {
+			message["bot_id"] = botID[0]
+		}
+		raw, _ := json.Marshal(map[string]any{"type": "event_callback", "event": message})
 		req, _ := http.NewRequest(http.MethodPost, api.URL+"/v1/webhook/slack/work", bytes.NewReader(raw))
 		req.Header.Set("X-UV-Webhook-Secret", "hook-token")
 		resp, err := http.DefaultClient.Do(req)
@@ -1384,6 +1999,28 @@ func TestHubVerifiedIdentityLinkJourney(t *testing.T) {
 	repeated, err := c.LinkIdentity(ctx, request)
 	if err != nil || repeated.Link.IdentityLinkRef != linked.Link.IdentityLinkRef {
 		t.Fatalf("link must be idempotent: %+v %v", repeated, err)
+	}
+	second, err := c.LinkIdentity(ctx, uvim.IdentityLinkRequest{Identity: uvim.UserIdentity{Type: "github.userid", Scope: "github.com", ID: "42"}, Event: event, Proof: "github:comment-42"})
+	if err != nil || second.Link == nil {
+		t.Fatalf("second business identity: %+v %v", second, err)
+	}
+	inverse, err := c.ResolveInboundIdentity(ctx, uvim.IdentityInboundResolveRequest{Provider: event.Provider, Connector: event.Connector, EventID: event.EventID})
+	if err != nil || inverse.Event != event || len(inverse.EventDigest) != 64 || inverse.NativeActor.UserID != "U-employee" || inverse.NativeActor.Kind != uvim.UserKindUser || inverse.DirectTarget == nil || *inverse.DirectTarget != linked.Link.Target || len(inverse.Links) != 2 {
+		t.Fatalf("inverse must prove the event and return the complete identity set: %+v %v", inverse, err)
+	}
+	identities := map[string]bool{}
+	for _, entry := range inverse.Links {
+		identities[entry.Link.ID] = true
+	}
+	if !identities[linked.Link.ID] || !identities[second.Link.ID] {
+		t.Fatalf("inverse chose a preferred identity: %+v", inverse.Links)
+	}
+	if _, err := c.ResolveInboundIdentity(ctx, uvim.IdentityInboundResolveRequest{Provider: event.Provider, Connector: event.Connector, EventID: "missing-event"}); err == nil {
+		t.Fatal("missing native event returned identity authority")
+	}
+	botEvent := emit("U-employee", "D-private", "im", "1.1", "B-automation")
+	if _, err := c.ResolveInboundIdentity(ctx, uvim.IdentityInboundResolveRequest{Provider: botEvent.Provider, Connector: botEvent.Connector, EventID: botEvent.EventID}); err == nil {
+		t.Fatal("explicit bot actor acquired human identity links")
 	}
 	aliasRequest := request
 	aliasRequest.Identity, aliasRequest.Account = account, nil
@@ -1437,6 +2074,10 @@ func TestHubVerifiedIdentityLinkJourney(t *testing.T) {
 	if _, err := c.LinkIdentity(ctx, groupRequest); err == nil {
 		t.Fatal("group audience accepted as private")
 	}
+	groupInverse, err := c.ResolveInboundIdentity(ctx, uvim.IdentityInboundResolveRequest{Provider: groupRequest.Event.Provider, Connector: groupRequest.Event.Connector, EventID: groupRequest.Event.EventID})
+	if err != nil || groupInverse.DirectTarget != nil || groupInverse.NativeActor.UserID != "U-employee" || len(groupInverse.Links) != 2 {
+		t.Fatalf("group actor proof invented private routing or lost identities: %+v %v", groupInverse, err)
+	}
 	api.Close()
 	if err := hub.CloseIdentityLinks(); err != nil {
 		t.Fatal(err)
@@ -1467,6 +2108,10 @@ func TestHubVerifiedIdentityLinkJourney(t *testing.T) {
 	resolved, err = c.ResolveIdentity(ctx, uvim.IdentityResolveRequest{Identity: account, Provider: "slack", Connector: "work"})
 	if err != nil || resolved.Found || !resolved.Revoked {
 		t.Fatalf("revoked alias must prevent fallback: %+v %v", resolved, err)
+	}
+	afterRevoke, err := c.ResolveInboundIdentity(ctx, uvim.IdentityInboundResolveRequest{Provider: event.Provider, Connector: event.Connector, EventID: event.EventID})
+	if err != nil || len(afterRevoke.Links) != 1 || afterRevoke.Links[0].Link != second.Link.IdentityLinkRef {
+		t.Fatalf("inverse retained a revoked link: %+v %v", afterRevoke, err)
 	}
 }
 
@@ -1529,11 +2174,33 @@ func TestHubLinkedMatrixRoomRechecksNativeAudience(t *testing.T) {
 	if linked.Link.Target != (uvim.OutboundTarget{ID: "!private:example", Kind: uvim.TargetConversation}) {
 		t.Fatalf("room target %+v", linked.Link.Target)
 	}
+	privateIdentity, err := c.ResolveInboundIdentity(ctx, uvim.IdentityInboundResolveRequest{Provider: "matrix", Connector: "matrix", EventID: "$message"})
+	if err != nil || privateIdentity.DirectTarget == nil || *privateIdentity.DirectTarget != linked.Link.Target {
+		t.Fatalf("inverse private room target: %+v %v", privateIdentity, err)
+	}
+	otherMessage := httptest.NewRequest(http.MethodPost, "/v1/webhook/matrix/matrix", strings.NewReader(`{"event_id":"$other-message","room_id":"!other-private:example","sender":"@employee:example","type":"m.room.message","content":{"msgtype":"m.text","body":"/bind gitlab employee"}}`))
+	otherMessage.Header.Set("X-UV-Webhook-Secret", "hook-token")
+	otherResponse := httptest.NewRecorder()
+	hub.Handler().ServeHTTP(otherResponse, otherMessage)
+	if otherResponse.Code != http.StatusOK {
+		t.Fatalf("other private room ingress: %d %s", otherResponse.Code, otherResponse.Body.String())
+	}
+	secondLink, err := c.LinkIdentity(ctx, uvim.IdentityLinkRequest{Identity: uvim.UserIdentity{Type: "gitlab.userid", Scope: "gitlab.example", ID: "17"}, Event: uvim.IdentityEventRef{Provider: "matrix", Connector: "matrix", EventID: "$other-message"}, Proof: "gitlab:note-17"})
+	if err != nil || secondLink.Link == nil || secondLink.Link.Target == linked.Link.Target {
+		t.Fatalf("independent private-room identity link: %+v %v", secondLink, err)
+	}
+	completeSet, err := c.ResolveInboundIdentity(ctx, uvim.IdentityInboundResolveRequest{Provider: "matrix", Connector: "matrix", EventID: "$message"})
+	if err != nil || completeSet.DirectTarget == nil || *completeSet.DirectTarget != linked.Link.Target || len(completeSet.Links) != 2 {
+		t.Fatalf("current private target truncated the actor's identity set: %+v %v", completeSet, err)
+	}
 	msg := uvim.OutboundMessage{Provider: "matrix", Connector: "matrix", Target: &linked.Link.Target, IdentityLink: &linked.Link.IdentityLinkRef, Text: "private result"}
 	if _, err := c.Send(ctx, msg); err != nil {
 		t.Fatal(err)
 	}
 	joined.Store(3)
+	if _, err := c.ResolveInboundIdentity(ctx, uvim.IdentityInboundResolveRequest{Provider: "matrix", Connector: "matrix", EventID: "$message"}); err == nil {
+		t.Fatal("inverse identity accepted a room whose private audience changed")
+	}
 	_, err = c.Send(ctx, msg)
 	if failure, ok := client.ProviderSendFailure(err); !ok || failure.DeliveryState != uvim.DeliveryNotAttempted || sent.Load() != 1 {
 		t.Fatalf("changed audience sent=%d failure=%+v err=%v", sent.Load(), failure, err)
@@ -1650,32 +2317,37 @@ func mustEventLog(t *testing.T, path string) *uvim.EventLog {
 }
 
 type downloadProvider struct {
-	id                         string
-	connector                  string
-	sendErr                    error
-	conversationWindowVersion  string
-	conversationWindowResult   uvim.ConversationWindowResult
-	conversationWindowCalls    int
-	conversationWindowTrigger  uvim.Event
-	conversationSearchVersion  string
-	conversationSearchPages    []uvim.ConversationSearchPage
-	conversationSearchCalls    int
-	conversationSearchRequests []uvim.ConversationSearchPageRequest
+	id                             string
+	connector                      string
+	sendErr                        error
+	conversationWindowVersion      string
+	conversationWindowResult       uvim.ConversationWindowResult
+	conversationWindowCalls        int
+	conversationWindowTrigger      uvim.Event
+	conversationSearchVersion      string
+	conversationSearchPages        []uvim.ConversationSearchPage
+	conversationSearchCalls        int
+	conversationSearchRequests     []uvim.ConversationSearchPageRequest
+	conversationMaterializeVersion string
+	conversationMaterializeCalls   int
+	conversationMaterializeErr     error
+	downloadCalls                  int
 }
 
 func (p *downloadProvider) ID() string          { return p.id }
 func (p *downloadProvider) ConnectorID() string { return p.connector }
 func (p *downloadProvider) Capabilities() uvim.Capabilities {
 	return uvim.Capabilities{
-		Inbound:                   true,
-		Outbound:                  true,
-		ReplyMessage:              true,
-		ProactiveGroup:            true,
-		TargetKinds:               []string{uvim.TargetConversation},
-		DownloadResource:          true,
-		ResourceKinds:             []string{uvim.ElementFile},
-		ConversationWindowVersion: p.conversationWindowVersion,
-		ConversationSearchVersion: p.conversationSearchVersion,
+		Inbound:                        true,
+		Outbound:                       true,
+		ReplyMessage:                   true,
+		ProactiveGroup:                 true,
+		TargetKinds:                    []string{uvim.TargetConversation},
+		DownloadResource:               true,
+		ResourceKinds:                  []string{uvim.ElementFile},
+		ConversationWindowVersion:      p.conversationWindowVersion,
+		ConversationSearchVersion:      p.conversationSearchVersion,
+		ConversationMaterializeVersion: p.conversationMaterializeVersion,
 	}
 }
 func (p *downloadProvider) Run(ctx context.Context, sink uvim.EventSink) error {
@@ -1689,6 +2361,7 @@ func (p *downloadProvider) Send(context.Context, uvim.OutboundMessage) (uvim.Sen
 	return uvim.SendResult{Provider: p.id, Connector: p.connector, Time: time.Now().UTC()}, nil
 }
 func (p *downloadProvider) Download(ctx context.Context, req uvim.ResourceDownloadRequest) (uvim.ResourceRef, error) {
+	p.downloadCalls++
 	store := &uvim.ResourceStore{Dir: req.Dir}
 	ref := req.Resource
 	return store.Save(ctx, strings.NewReader("downloaded"), ref)
@@ -1706,6 +2379,14 @@ func (p *downloadProvider) ReadConversationSearchPage(_ context.Context, request
 		return uvim.ConversationSearchPage{Status: "unavailable", Reason: "native_unavailable"}
 	}
 	return p.conversationSearchPages[index]
+}
+func (p *downloadProvider) MaterializeConversationResource(_ context.Context, request uvim.ConversationResourceMaterializeRequest) (uvim.ResourceRef, error) {
+	p.conversationMaterializeCalls++
+	if p.conversationMaterializeErr != nil {
+		return uvim.ResourceRef{}, p.conversationMaterializeErr
+	}
+	store := &uvim.ResourceStore{Dir: request.Dir}
+	return store.Save(context.Background(), strings.NewReader("materialized-"+request.SourceMessage), uvim.ResourceRef{ID: "materialized-" + request.SourceMessage, Provider: p.id, Connector: p.connector, Kind: request.Resource.Kind, Name: request.Resource.Name})
 }
 func (p *downloadProvider) Health(context.Context) uvim.Health {
 	return uvim.Health{Provider: p.id, Connector: p.connector, State: "ok", CheckedAt: time.Now().UTC(), Capabilities: p.Capabilities()}

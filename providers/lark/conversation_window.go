@@ -63,6 +63,7 @@ func (p *Provider) ReadConversationWindow(ctx context.Context, event uvim.Event)
 }
 
 func newConversationWindowResult(event uvim.Event) uvim.ConversationWindowResult {
+	anchor, _ := uvim.EventSourceTime(event)
 	return uvim.ConversationWindowResult{
 		Version:          uvim.ConversationWindowVersionV1,
 		Source:           nativeWindowSource,
@@ -70,11 +71,13 @@ func newConversationWindowResult(event uvim.Event) uvim.ConversationWindowResult
 		ConversationID:   strings.TrimSpace(event.Channel.ID),
 		ThreadID:         strings.TrimSpace(event.Referrer.ThreadID),
 		TriggerMessageID: strings.TrimSpace(event.Message.ID),
-		AnchorTime:       event.Message.CreatedAt.UTC(),
+		AnchorTime:       anchor,
+		AnchorTimeSource: uvim.EventSourceTimeSource(event),
 	}
 }
 
 func validConversationWindowEvent(p *Provider, event uvim.Event) bool {
+	_, hasSourceTime := uvim.EventSourceTime(event)
 	return p != nil &&
 		strings.TrimSpace(event.Provider) == p.ID() &&
 		strings.TrimSpace(event.Connector) == p.ConnectorID() &&
@@ -83,14 +86,15 @@ func validConversationWindowEvent(p *Provider, event uvim.Event) bool {
 		event.Channel.Type == uvim.ChannelGroup &&
 		strings.TrimSpace(event.Channel.ID) != "" &&
 		strings.TrimSpace(event.Message.ID) != "" &&
-		!event.Message.CreatedAt.IsZero() &&
+		hasSourceTime &&
 		strings.TrimSpace(event.Referrer.MessageID) == strings.TrimSpace(event.Message.ID) &&
 		strings.TrimSpace(event.Referrer.ChannelID) == strings.TrimSpace(event.Channel.ID)
 }
 
 func validNativeWindowTrigger(event uvim.Event, item quotedMessageItem) bool {
+	anchor, hasSourceTime := uvim.EventSourceTime(event)
 	nativeTime := parseMillis(item.CreateTime)
-	if item.ID != event.Message.ID || item.ChatID != event.Channel.ID || item.Deleted || nativeTime.IsZero() || !nativeTime.Equal(event.Message.CreatedAt) {
+	if !hasSourceTime || item.ID != event.Message.ID || item.ChatID != event.Channel.ID || item.Deleted || nativeTime.IsZero() || !nativeTime.Equal(anchor) {
 		return false
 	}
 	return event.Referrer.ThreadID == "" || event.Referrer.ThreadID == item.ThreadID
@@ -198,6 +202,10 @@ func (p *Provider) nativeWindowGet(ctx context.Context, token, path string) (jso
 }
 
 func nativeWindowItems(event uvim.Event, trigger quotedMessageItem, items []quotedMessageItem) ([]uvim.ContextMessage, int) {
+	anchor, hasSourceTime := uvim.EventSourceTime(event)
+	if !hasSourceTime {
+		return nil, 0
+	}
 	counts := make(map[string]int, len(items))
 	for _, item := range items {
 		counts[item.ID]++
@@ -207,7 +215,7 @@ func nativeWindowItems(event uvim.Event, trigger quotedMessageItem, items []quot
 	parentID := strings.TrimSpace(event.Referrer.ParentMessageID)
 	for _, item := range items {
 		createdAt := parseMillis(item.CreateTime)
-		if !createdAt.IsZero() && !createdAt.Before(event.Message.CreatedAt) {
+		if !createdAt.IsZero() && !createdAt.Before(anchor) {
 			boundaryOmitted++
 			continue
 		}
@@ -224,7 +232,7 @@ func nativeWindowItems(event uvim.Event, trigger quotedMessageItem, items []quot
 		if item.Sender.Type == "app" && item.Type == "interactive" {
 			continue
 		}
-		text, resources := nativeWindowContent(item)
+		text, resources := nativeWindowContent(event, item)
 		accepted = append(accepted, uvim.ContextMessage{
 			MessageID:    item.ID,
 			SenderID:     item.Sender.ID,
@@ -241,7 +249,7 @@ func nativeWindowItems(event uvim.Event, trigger quotedMessageItem, items []quot
 	return accepted, boundaryOmitted
 }
 
-func nativeWindowContent(item quotedMessageItem) (string, []uvim.ContextResource) {
+func nativeWindowContent(event uvim.Event, item quotedMessageItem) (string, []uvim.ContextResource) {
 	var text string
 	var resources []uvim.ResourceRef
 	if item.Type == "post" {
@@ -258,12 +266,20 @@ func nativeWindowContent(item quotedMessageItem) (string, []uvim.ContextResource
 		}
 	}
 	descriptors := make([]uvim.ContextResource, 0, len(resources))
-	for _, resource := range resources {
+	for ordinal, resource := range resources {
 		kind := strings.TrimSpace(resource.Kind)
 		if kind == "" {
 			continue
 		}
-		descriptors = append(descriptors, uvim.ContextResource{Kind: kind, Name: resource.Name})
+		resource.Provider = event.Provider
+		resource.Connector = event.Connector
+		resource.SourceMessageID = item.ID
+		resource.Metadata = map[string]string{"message_id": item.ID}
+		descriptors = append(descriptors, uvim.ContextResource{
+			Kind: kind, Name: resource.Name, MIME: resource.MIME, SizeBytes: resource.SizeBytes,
+			SHA256: resource.SHA256, Source: nativeWindowSource, SourceMessageID: item.ID, SourceOrdinal: ordinal,
+			Resource: resource,
+		})
 	}
 	return text, descriptors
 }
