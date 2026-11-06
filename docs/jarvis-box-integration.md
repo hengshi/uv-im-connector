@@ -40,15 +40,27 @@ opening its WebSocket. Identity lookup failures stop provider startup with an
 explicit error; they must not silently turn bot mentions into unaddressed events. Explicit identity settings still take precedence.
 
 For an addressed Lark message with a parent message ID, the connector reads that
-one parent with its bot identity and verifies the returned message and chat IDs.
-It exposes the quoted text and source ID as a `quoted-message.txt` resource, and
-adds the parent's files to the same resource list. The Hub resolves both quoted
-context and provider files into its own resource store before event persistence;
-the optional provider-local store is not a second cache owner. File downloads use
-each resource's source message ID. The current command text, addressing decision
-and reply target are unchanged; quoted text is reference material, not a new
-command. The connector does not walk the root/thread history or recursively fetch
-quotes.
+selected parent with its bot identity and verifies the returned message and chat
+IDs. It exposes the quoted text and source ID as a `quoted-message.txt` resource,
+and adds the selected parent's files to the same resource list. When the verified
+selected response has a native `parent_id`, it can append older replies to that
+same reference file. Each extra read must uniquely return the requested ID in the
+same chat, be non-deleted and usable, and have the exact native `thread_id` of the
+selected quote (including an empty value). The connector follows only those native
+parent IDs; it does not infer an edge from callback thread data, root IDs, forward
+relations, text, or a list/history request. Up to four extra reads share five
+seconds and append at most 24 KiB of complete ancestor node blocks. An unavailable
+or rejected ancestor ends that chain with a safe reason while retaining the
+selected quote and earlier accepted nodes. Ancestor media are kind/name
+descriptions only: they are not `ResourceRef`s, elements, resource IDs or implicit
+downloads. Older merged forwards remain a placeholder with direct-quote guidance;
+their child messages and files are not expanded. The Hub resolves selected quoted context and provider files into its
+own resource store before event persistence; the optional provider-local store is
+not a second cache owner. File downloads use each resource's source message ID.
+The current command text, addressing decision and reply target are unchanged;
+quoted text is reference material, not a new command. These bounded ancestor
+rules do not limit the selected quote, attachment downloads or provider response
+bytes, and do not create a group-history query.
 
 An unavailable, deleted or inaccessible parent produces a resource with a
 normalized `quoted_message_*` error; a file download failure remains

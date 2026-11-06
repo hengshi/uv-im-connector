@@ -20,9 +20,11 @@ import (
 
 // Runs the real WebSocket adapter and Hub with a local Feishu API stub.
 func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
-	for _, scenario := range []string{"auto-file", "auto-other", "file", "folder", "folder-failed", "text", "interactive", "share-chat", "share-user", "system", "merge-forward", "rich-post", "rich-post-v2-only", "rich-post-fallback", "rich-post-markers", "rich-post-unavailable", "denied", "deleted", "wrong-chat", "wrong-message", "download-failed", "unaddressed"} {
+	for _, scenario := range []string{"auto-file", "auto-other", "file", "folder", "folder-failed", "text", "interactive", "share-chat", "share-user", "system", "merge-forward", "rich-post", "rich-post-v2-only", "rich-post-fallback", "rich-post-markers", "rich-post-unavailable", "reply-chain", "reply-chain-no-edge", "reply-chain-cycle", "reply-chain-wrong-chat", "reply-chain-deleted", "reply-chain-denied", "reply-chain-depth", "reply-chain-budget", "denied", "deleted", "wrong-chat", "wrong-message", "download-failed", "unaddressed"} {
 		t.Run(scenario, func(t *testing.T) {
 			var api *httptest.Server
+			var ancestorLookups int
+			largeAncestorBody := `{"text":"` + strings.Repeat("x", 25*1024) + `"}`
 			api = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				switch req.URL.Path {
 				case "/callback/ws/endpoint":
@@ -41,8 +43,12 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 					if scenario == "unaddressed" {
 						mentions = nil
 					}
+					threadID := ""
+					if strings.HasPrefix(scenario, "reply-chain") {
+						threadID = "callback-topic"
+					}
 					raw, _ := json.Marshal(map[string]any{"header": map[string]any{"event_type": "im.message.receive_v1"}, "event": map[string]any{"message": map[string]any{
-						"message_id": "current", "parent_id": "parent", "root_id": "unrelated-root", "chat_id": "chat", "chat_type": "group", "message_type": "text", "content": `{"text":"analyze this log"}`, "mentions": mentions,
+						"message_id": "current", "parent_id": "parent", "root_id": "unrelated-root", "thread_id": threadID, "chat_id": "chat", "chat_type": "group", "message_type": "text", "content": `{"text":"analyze this log"}`, "mentions": mentions,
 					}}})
 					frame := &wsFrame{Method: frameMethodData, Headers: []frameHeader{{Key: frameHeaderMessageID, Value: "current"}}, Payload: raw}
 					if err := conn.WriteMessage(websocket.BinaryMessage, frame.marshal()); err != nil {
@@ -79,6 +85,9 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 					}
 					if scenario == "text" {
 						kind, content = "text", `{"text":"fatal: tracking failed\n"}`
+					}
+					if strings.HasPrefix(scenario, "reply-chain") && scenario != "reply-chain-denied" {
+						kind, content = "text", `{"text":"selected direct reply"}`
 					}
 					if scenario == "interactive" {
 						kind, content = "interactive", `{"elements":[{"tag":"img","img_key":"card-image"}]}`
@@ -120,6 +129,21 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 					items := []any{map[string]any{
 						"message_id": id, "chat_id": chat, "msg_type": kind, "deleted": scenario == "deleted", "body": map[string]any{"content": content},
 					}}
+					if strings.HasPrefix(scenario, "reply-chain") {
+						items[0].(map[string]any)["thread_id"] = "selected-topic"
+						items[0].(map[string]any)["create_time"] = "1793930000000"
+						switch scenario {
+						case "reply-chain-no-edge":
+							items[0].(map[string]any)["root_id"] = "earlier-reply"
+							items[0].(map[string]any)["upper_message_id"] = "earlier-reply"
+						case "reply-chain-depth":
+							items[0].(map[string]any)["parent_id"] = "ancestor-1"
+						case "reply-chain-budget":
+							items[0].(map[string]any)["parent_id"] = "ancestor-budget"
+						default:
+							items[0].(map[string]any)["parent_id"] = "earlier-reply"
+						}
+					}
 					if scenario == "interactive" {
 						items[0].(map[string]any)["sender"] = map[string]any{"id": "app", "id_type": "app_id", "sender_type": "app"}
 					}
@@ -153,8 +177,44 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 						)
 					}
 					json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": items}})
+				case "/open-apis/im/v1/messages/earlier-reply":
+					ancestorLookups++
+					if scenario == "reply-chain-denied" {
+						json.NewEncoder(w).Encode(map[string]any{"code": 99991672, "msg": "private ancestor diagnostic"})
+						return
+					}
+					chat, parentID := "chat", "earlier-origin"
+					if scenario == "reply-chain-wrong-chat" {
+						chat = "other-chat"
+					}
+					if scenario == "reply-chain-cycle" {
+						parentID = "parent"
+					}
+					json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []any{map[string]any{
+						"message_id": "earlier-reply", "parent_id": parentID, "chat_id": chat, "thread_id": "selected-topic", "msg_type": "text", "deleted": scenario == "reply-chain-deleted", "sender": map[string]any{"id": "ou-reply", "id_type": "open_id", "sender_type": "user"}, "create_time": "1793929999000", "body": map[string]any{"content": `{"text":"earlier reply condition"}`},
+					}}}})
+				case "/open-apis/im/v1/messages/earlier-origin":
+					ancestorLookups++
+					json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []any{map[string]any{
+						"message_id": "earlier-origin", "chat_id": "chat", "thread_id": "selected-topic", "msg_type": "file", "sender": map[string]any{"id": "app", "id_type": "app_id", "sender_type": "app"}, "create_time": "1793929998000", "body": map[string]any{"content": `{"file_key":"ancestor-file-key","file_name":"earlier-evidence.bin"}`},
+					}}}})
+				case "/open-apis/im/v1/messages/earlier-origin/resources/ancestor-file-key":
+					t.Error("downloaded an ancestor descriptor")
+					w.WriteHeader(http.StatusInternalServerError)
+				case "/open-apis/im/v1/messages/ancestor-1", "/open-apis/im/v1/messages/ancestor-2", "/open-apis/im/v1/messages/ancestor-3", "/open-apis/im/v1/messages/ancestor-4":
+					ancestorLookups++
+					id := strings.TrimPrefix(req.URL.Path, "/open-apis/im/v1/messages/")
+					parentID := fmt.Sprintf("ancestor-%c", id[len(id)-1]+1)
+					json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []any{map[string]any{
+						"message_id": id, "parent_id": parentID, "chat_id": "chat", "thread_id": "selected-topic", "msg_type": "text", "body": map[string]any{"content": `{"text":"depth fact"}`},
+					}}}})
+				case "/open-apis/im/v1/messages/ancestor-budget":
+					ancestorLookups++
+					json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []any{map[string]any{
+						"message_id": "ancestor-budget", "chat_id": "chat", "thread_id": "selected-topic", "msg_type": "text", "body": map[string]any{"content": largeAncestorBody},
+					}}}})
 				case "/open-apis/im/v1/messages/parent/resources/log-key":
-					if scenario != "auto-file" && scenario != "file" && scenario != "folder" && scenario != "folder-failed" && scenario != "download-failed" {
+					if scenario != "auto-file" && scenario != "file" && scenario != "folder" && scenario != "folder-failed" && scenario != "download-failed" && scenario != "reply-chain-denied" {
 						t.Error("downloaded an unverified quote")
 					}
 					if scenario == "folder-failed" {
@@ -243,7 +303,13 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 			if event.Message.Text != "analyze this log" || event.Referrer.MessageID != "current" || event.Referrer.ParentMessageID != "parent" {
 				t.Fatalf("changed instruction/reply authority: %+v", event)
 			}
+			if strings.HasPrefix(scenario, "reply-chain") && event.Referrer.ThreadID != "callback-topic" {
+				t.Fatalf("callback thread changed: %+v", event.Referrer)
+			}
 			if scenario == "unaddressed" || scenario == "auto-other" {
+				if ancestorLookups != 0 {
+					t.Fatalf("unaddressed event made ancestor reads=%d", ancestorLookups)
+				}
 				if event.Addressed {
 					t.Fatal("another mention admitted as bot")
 				}
@@ -266,6 +332,16 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 			}
 			if len(event.Message.Resources) == 0 {
 				t.Fatal("quoted message context missing from emitted resources")
+			}
+			wantResources := 1
+			if scenario == "reply-chain-denied" {
+				wantResources = 2
+			}
+			if strings.HasPrefix(scenario, "reply-chain") && len(event.Message.Resources) != wantResources {
+				t.Fatalf("ancestor resources must remain descriptors: %+v", event.Message.Resources)
+			}
+			if !strings.HasPrefix(scenario, "reply-chain") && ancestorLookups != 0 {
+				t.Fatalf("event without a native parent edge made ancestor reads=%d", ancestorLookups)
 			}
 			var contents string
 			var failures []string
@@ -297,6 +373,80 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 			}
 			if strings.HasPrefix(scenario, "folder") && (!strings.Contains(contents, `Message type: "folder"`) || !strings.Contains(contents, "ZIP archive")) {
 				t.Fatalf("folder context missing: %q", contents)
+			}
+			if strings.HasPrefix(scenario, "reply-chain") {
+				if len(failures) != 0 || !strings.Contains(contents, `Message ID: "parent"`) {
+					t.Fatalf("selected quote was not retained: contents=%q failures=%v", contents, failures)
+				}
+				if scenario == "reply-chain-denied" {
+					if !strings.Contains(contents, "device.log") || !strings.Contains(contents, "fatal: tracking failed") {
+						t.Fatalf("selected resource was not retained after ancestor failure: %q", contents)
+					}
+				} else if !strings.Contains(contents, "selected direct reply") {
+					t.Fatalf("selected quote body was not retained: %q", contents)
+				}
+				wantLookups := map[string]int{
+					"reply-chain":            2,
+					"reply-chain-no-edge":    0,
+					"reply-chain-cycle":      1,
+					"reply-chain-wrong-chat": 1,
+					"reply-chain-deleted":    1,
+					"reply-chain-denied":     1,
+					"reply-chain-depth":      4,
+					"reply-chain-budget":     1,
+				}[scenario]
+				if ancestorLookups != wantLookups {
+					t.Fatalf("ancestor lookups=%d, want %d", ancestorLookups, wantLookups)
+				}
+				wantStatus := map[string]string{
+					"reply-chain-cycle":      "quoted_message_ancestor_cycle",
+					"reply-chain-wrong-chat": "quoted_message_identity_mismatch",
+					"reply-chain-deleted":    "quoted_message_deleted",
+					"reply-chain-denied":     "quoted_message_lookup_failed: code=99991672",
+					"reply-chain-depth":      "quoted_message_ancestor_depth_limited",
+					"reply-chain-budget":     "quoted_message_ancestor_budget_limited",
+				}[scenario]
+				if wantStatus != "" && !strings.Contains(contents, wantStatus) {
+					t.Fatalf("reply chain missing status %q: %q", wantStatus, contents)
+				}
+				switch scenario {
+				case "reply-chain":
+					for _, want := range []string{`Message ID: "earlier-reply"`, `Parent message ID: "earlier-origin"`, "earlier reply condition", `Message ID: "earlier-origin"`, `Media description: kind="file" name="earlier-evidence.bin"`} {
+						if !strings.Contains(contents, want) {
+							t.Fatalf("reply chain lost %q: %q", want, contents)
+						}
+					}
+				case "reply-chain-no-edge":
+					if !strings.Contains(contents, `Upper message ID: "earlier-reply"`) || strings.Contains(contents, "Earlier replies") {
+						t.Fatalf("non-parent IDs created a reply edge: %q", contents)
+					}
+				case "reply-chain-depth":
+					if !strings.Contains(contents, `Message ID: "ancestor-4"`) || strings.Contains(contents, `Message ID: "ancestor-5"`) {
+						t.Fatalf("depth boundary did not keep only fetched complete nodes: %q", contents)
+					}
+				case "reply-chain-budget":
+					if strings.Contains(contents, strings.Repeat("x", 128)) {
+						t.Fatalf("budget boundary appended a partial ancestor node: %q", contents)
+					}
+				}
+				if scenario == "reply-chain-no-edge" {
+					cancelled, cancel := context.WithCancel(t.Context())
+					cancel()
+					expired, expire := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+					expire()
+					for _, tc := range []struct {
+						name, want string
+						ctx        context.Context
+					}{
+						{name: "cancelled", want: "quoted_message_ancestor_cancelled", ctx: cancelled},
+						{name: "timed out", want: "quoted_message_ancestor_timeout", ctx: expired},
+					} {
+						if got := provider.quotedMessageAncestors(tc.ctx, "token", quotedMessageItem{ID: "parent", ParentID: "never-read"}, "current", "chat"); !strings.Contains(got, tc.want) || ancestorLookups != 0 {
+							t.Fatalf("%s ancestor context result=%q reads=%d", tc.name, got, ancestorLookups)
+						}
+					}
+				}
+				return
 			}
 			switch scenario {
 			case "auto-file", "file", "folder", "text", "interactive", "share-chat", "share-user", "system", "merge-forward", "rich-post", "rich-post-v2-only", "rich-post-fallback", "rich-post-markers":

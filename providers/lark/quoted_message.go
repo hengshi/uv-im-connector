@@ -13,6 +13,7 @@ import (
 
 type quotedMessageItem struct {
 	ID             string `json:"message_id"`
+	ParentID       string `json:"parent_id"`
 	ChatID         string `json:"chat_id"`
 	ThreadID       string `json:"thread_id"`
 	UpperMessageID string `json:"upper_message_id"`
@@ -50,7 +51,7 @@ func (p *Provider) enrichQuotedMessage(ctx context.Context, event *uvim.Event) {
 		SourceMessageID: id,
 		Metadata:        map[string]string{"message_id": id},
 	}
-	quoted, lookupErr := p.quotedMessage(ctx, id, event.Channel.ID, &contextRef)
+	quoted, lookupErr := p.quotedMessage(ctx, id, event.Channel.ID, event.Message.ID, &contextRef)
 	if lookupErr != nil {
 		contextRef.Error = lookupErr.Error() // Only normalized errors leave quotedMessage.
 		event.Message.Resources = append(event.Message.Resources, contextRef)
@@ -67,50 +68,14 @@ func (p *Provider) enrichQuotedMessage(ctx context.Context, event *uvim.Event) {
 	event.Message.Elements = append(event.Message.Elements, uvim.Element{Type: uvim.ElementQuote, ID: id, Children: children})
 }
 
-func (p *Provider) quotedMessage(ctx context.Context, id, chatID string, contextRef *uvim.ResourceRef) (quotedMessageContent, error) {
+func (p *Provider) quotedMessage(ctx context.Context, id, chatID, triggerID string, contextRef *uvim.ResourceRef) (quotedMessageContent, error) {
 	token, err := p.tenantAccessToken(ctx)
 	if err != nil {
 		return quotedMessageContent{}, fmt.Errorf("quoted_message_auth_failed")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL()+"/open-apis/im/v1/messages/"+url.PathEscape(id), nil)
+	message, items, err := p.lookupQuotedMessage(ctx, token, id, chatID)
 	if err != nil {
-		return quotedMessageContent{}, fmt.Errorf("quoted_message_request_failed")
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	raw, err := p.doJSON(req, "lark quoted message")
-	if err != nil {
-		return quotedMessageContent{}, fmt.Errorf("quoted_message_lookup_failed")
-	}
-	var response struct {
-		Code int `json:"code"`
-		Data struct {
-			Items []quotedMessageItem `json:"items"`
-		} `json:"data"`
-	}
-	if json.Unmarshal(raw, &response) != nil {
-		return quotedMessageContent{}, fmt.Errorf("quoted_message_invalid_response")
-	}
-	if response.Code != 0 {
-		return quotedMessageContent{}, fmt.Errorf("quoted_message_lookup_failed: code=%d", response.Code)
-	}
-	var matches []quotedMessageItem
-	for _, item := range response.Data.Items {
-		if item.ID == id {
-			matches = append(matches, item)
-		}
-	}
-	if len(matches) == 0 {
-		return quotedMessageContent{}, fmt.Errorf("quoted_message_not_found")
-	}
-	if len(matches) != 1 {
-		return quotedMessageContent{}, fmt.Errorf("quoted_message_invalid_response")
-	}
-	message := matches[0]
-	if message.ID != id || chatID == "" || message.ChatID != chatID {
-		return quotedMessageContent{}, fmt.Errorf("quoted_message_identity_mismatch")
-	}
-	if message.Deleted {
-		return quotedMessageContent{}, fmt.Errorf("quoted_message_deleted")
+		return quotedMessageContent{}, err
 	}
 	if message.Sender.Type == "app" && message.Sender.Kind == "app_id" && message.Sender.ID == p.config.AppID && p.config.AppID != "" {
 		contextRef.SourceBotAppID = p.config.AppID
@@ -120,7 +85,7 @@ func (p *Provider) quotedMessage(ctx context.Context, id, chatID string, context
 	}
 	content := quotedItemContent(message, id, contextRef.SourceBotAppID, p.ConnectorID())
 	if message.Type == "merge_forward" {
-		content = mergeForwardContent(message, response.Data.Items, id, contextRef.SourceBotAppID, p.ConnectorID())
+		content = mergeForwardContent(message, items, id, contextRef.SourceBotAppID, p.ConnectorID())
 	}
 	if !content.material {
 		return quotedMessageContent{}, fmt.Errorf("quoted_message_content_unavailable")
@@ -139,8 +104,56 @@ func (p *Provider) quotedMessage(ctx context.Context, id, chatID string, context
 	if message.Type == "folder" {
 		context.WriteString("This message contains a Lark folder. If its resource download fails, report that the folder was found but could not be downloaded, and ask for a ZIP archive or individual log files. Do not report that no attachment was supplied.\n")
 	}
+	context.WriteString(p.quotedMessageAncestors(ctx, token, message, triggerID, chatID))
 	content.text = context.String()
 	return content, nil
+}
+
+// lookupQuotedMessage validates the exact native message returned for a known
+// same-chat ID. The selected quote keeps its complete response for forwarded
+// message rendering; ancestor traversal consumes only the validated root.
+func (p *Provider) lookupQuotedMessage(ctx context.Context, token, id, chatID string) (quotedMessageItem, []quotedMessageItem, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL()+"/open-apis/im/v1/messages/"+url.PathEscape(id), nil)
+	if err != nil {
+		return quotedMessageItem{}, nil, fmt.Errorf("quoted_message_request_failed")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	raw, err := p.doJSON(req, "lark quoted message")
+	if err != nil {
+		return quotedMessageItem{}, nil, fmt.Errorf("quoted_message_lookup_failed")
+	}
+	var response struct {
+		Code int `json:"code"`
+		Data struct {
+			Items []quotedMessageItem `json:"items"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(raw, &response) != nil {
+		return quotedMessageItem{}, nil, fmt.Errorf("quoted_message_invalid_response")
+	}
+	if response.Code != 0 {
+		return quotedMessageItem{}, nil, fmt.Errorf("quoted_message_lookup_failed: code=%d", response.Code)
+	}
+	var matches []quotedMessageItem
+	for _, item := range response.Data.Items {
+		if item.ID == id {
+			matches = append(matches, item)
+		}
+	}
+	if len(matches) == 0 {
+		return quotedMessageItem{}, nil, fmt.Errorf("quoted_message_not_found")
+	}
+	if len(matches) != 1 {
+		return quotedMessageItem{}, nil, fmt.Errorf("quoted_message_invalid_response")
+	}
+	message := matches[0]
+	if message.ID != id || chatID == "" || message.ChatID != chatID {
+		return quotedMessageItem{}, nil, fmt.Errorf("quoted_message_identity_mismatch")
+	}
+	if message.Deleted {
+		return quotedMessageItem{}, nil, fmt.Errorf("quoted_message_deleted")
+	}
+	return message, response.Data.Items, nil
 }
 
 // writeQuotedMessageNode keeps provider-native facts descriptive. They are
@@ -162,6 +175,13 @@ func writeQuotedMessageNode(context *strings.Builder, item quotedMessageItem, co
 		fmt.Fprintf(context, "%sCreate time: %q\n", indent, item.CreateTime)
 	}
 	fmt.Fprintf(context, "%sBody:\n", indent)
+	writeQuotedMessageBody(context, body, indent)
+	for _, resource := range resources {
+		fmt.Fprintf(context, "%sResource: ID=%q kind=%q name=%q\n", indent, resource.ID, resource.Kind, resource.Name)
+	}
+}
+
+func writeQuotedMessageBody(context *strings.Builder, body, indent string) {
 	for _, line := range strings.SplitAfter(body, "\n") {
 		if line != "" {
 			context.WriteString(indent + "  " + line)
@@ -169,9 +189,6 @@ func writeQuotedMessageNode(context *strings.Builder, item quotedMessageItem, co
 	}
 	if !strings.HasSuffix(body, "\n") {
 		context.WriteByte('\n')
-	}
-	for _, resource := range resources {
-		fmt.Fprintf(context, "%sResource: ID=%q kind=%q name=%q\n", indent, resource.ID, resource.Kind, resource.Name)
 	}
 }
 
@@ -282,17 +299,7 @@ func validQuotedMessageContent(item quotedMessageItem) bool {
 }
 
 func quotedItemContent(item quotedMessageItem, sourceMessageID, sourceBotAppID, connector string) quotedMessageContent {
-	var body string
-	var rawResources []uvim.ResourceRef
-	material := false
-	if item.Type == "post" {
-		post := renderQuotedPost(item.Body.Content)
-		body, rawResources, material = post.text, post.resources, post.material
-	} else {
-		body = messageBody(item.Type, item.Body.Content)
-		rawResources = messageResources(item.Type, item.Body.Content)
-		material = body != "" || len(rawResources) > 0
-	}
+	body, rawResources, material := quotedItemMaterial(item)
 	resources := quotedResources(rawResources, sourceMessageID, sourceBotAppID, connector)
 	elements := quotedResourceElements(resources)
 	if item.Type == "post" && body != "" {
@@ -304,6 +311,16 @@ func quotedItemContent(item quotedMessageItem, sourceMessageID, sourceBotAppID, 
 		elements:  elements,
 		material:  material || len(resources) > 0,
 	}
+}
+
+func quotedItemMaterial(item quotedMessageItem) (string, []uvim.ResourceRef, bool) {
+	if item.Type == "post" {
+		post := renderQuotedPost(item.Body.Content)
+		return post.text, post.resources, post.material
+	}
+	body := messageBody(item.Type, item.Body.Content)
+	resources := messageResources(item.Type, item.Body.Content)
+	return body, resources, body != "" || len(resources) > 0
 }
 
 func quotedResources(resources []uvim.ResourceRef, sourceMessageID, sourceBotAppID, connector string) []uvim.ResourceRef {
