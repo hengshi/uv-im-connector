@@ -42,10 +42,13 @@ explicit error; they must not silently turn bot mentions into unaddressed events
 For an addressed Lark message with a parent message ID, the connector reads that
 one parent with its bot identity and verifies the returned message and chat IDs.
 It exposes the quoted text and source ID as a `quoted-message.txt` resource, and
-adds the parent's files to the same resource list. File downloads use each
-resource's source message ID. The current command text, addressing decision and
-reply target are unchanged; quoted text is reference material, not a new command.
-The connector does not walk the root/thread history or recursively fetch quotes.
+adds the parent's files to the same resource list. The Hub resolves both quoted
+context and provider files into its own resource store before event persistence;
+the optional provider-local store is not a second cache owner. File downloads use
+each resource's source message ID. The current command text, addressing decision
+and reply target are unchanged; quoted text is reference material, not a new
+command. The connector does not walk the root/thread history or recursively fetch
+quotes.
 
 An unavailable, deleted or inaccessible parent produces a resource with a
 normalized `quoted_message_*` error; a file download failure remains
@@ -68,15 +71,25 @@ by opaque IDs or unambiguous internal URLs. Missing/conflicting relations are
 unavailable rather than guessed from names or private keys. Invalid child rows
 are omitted with an unavailable indication without losing valid siblings.
 `quoted-message.txt` renders each accepted root/forwarded node under that same
-hierarchy with its escaped native message/type/sender tuple, the raw
-native create time when present, its existing body representation, and each
-owned public `ResourceRef.ID`, kind and quoted name. `Container message ID`
-names the selected top-level quote/download container; `Upper message ID`
-appears only when the platform supplied the immediate native relation. A missing sender is
-`unknown`; a missing time is omitted. jarvis-box may use the public resource ID
-to make an attachment correspondence visible, but must obtain bytes through the
-normalized resource and must not treat cache facts, child IDs, names or senders
-as Task, Run, conversation, ACL or identity authority.
+hierarchy with its escaped native message/type/sender tuple, the raw native create
+time when present, its quote-specific body representation, and each owned public
+`ResourceRef.ID`, kind and quoted name. An explicitly quoted Lark `post` selects
+one direct or deterministic locale body, prefers nonempty `content_v2`, retains
+legacy and v2 native media references once per kind/key, and preserves title,
+links, stable mentions, Markdown, bounded language-tagged code, separators and
+emotion as reference material. Structured image/media keys and provider metadata maps
+are not rendered as body text; user-authored text, code, URLs and Markdown are
+retained without blanket string-based redaction. Top post files are normal resources; post-zone folders only
+receive ZIP/individual-file guidance and are not fetched. Unsupported or malformed
+parts remain visible but cannot by themselves make an empty quote available. This
+does not offer style/full-schema fidelity or Markdown-URL media downloads, and
+does not change ordinary command decoding. `Container message ID` names the
+selected top-level quote/download container; `Upper message ID` appears only when
+the platform supplied the immediate native relation. A missing sender is `unknown`;
+a missing time is omitted. jarvis-box may use the public resource ID to make an
+attachment correspondence visible, but must obtain bytes through the normalized
+resource and must not treat cache facts, child IDs, names or senders as Task, Run,
+conversation, ACL or identity authority.
 `interactive` cards still provide summary context without child resources.
 Neither representation creates group history or new Task selection rules.
 

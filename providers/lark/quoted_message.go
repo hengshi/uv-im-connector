@@ -32,6 +32,7 @@ type quotedMessageContent struct {
 	text      string
 	resources []uvim.ResourceRef
 	elements  []uvim.Element
+	material  bool
 }
 
 // Resolve only the explicitly quoted parent, using the connector's bot identity.
@@ -55,10 +56,8 @@ func (p *Provider) enrichQuotedMessage(ctx context.Context, event *uvim.Event) {
 		event.Message.Elements = append(event.Message.Elements, uvim.Element{Type: uvim.ElementQuote, ID: id, Children: []uvim.Element{uvim.File(contextRef)}})
 		return
 	}
-	contextRef, err := p.store("").Save(ctx, strings.NewReader(quoted.text), contextRef)
-	if err != nil {
-		contextRef.Error = "quoted_message_context_store_failed"
-	}
+	contextRef.ID = uvim.NewID("res")
+	contextRef.Private = map[string]string{quotedMessageContextKey: quoted.text}
 	event.Message.Resources = append(event.Message.Resources, contextRef)
 	event.Message.Resources = append(event.Message.Resources, quoted.resources...)
 	children := make([]uvim.Element, 0, 1+len(quoted.elements))
@@ -118,15 +117,11 @@ func (p *Provider) quotedMessage(ctx context.Context, id, chatID string, context
 	if !validQuotedMessageContent(message) {
 		return quotedMessageContent{}, fmt.Errorf("quoted_message_invalid_content")
 	}
-	content := quotedMessageContent{
-		text:      messageBody(message.Type, message.Body.Content),
-		resources: quotedResources(message, id, contextRef.SourceBotAppID, p.ConnectorID()),
-	}
-	content.elements = quotedResourceElements(content.resources)
+	content := quotedItemContent(message, id, contextRef.SourceBotAppID, p.ConnectorID())
 	if message.Type == "merge_forward" {
 		content = mergeForwardContent(message, response.Data.Items, id, contextRef.SourceBotAppID, p.ConnectorID())
 	}
-	if content.text == "" && len(content.resources) == 0 {
+	if !content.material {
 		return quotedMessageContent{}, fmt.Errorf("quoted_message_content_unavailable")
 	}
 	if message.Type != "merge_forward" {
@@ -181,6 +176,7 @@ func writeQuotedMessageNode(context *strings.Builder, item quotedMessageItem, co
 
 type forwardedMessageNode struct {
 	item      quotedMessageItem
+	text      string
 	resources []uvim.ResourceRef
 	children  []*forwardedMessageNode
 }
@@ -190,11 +186,7 @@ type forwardedMessageNode struct {
 // with Feishu's native CLI; every explicit broken relation is omitted instead
 // of being re-parented by filename, key, or arrival order.
 func mergeForwardContent(parent quotedMessageItem, items []quotedMessageItem, sourceMessageID, sourceBotAppID, connector string) quotedMessageContent {
-	content := quotedMessageContent{
-		text:      messageBody(parent.Type, parent.Body.Content),
-		resources: quotedResources(parent, sourceMessageID, sourceBotAppID, connector),
-	}
-	content.elements = quotedResourceElements(content.resources)
+	content := quotedItemContent(parent, sourceMessageID, sourceBotAppID, connector)
 
 	counts := make(map[string]int, len(items))
 	for _, item := range items {
@@ -213,10 +205,8 @@ func mergeForwardContent(parent quotedMessageItem, items []quotedMessageItem, so
 			omitted = true
 			continue
 		}
-		node := &forwardedMessageNode{
-			item:      item,
-			resources: quotedResources(item, sourceMessageID, sourceBotAppID, connector),
-		}
+		nodeContent := quotedItemContent(item, sourceMessageID, sourceBotAppID, connector)
+		node := &forwardedMessageNode{item: item, text: nodeContent.text, resources: nodeContent.resources}
 		nodes[item.ID] = node
 		ordered = append(ordered, node)
 	}
@@ -252,9 +242,8 @@ func mergeForwardContent(parent quotedMessageItem, items []quotedMessageItem, so
 		}
 		visiting[node.item.ID] = true
 		visited[node.item.ID] = true
-		body := messageBody(node.item.Type, node.item.Body.Content)
-		writeQuotedMessageNode(&rendered, node.item, sourceMessageID, body, node.resources, indent)
-		children := []uvim.Element{uvim.Text(body)}
+		writeQuotedMessageNode(&rendered, node.item, sourceMessageID, node.text, node.resources, indent)
+		children := []uvim.Element{uvim.Text(node.text)}
 		children = append(children, quotedResourceElements(node.resources)...)
 		content.resources = append(content.resources, node.resources...)
 		for _, child := range node.children {
@@ -291,8 +280,32 @@ func validQuotedMessageContent(item quotedMessageItem) bool {
 	return item.Type == "merge_forward" || json.Valid([]byte(item.Body.Content))
 }
 
-func quotedResources(item quotedMessageItem, sourceMessageID, sourceBotAppID, connector string) []uvim.ResourceRef {
-	resources := messageResources(item.Type, item.Body.Content)
+func quotedItemContent(item quotedMessageItem, sourceMessageID, sourceBotAppID, connector string) quotedMessageContent {
+	var body string
+	var rawResources []uvim.ResourceRef
+	material := false
+	if item.Type == "post" {
+		post := renderQuotedPost(item.Body.Content)
+		body, rawResources, material = post.text, post.resources, post.material
+	} else {
+		body = messageBody(item.Type, item.Body.Content)
+		rawResources = messageResources(item.Type, item.Body.Content)
+		material = body != "" || len(rawResources) > 0
+	}
+	resources := quotedResources(rawResources, sourceMessageID, sourceBotAppID, connector)
+	elements := quotedResourceElements(resources)
+	if item.Type == "post" && body != "" {
+		elements = append([]uvim.Element{uvim.Text(body)}, elements...)
+	}
+	return quotedMessageContent{
+		text:      body,
+		resources: resources,
+		elements:  elements,
+		material:  material || len(resources) > 0,
+	}
+}
+
+func quotedResources(resources []uvim.ResourceRef, sourceMessageID, sourceBotAppID, connector string) []uvim.ResourceRef {
 	for i := range resources {
 		resources[i].ID = uvim.NewID("res")
 		resources[i].Provider = "lark"

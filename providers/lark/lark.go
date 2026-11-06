@@ -725,8 +725,16 @@ func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[
 	return key, nil
 }
 
+const quotedMessageContextKey = "lark_quoted_message_context"
+
 func (p *Provider) Download(ctx context.Context, req uvim.ResourceDownloadRequest) (uvim.ResourceRef, error) {
 	ref := req.Resource
+	if text, ok := ref.Private[quotedMessageContextKey]; ok {
+		// Context follows the same Hub-selected cache directory as media.
+		// The private in-process body never enters the public resource shape.
+		ref.Private = nil
+		return p.store(req.Dir).Save(ctx, strings.NewReader(text), ref)
+	}
 	if strings.TrimSpace(ref.Key) == "" {
 		return ref, fmt.Errorf("lark download: resource key is required")
 	}

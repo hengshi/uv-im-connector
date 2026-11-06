@@ -26,7 +26,9 @@ Connector 不对附件大小设置额外上限：入站下载、本地存储、H
 
 `message.elements` 保留 `quote` 及其 `children` 层级，并通过不透明资源 ID 或无歧义的内部 URL 关联已下载资源；不能按文件名、平台密钥或私有 metadata 猜关联。缺失或冲突的关系标为 `resource_relation_unavailable`。`message.resources` 仍提供完整的平面材料列表，兼容只消费资源的应用。飞书子节点 ID 只是转发内的位置，所有子资源的 `source_message_id` 仍为本次显式引用的顶层父消息。企业微信 inline quote 没有可信父消息 ID 时只保留引用结构，不补造 parent/thread/Task 身份。
 
-飞书的 `quoted-message.txt` 会按原生层级依次列出每个已接受的根节点和转发节点：`Message ID`、`Message type`、`Sender`、存在时的原始毫秒时间 `Create time`、缩进的 `Body`，以及属于该节点的 `Resource: ID/kind/name`。`Container message ID` 指向本次显式引用/下载的顶层容器；只有平台实际返回上一层关系时才列出 `Upper message ID`。`Resource ID` 就是脱敏协议 `ResourceRef.ID`，可与同一事件的资源及其内部 URL 对应；同名文件不是关联依据。原生 sender 元组缺失时写为 `unknown`，缺失的时间不补造；节点/资源标签值均会转义，正文保留原有消息表示（图文消息仍为规范化展平正文），而不作为标签插入。这些都是描述性的引用事实，不恢复来源 Task、thread、用户身份或权限，也不授予访问权限。
+飞书的 `quoted-message.txt` 会按原生层级依次列出每个已接受的根节点和转发节点：`Message ID`、`Message type`、`Sender`、存在时的原始毫秒时间 `Create time`、缩进的 `Body`，以及属于该节点的 `Resource: ID/kind/name`。`Container message ID` 指向本次显式引用/下载的顶层容器；只有平台实际返回上一层关系时才列出 `Upper message ID`。`Resource ID` 就是脱敏协议 `ResourceRef.ID`，可与同一事件的资源及其内部 URL 对应；同名文件不是关联依据。原生 sender 元组缺失时写为 `unknown`，缺失的时间不补造；节点/资源标签值均会转义。
+
+对显式引用的飞书 `post`，正文使用仅限引用材料的富文本表示，不复用普通入站 post 的展平命令正文。它选择直接原生正文，或依次选择 `zh_cn`、`en_us`、`ja_jp`、其余按排序的一个 locale，并标出所选 locale。非空 `content_v2` 优先于 legacy `content`；两种表示中的原生图片/媒体引用都会保留，并按 kind/key 去重一次。标题、相邻文本、链接及其 href、稳定的 @ ID 和原生提供的名称、Markdown、带语言且有边界的代码、分隔线和表情都会作为引用材料保留。图片/媒体只显示安全的种类占位符，不把结构化资源中的私有 key 或 provider metadata map 渲染成正文；用户正文、代码、链接和 Markdown 本身按原文保留，不承诺按字符串匹配做全文脱敏。post 顶层文件会成为常规脱敏资源；post 附件区的文件夹只给出请求 ZIP 或单个文件的提示，不会被作为一个资源下载。未知或格式错误的部分会以诊断形式可见，但仅有诊断不能让空引用变为可用内容。不提供样式或完整原始 schema 保真，也不会根据 Markdown URL 推测下载媒体。这些规则同时适用于根引用和转发引用节点，不改变普通命令解码。它们只提供描述性的引用材料，不恢复来源 Task、thread、用户身份或权限，也不授予访问权限。
 
 飞书缺少 `upper_message_id` 的子项按原生 CLI 作为顶层直子；明确断链、重复、环、已删除或会话冲突的项不提供正文/资源，并在引用说明中标记不可用，合法兄弟材料仍可读取。下载及关系规则参照[飞书官方 CLI 资源合同](https://github.com/larksuite/cli/blob/05ac58ffa089fe7a171205ac1d1e97ee50196ec8/skills/lark-im/references/lark-im-message-enrichment.md)与[关系构建实现](https://github.com/larksuite/cli/blob/05ac58ffa089fe7a171205ac1d1e97ee50196ec8/shortcuts/im/convert_lib/merge.go)。这不授予来源系统权限，也不自动读取群历史。
 
