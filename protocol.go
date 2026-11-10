@@ -291,7 +291,13 @@ type ResourceRef struct {
 }
 
 func (r ResourceRef) Sanitized() ResourceRef {
-	r.ReferencedMessageIDs = slices.Clone(r.ReferencedMessageIDs)
+	if r.Error != "" {
+		// Failed material cannot attest that its ancestor bytes were stored.
+		// Preserve the explicitly quoted source independently of this list.
+		r.ReferencedMessageIDs = nil
+	} else {
+		r.ReferencedMessageIDs = slices.Clone(r.ReferencedMessageIDs)
+	}
 	r.Key = ""
 	r.URL = ""
 	r.Secret = ""
