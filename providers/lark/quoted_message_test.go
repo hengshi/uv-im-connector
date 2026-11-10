@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -21,7 +22,7 @@ import (
 
 // Runs the real WebSocket adapter and Hub with a local Feishu API stub.
 func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
-	for _, scenario := range []string{"auto-file", "auto-other", "file", "folder", "folder-failed", "text", "interactive", "share-chat", "share-user", "system", "merge-forward", "rich-post", "rich-post-v2-only", "rich-post-fallback", "rich-post-markers", "rich-post-unavailable", "reply-chain", "reply-chain-no-edge", "reply-chain-cycle", "reply-chain-wrong-chat", "reply-chain-deleted", "reply-chain-denied", "reply-chain-depth", "reply-chain-budget", "denied", "deleted", "wrong-chat", "wrong-message", "download-failed", "unaddressed"} {
+	for _, scenario := range []string{"auto-file", "auto-other", "file", "folder", "folder-failed", "text", "interactive", "share-chat", "share-user", "system", "merge-forward", "rich-post", "rich-post-v2-only", "rich-post-fallback", "rich-post-markers", "rich-post-unavailable", "reply-chain", "reply-chain-store-failed", "reply-chain-no-edge", "reply-chain-cycle", "reply-chain-wrong-chat", "reply-chain-deleted", "reply-chain-denied", "reply-chain-depth", "reply-chain-budget", "denied", "deleted", "wrong-chat", "wrong-message", "download-failed", "unaddressed"} {
 		t.Run(scenario, func(t *testing.T) {
 			var api *httptest.Server
 			var ancestorLookups int
@@ -265,6 +266,13 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 			}))
 			defer api.Close()
 			store := &uvim.ResourceStore{Dir: t.TempDir()}
+			if scenario == "reply-chain-store-failed" {
+				blocked := store.Dir + "/not-a-directory"
+				if err := os.WriteFile(blocked, []byte("blocked"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				store.Dir = blocked
+			}
 			providerStore := store
 			if scenario == "text" {
 				providerStore = nil
@@ -385,6 +393,20 @@ func TestQuotedMessageResourcesThroughLarkTransportStub(t *testing.T) {
 					t.Fatal(err)
 				}
 				contents += ref.Name + "\n" + string(data)
+			}
+			if scenario == "reply-chain-store-failed" {
+				if ancestorLookups != 2 || contextRef == nil {
+					t.Fatalf("expected verified ancestors before the storage failure: reads=%d context=%+v", ancestorLookups, contextRef)
+				}
+				for _, ref := range []uvim.ResourceRef{*contextRef, *quote.Children[0].Resource} {
+					if ref.Error != "download_failed" || ref.InternalURL != "" || ref.SHA256 != "" || len(ref.ReferencedMessageIDs) != 0 {
+						t.Fatalf("failed context advertised materialized ancestor bytes: %+v", ref)
+					}
+					if ref.SourceMessageID != "parent" {
+						t.Fatalf("storage failure lost explicit quote provenance: %+v", ref)
+					}
+				}
+				return
 			}
 			if strings.HasPrefix(scenario, "folder") && (!strings.Contains(contents, `Message type: "folder"`) || !strings.Contains(contents, "ZIP archive")) {
 				t.Fatalf("folder context missing: %q", contents)
