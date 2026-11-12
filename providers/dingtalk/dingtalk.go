@@ -66,19 +66,21 @@ func New(config Config) (*Provider, error) {
 
 func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	var msg struct {
-		MsgID            string `json:"msgId"`
-		MsgType          string `json:"msgtype"`
-		SenderStaffID    string `json:"senderStaffId"`
-		SenderUnionID    string `json:"senderUnionId"`
-		SenderID         string `json:"senderId"`
-		SenderCorpID     string `json:"senderCorpId"`
-		SenderNick       string `json:"senderNick"`
-		ConversationID   string `json:"conversationId"`
-		ConversationType string `json:"conversationType"`
-		SessionWebhook   string `json:"sessionWebhook"`
-		SessionExpiresAt int64  `json:"sessionWebhookExpiredTime"`
-		RobotCode        string `json:"robotCode"`
-		Text             struct {
+		MsgID             string `json:"msgId"`
+		MsgType           string `json:"msgtype"`
+		SenderStaffID     string `json:"senderStaffId"`
+		SenderUnionID     string `json:"senderUnionId"`
+		SenderID          string `json:"senderId"`
+		SenderCorpID      string `json:"senderCorpId"`
+		SenderNick        string `json:"senderNick"`
+		ConversationID    string `json:"conversationId"`
+		ConversationType  string `json:"conversationType"`
+		ConversationTitle string `json:"conversationTitle"`
+		CreateAt          int64  `json:"createAt"`
+		SessionWebhook    string `json:"sessionWebhook"`
+		SessionExpiresAt  int64  `json:"sessionWebhookExpiredTime"`
+		RobotCode         string `json:"robotCode"`
+		Text              struct {
 			Content string `json:"content"`
 		} `json:"text"`
 		Content any            `json:"content"`
@@ -117,14 +119,18 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		value := time.UnixMilli(msg.SessionExpiresAt).UTC()
 		expiresAt = &value
 	}
+	var createdAt time.Time
+	if msg.CreateAt > 0 {
+		createdAt = time.UnixMilli(msg.CreateAt).UTC()
+	}
 	return uvim.Event{
 		ID:        msg.MsgID,
 		Type:      uvim.EventMessageCreate,
 		Provider:  "dingtalk",
 		Connector: config.ConnectorID,
-		Channel:   uvim.Channel{ID: msg.ConversationID, Type: channelType},
+		Channel:   uvim.Channel{ID: msg.ConversationID, Type: channelType, Name: msg.ConversationTitle},
 		User:      user,
-		Message:   uvim.Message{ID: msg.MsgID, Text: strings.TrimSpace(text), Type: uvim.FirstNonEmpty(msg.MsgType, "text"), Resources: refs},
+		Message:   uvim.Message{ID: msg.MsgID, Text: strings.TrimSpace(text), Type: uvim.FirstNonEmpty(msg.MsgType, "text"), Resources: refs, CreatedAt: createdAt},
 		Referrer:  uvim.Referrer{MessageID: msg.MsgID, ChannelID: msg.ConversationID, ReplyToken: msg.SessionWebhook, ExpiresAt: expiresAt, Target: replyTarget},
 		Addressed: true,
 	}, true, nil

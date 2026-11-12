@@ -13,6 +13,7 @@ import (
 	"time"
 
 	uvim "github.com/hengshi/uv-im-connector"
+	"github.com/hengshi/uv-im-connector/client"
 	"github.com/hengshi/uv-im-connector/providers/httpchannel"
 	"github.com/hengshi/uv-im-connector/server"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/handler"
@@ -132,6 +133,8 @@ func TestDecodeContentRichTextAndDownloadCodes(t *testing.T) {
 	event, ok, err := Decode([]byte(`{
   "msgId": "m-rich",
   "msgtype": "richText",
+  "createAt": 1794484800000,
+  "conversationTitle": "Release review",
   "robotCode": "robot-1",
   "senderStaffId": "u1",
   "senderNick": "Ada",
@@ -154,6 +157,9 @@ func TestDecodeContentRichTextAndDownloadCodes(t *testing.T) {
 	}
 	if event.Message.Text != "hello\nworld" {
 		t.Fatalf("text = %q", event.Message.Text)
+	}
+	if event.Channel.Name != "Release review" || !event.Message.CreatedAt.Equal(time.UnixMilli(1794484800000)) {
+		t.Fatalf("native conversation/time lost: channel=%+v created_at=%v", event.Channel, event.Message.CreatedAt)
 	}
 	if len(event.Message.Resources) != 2 {
 		t.Fatalf("resources = %+v", event.Message.Resources)
@@ -274,6 +280,7 @@ func TestStreamRunEmitsNormalizedEventWithSDKStub(t *testing.T) {
 				t.Fatal(err)
 			}
 			hub := server.NewHub(uvim.NewProviderRegistry(provider), log, nil)
+			hub.SetAuthToken("caller-token")
 			if err := hub.RunProviders(ctx); !errors.Is(err, context.Canceled) {
 				t.Fatalf("runner did not recover and emit before cancellation: %v", err)
 			}
@@ -293,6 +300,23 @@ func TestStreamRunEmitsNormalizedEventWithSDKStub(t *testing.T) {
 			}
 			if event.Referrer.ReplyToken == "" {
 				t.Fatal("stream event lost session webhook reply token")
+			}
+			if err := hub.EnableIdentityLinks(t.TempDir() + "/links.json"); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = hub.CloseIdentityLinks() })
+			api := httptest.NewServer(hub.Handler())
+			defer api.Close()
+			c := client.New(api.URL)
+			c.Token = "caller-token"
+			eventRef := uvim.IdentityEventRef{Provider: event.Provider, Connector: event.Connector, EventID: event.ID}
+			linked, err := c.LinkIdentity(t.Context(), uvim.IdentityLinkRequest{Identity: uvim.UserIdentity{Type: "github.userid", Scope: "github.com", ID: "42"}, Event: eventRef, Proof: "github:comment-42"})
+			if err != nil || linked.Link == nil {
+				t.Fatalf("link native private actor: %+v %v", linked, err)
+			}
+			resolved, err := c.ResolveInboundIdentity(t.Context(), uvim.IdentityInboundResolveRequest{Provider: event.Provider, Connector: event.Connector, EventID: event.ID})
+			if err != nil || resolved.DirectTarget == nil || resolved.DirectTarget.Kind != uvim.TargetUser || resolved.DirectTarget.ID != "u1" || resolved.NativeActor.UserID != "u1" || len(resolved.Links) != 1 {
+				t.Fatalf("private actor/target proof: %+v %v", resolved, err)
 			}
 		})
 	}
