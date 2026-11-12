@@ -659,8 +659,10 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 	now := p.now().UTC()
 	expiresAt := now.Add(10 * time.Minute)
 	targetKind := uvim.TargetUser
+	targetID := userID
 	if channelType == uvim.ChannelGroup {
 		targetKind = uvim.TargetGroup
+		targetID = channelID
 	}
 	return uvim.Event{
 		ID:        uvim.FirstNonEmpty(uvim.StringValue(body["msgid"]), in.Headers.ReqID),
@@ -680,7 +682,7 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 			Elements:  elements,
 			Resources: resources,
 		},
-		Referrer: uvim.Referrer{MessageID: messageID, ChannelID: channelID, ReplyToken: in.Headers.ReqID, ExpiresAt: &expiresAt, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
+		Referrer: uvim.Referrer{MessageID: messageID, ChannelID: channelID, ReplyToken: in.Headers.ReqID, ExpiresAt: &expiresAt, Target: &uvim.OutboundTarget{ID: targetID, Kind: targetKind}},
 		// AI Bot callbacks are interactions delivered to this bot, including group @mentions.
 		Addressed: true,
 	}, true

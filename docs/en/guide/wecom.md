@@ -78,6 +78,8 @@ Both identities can contain the same ID when the callback is already plaintext. 
 
 Lookup has a five-second total deadline and runs in the event-emission worker without blocking WebSocket ACK dispatch. Tokens follow their returned lifetime. The member cache holds at most 1,024 entries: ten minutes for success, thirty seconds for failures or partial failures. IP, permission, network and missing-member failures produce safe diagnostics while the original message remains available. An account already proven by conversion survives a failed display-name lookup.
 
+Direct replies and proactive private messages use the current callback’s `from.userid` as the native user target. A conversation `chatid` is not a user address. Group replies keep their native group target; identity linking preserves the proven private address.
+
 ## Matching wecom-cli directory identifiers
 
 CLI contact search and bot callbacks can use different identifiers. **A CLI search result's `userid` is not automatically a plaintext enterprise account, and a short callback account is not evidence of missing identity.**

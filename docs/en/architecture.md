@@ -39,7 +39,7 @@ The normalized protocol has these stable objects:
 
 - `Event`: inbound event envelope with provider, connector, channel, user, message, and referrer.
 - `User.Identities`: account identifiers with type, scope and provenance, separate from conversation/send addresses; see [User identities and native addresses](./identities.md).
-- `Message`: text, structured elements, and resource references.
+- `Message`: text, structured elements, and resource references. DingTalk preserves callback `createAt` as native `message.created_at` and `conversationTitle` as `channel.name`. Missing native time stays absent; the existing ingress event time supplies the received-context fallback anchor. Names never select identities or addresses.
 - `ResourceRef`: file/image/audio/video reference with sanitized internal URL and private provider fields; optional `source_message_id` retains explicit reference-material lineage, and a successful synthetic quote context can carry `referenced_message_ids` for ancestor material actually delivered in it. Neither field grants Task, access, or execution authority.
 - `OutboundMessage`: explicit target, text/elements/resources, and optional referrer for replies or threads.
 - `MessageUpdate`: embeds `OutboundMessage` with a top-level `message_id` identifying an exact bot-created message; replaces text only.

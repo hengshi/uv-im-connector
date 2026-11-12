@@ -73,11 +73,11 @@ func TestInboundAttachmentsReachCaller(t *testing.T) {
 					if !ok || !event.Addressed || len(event.Message.Resources) != wantResources {
 						t.Fatalf("decoded ok=%t addressed=%t resources=%d", ok, event.Addressed, len(event.Message.Resources))
 					}
-					wantChannel, wantTarget := uvim.ChannelDirect, uvim.TargetUser
+					wantChannel, wantTarget, wantID := uvim.ChannelDirect, uvim.TargetUser, "user-1"
 					if chatType == "group" {
-						wantChannel, wantTarget = uvim.ChannelGroup, uvim.TargetGroup
+						wantChannel, wantTarget, wantID = uvim.ChannelGroup, uvim.TargetGroup, "chat-1"
 					}
-					if event.Channel.Type != wantChannel || event.Referrer.Target.Kind != wantTarget || event.Referrer.Target.ID != "chat-1" {
+					if event.Channel.Type != wantChannel || event.Referrer.Target.Kind != wantTarget || event.Referrer.Target.ID != wantID {
 						t.Fatalf("channel=%+v target=%+v", event.Channel, event.Referrer.Target)
 					}
 					log, err := uvim.NewEventLog(t.TempDir() + "/events.jsonl")
@@ -85,15 +85,32 @@ func TestInboundAttachmentsReachCaller(t *testing.T) {
 						t.Fatal(err)
 					}
 					hub := server.NewHub(uvim.NewProviderRegistry(provider), log, store)
+					hub.SetAuthToken("caller-token")
 					if err := hub.Emit(context.Background(), event); err != nil {
 						t.Fatal(err)
 					}
 					api := httptest.NewServer(hub.Handler())
 					defer api.Close()
 					c := client.New(api.URL)
+					c.Token = "caller-token"
 					events, err := c.Events(context.Background(), 0)
 					if err != nil || len(events) != 1 {
 						t.Fatalf("events=%d err=%v", len(events), err)
+					}
+					if chatType == "single" && kind == "image" && !quoted {
+						if err := hub.EnableIdentityLinks(t.TempDir() + "/links.json"); err != nil {
+							t.Fatal(err)
+						}
+						t.Cleanup(func() { _ = hub.CloseIdentityLinks() })
+						eventRef := uvim.IdentityEventRef{Provider: event.Provider, Connector: event.Connector, EventID: event.ID}
+						linked, err := c.LinkIdentity(t.Context(), uvim.IdentityLinkRequest{Identity: uvim.UserIdentity{Type: "github.userid", Scope: "github.com", ID: "42"}, Event: eventRef, Proof: "github:comment-42"})
+						if err != nil || linked.Link == nil {
+							t.Fatalf("link native private actor: %+v %v", linked, err)
+						}
+						resolved, err := c.ResolveInboundIdentity(t.Context(), uvim.IdentityInboundResolveRequest{Provider: event.Provider, Connector: event.Connector, EventID: event.ID})
+						if err != nil || resolved.DirectTarget == nil || resolved.DirectTarget.Kind != uvim.TargetUser || resolved.DirectTarget.ID != "user-1" || resolved.NativeActor.UserID != "user-1" || len(resolved.Links) != 1 {
+							t.Fatalf("private actor/target proof: %+v %v", resolved, err)
+						}
 					}
 					ref := events[0].Message.Resources[0]
 					if !events[0].Addressed || ref.Kind != wantKind || ref.InternalURL == "" || ref.Error != "" || ref.URL != "" || ref.Secret != "" {
