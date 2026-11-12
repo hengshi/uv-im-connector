@@ -271,6 +271,18 @@ func dingtalkInteractionCard() uvim.InteractionCard {
 
 func TestInteractionCardUsesPublishedTemplateOnlyForNativeGroup(t *testing.T) {
 	var requests int
+	cardResponse := map[string]any{
+		"success": true,
+		"result": map[string]any{
+			"outTrackId": "card-instance-1",
+			"deliverResults": []map[string]any{{
+				"carrierId": "opaque-carrier-id",
+				"spaceId":   "group-1",
+				"spaceType": "IM_GROUP",
+				"success":   true,
+			}},
+		},
+	}
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		requests++
 		switch req.URL.Path {
@@ -299,7 +311,7 @@ func TestInteractionCardUsesPublishedTemplateOnlyForNativeGroup(t *testing.T) {
 			if delivery := uvim.MapStringAny(body["imGroupOpenDeliverModel"]); delivery["robotCode"] != "app" {
 				t.Errorf("card delivery = %+v", delivery)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": "0"})
+			_ = json.NewEncoder(w).Encode(cardResponse)
 		default:
 			t.Errorf("unexpected request %s", req.URL.Path)
 		}
@@ -322,6 +334,37 @@ func TestInteractionCardUsesPublishedTemplateOnlyForNativeGroup(t *testing.T) {
 		t.Fatalf("native card requests = %d", requests)
 	}
 
+	for _, testCase := range []struct {
+		name     string
+		response map[string]any
+	}{
+		{name: "missing top-level success", response: map[string]any{"result": map[string]any{"outTrackId": card.CardID, "deliverResults": []map[string]any{{"spaceId": "group-1", "spaceType": "IM_GROUP", "success": true}}}}},
+		{name: "false top-level success", response: map[string]any{"success": false, "result": map[string]any{"outTrackId": card.CardID, "deliverResults": []map[string]any{{"spaceId": "group-1", "spaceType": "IM_GROUP", "success": true}}}}},
+		{name: "wrong out track ID", response: map[string]any{"success": true, "result": map[string]any{"outTrackId": "other-card", "deliverResults": []map[string]any{{"spaceId": "group-1", "spaceType": "IM_GROUP", "success": true}}}}},
+		{name: "wrong group scope", response: map[string]any{"success": true, "result": map[string]any{"outTrackId": card.CardID, "deliverResults": []map[string]any{{"spaceId": "other-group", "spaceType": "IM_GROUP", "success": true}}}}},
+		{name: "missing delivery results", response: map[string]any{"success": true, "result": map[string]any{"outTrackId": card.CardID}}},
+		{name: "multiple delivery results", response: map[string]any{"success": true, "result": map[string]any{"outTrackId": card.CardID, "deliverResults": []map[string]any{{"spaceId": "group-1", "spaceType": "IM_GROUP", "success": true}, {"spaceId": "other-group", "spaceType": "IM_GROUP", "success": true}}}}},
+		{name: "wrong space type", response: map[string]any{"success": true, "result": map[string]any{"outTrackId": card.CardID, "deliverResults": []map[string]any{{"spaceId": "group-1", "spaceType": "IM_ROBOT", "success": true}}}}},
+		{name: "failed group delivery", response: map[string]any{"success": true, "result": map[string]any{"outTrackId": card.CardID, "deliverResults": []map[string]any{{"spaceId": "group-1", "spaceType": "IM_GROUP", "success": false, "errorMsg": "delivery failed"}}}}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			cardResponse = testCase.response
+			provider, err := New(Config{BaseURL: api.URL, ConnectorID: "main", ClientID: "app", ClientSecret: "secret", CardTemplateID: "published-template"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := provider.Send(t.Context(), uvim.OutboundMessage{
+				Provider: "dingtalk", Connector: "main", ChannelID: "group-1", ChannelType: uvim.ChannelGroup,
+				Target: &uvim.OutboundTarget{ID: "group-1", Kind: uvim.TargetGroup}, Interaction: &card,
+			})
+			failure, ok := uvim.ProviderSendFailure(err)
+			if !ok || failure.DeliveryState != uvim.DeliveryUnknown || failure.Retryable || result.Interaction != nil || result.MessageID != "" || len(result.Publications) != 0 {
+				t.Fatalf("unconfirmed card result=%+v failure=%+v err=%v", result, failure, err)
+			}
+		})
+	}
+
+	beforeUnsupported := requests
 	for _, unsupported := range []uvim.OutboundMessage{
 		{Provider: "dingtalk", Connector: "main", ChannelID: "direct-conversation", ChannelType: uvim.ChannelDirect, Target: &uvim.OutboundTarget{ID: "u1", Kind: uvim.TargetUser}, Interaction: &card},
 		{Provider: "dingtalk", Connector: "main", ChannelID: "group-1", ChannelType: uvim.ChannelGroup, Target: &uvim.OutboundTarget{ID: "group-1", Kind: uvim.TargetGroup}, Interaction: &uvim.InteractionCard{SchemaVersion: uvim.InteractionSchemaV1, CardID: "card-free", Revision: 1, Title: "Free", Question: &uvim.CardQuestion{ID: "q", Prompt: "Explain", AllowFreeText: true, FreeTextActionID: "answer"}, Actions: []uvim.InteractionAction{{ID: "answer", Label: "Answer", Kind: uvim.InteractionAnswer, Token: "opaque"}}}},
@@ -332,7 +375,7 @@ func TestInteractionCardUsesPublishedTemplateOnlyForNativeGroup(t *testing.T) {
 			t.Fatalf("unsupported card failure=%+v err=%v", failure, err)
 		}
 	}
-	if requests != 2 {
+	if requests != beforeUnsupported {
 		t.Fatalf("unsupported card made native requests: %d", requests)
 	}
 }
@@ -788,7 +831,7 @@ func (f *fakeStreamClient) Start(ctx context.Context) error {
 	}
 	_, err := callback(ctx, &payload.DataFrame{
 		Headers: headers,
-		Data: f.data,
+		Data:    f.data,
 	})
 	if err != nil {
 		return err

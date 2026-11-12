@@ -69,18 +69,8 @@ func (p *Provider) sendInteraction(ctx context.Context, msg uvim.OutboundMessage
 	if err != nil {
 		return result, err
 	}
-	var receipt struct {
-		Code    json.RawMessage `json:"code"`
-		Message string          `json:"message"`
-	}
-	if err := json.Unmarshal(response, &receipt); err != nil {
+	if err := dingtalkCardDeliveryConfirmed(response, msg.Interaction.CardID, spaceID); err != nil {
 		return result, err
-	}
-	// Accept either JSON representation of a zero code; keep no-code receipts
-	// compatible with the endpoint's successful response shape.
-	code := strings.Trim(strings.TrimSpace(string(receipt.Code)), `"`)
-	if code != "" && code != "0" {
-		return result, uvim.NewProviderResponseError(response, "dingtalk card: provider rejected card", fmt.Errorf("dingtalk card: code=%s message=%q", code, receipt.Message))
 	}
 	digest, err := msg.Interaction.Digest()
 	if err != nil {
@@ -98,6 +88,34 @@ func (p *Provider) sendInteraction(ctx context.Context, msg uvim.OutboundMessage
 			BotAppID:      p.config.ClientID,
 		},
 	}, nil
+}
+
+// dingtalkCardDeliveryConfirmed accepts only the delivery proof returned by
+// createAndDeliver. HTTP success means the request reached DingTalk; it does
+// not establish that this specific card reached the requested IM group.
+func dingtalkCardDeliveryConfirmed(response []byte, cardID, spaceID string) error {
+	var receipt struct {
+		Success bool `json:"success"`
+		Result  struct {
+			OutTrackID     string `json:"outTrackId"`
+			DeliverResults []struct {
+				SpaceID   string `json:"spaceId"`
+				SpaceType string `json:"spaceType"`
+				Success   bool   `json:"success"`
+			} `json:"deliverResults"`
+		} `json:"result"`
+	}
+	err := json.Unmarshal(response, &receipt)
+	if err == nil && receipt.Success && receipt.Result.OutTrackID == cardID && len(receipt.Result.DeliverResults) == 1 {
+		delivery := receipt.Result.DeliverResults[0]
+		if delivery.Success && delivery.SpaceID == spaceID && delivery.SpaceType == "IM_GROUP" {
+			return nil
+		}
+	}
+	if err == nil {
+		err = fmt.Errorf("dingtalk card delivery receipt did not confirm the requested IM group")
+	}
+	return uvim.NewProviderSendFailure(uvim.SendFailure{Category: uvim.SendFailureUnknown, DeliveryState: uvim.DeliveryUnknown}, "dingtalk card delivery confirmation unavailable", err)
 }
 
 func dingtalkCardGroupSpace(msg uvim.OutboundMessage) (string, error) {
