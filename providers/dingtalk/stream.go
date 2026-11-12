@@ -67,9 +67,10 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 			return nil, fmt.Errorf("dingtalk stream: empty callback frame")
 		}
 		event, ok, err := Decode([]byte(df.Data), httpchannel.Config{
-			ProviderID:  p.ID(),
-			ConnectorID: p.ConnectorID(),
-			BaseURL:     p.config.BaseURL,
+			ProviderID:    p.ID(),
+			ConnectorID:   p.ConnectorID(),
+			BaseURL:       p.config.BaseURL,
+			ResourceStore: p.config.ResourceStore,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("dingtalk stream: decode callback: %w", err)
@@ -83,6 +84,7 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 		p.setState("event")
 		return payload.NewSuccessDataFrameResponse(), nil
 	})
+	client.RegisterCallbackRouter(payload.CardInstanceCallbackTopic, p.cardCallbackHandler(sink))
 
 	p.setState("connecting")
 	if err := client.Start(ctx); err != nil {
@@ -97,6 +99,9 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) error {
 }
 
 func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+	if msg.Interaction != nil {
+		return p.sendInteraction(ctx, msg)
+	}
 	if err := uvim.ValidateOutboundInteraction(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, err
 	}

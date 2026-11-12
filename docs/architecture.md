@@ -46,6 +46,8 @@ WeCom、Lark WebSocket 断线及 DingTalk Stream 首次启动失败由共享监�
 - `SendResult`：已发消息 ID，及 provider 已确认时的 `publications` native 定位符；定位符不是由收件人地址推测出来的。
 - `Capabilities`：每个 provider 的显式能力声明，包括 reply、Server 主动发送、可接受的 target kind 和可选 `publication_locator_version`。
 
+交互卡片有两种互斥的原生身份：可引用消息以真实 `native_message_id` 确认；`card-instance.v1` 以 `native_card_id`、当前 bot 和既有 CardID/revision/digest 确认可回调的实例，不提供消息定位。后者不写原生消息 PATCH 记录，也不生成 `PublicationLocator`。呈现上限、模板准备、原生回调及验证边界统一见[交互卡片](./interactions.md)。Task 与权限仍属于调用方，不由运输回执决定。
+
 `OutboundMessage.target` 由 `id` 和 `kind` 组成。`kind` 只能是 `user`、`group`、`channel` 或 `conversation`，调用方必须使用该 provider 在 `capabilities.target_kinds` 中声明的类型。入站事件的 `referrer.target` 是 provider adapter 给出的精确回复目标；回复时应原样带回完整 `referrer`。目标解析优先级是 outbound `target`、`referrer.target`、旧 channel 字段。协议 v1 继续接受旧的 `channel_id` / `channel_type`：`direct` 映射为 `user`，`group` 映射为 `group`，`thread` 映射为 `channel`，`room` 或空类型映射为 `conversation`。旧 `channel_id` 仍是 provider-native 的现有会话 / channel ID，只映射语义类型，不会被重新解释成主动发送的 user ID。旧请求必须提供 channel ID 或 message / reply handle；未知的非空旧类型会被拒绝，不做猜测。
 
 `reply_message` 表示可以携带入站事件的 `referrer` 回复已有消息；`proactive_direct` 和 `proactive_group` 表示没有当前入站消息时，Server 能否主动发送私聊或群聊消息。调用方应从 `/v1/meta` 读取这些能力，不应根据 provider 名称推断。

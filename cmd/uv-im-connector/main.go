@@ -175,13 +175,14 @@ func buildProviders(providerList string, resourceDir string) ([]uvim.Provider, e
 		case "dingtalk":
 			c := httpEnv("DINGTALK", "dingtalk")
 			provider, err := dingtalk.New(dingtalk.Config{
-				ConnectorID:   c.ConnectorID,
-				BaseURL:       c.BaseURL,
-				Token:         c.Token,
-				WebhookSecret: c.WebhookSecret,
-				ClientID:      os.Getenv("UV_DINGTALK_CLIENT_ID"),
-				ClientSecret:  os.Getenv("UV_DINGTALK_CLIENT_SECRET"),
-				ResourceStore: &uvim.ResourceStore{Dir: resourceDir},
+				ConnectorID:    c.ConnectorID,
+				BaseURL:        c.BaseURL,
+				Token:          c.Token,
+				WebhookSecret:  c.WebhookSecret,
+				ClientID:       os.Getenv("UV_DINGTALK_CLIENT_ID"),
+				ClientSecret:   os.Getenv("UV_DINGTALK_CLIENT_SECRET"),
+				CardTemplateID: os.Getenv("UV_DINGTALK_CARD_TEMPLATE_ID"),
+				ResourceStore:  &uvim.ResourceStore{Dir: resourceDir},
 			})
 			if err != nil {
 				return nil, err
@@ -349,7 +350,7 @@ func autoProviders() []string {
 	if os.Getenv("UV_LARK_APP_ID") != "" || os.Getenv("UV_LARK_APP_SECRET") != "" {
 		out = append(out, "lark")
 	}
-	if hasHTTPProviderEnv("DINGTALK") || os.Getenv("UV_DINGTALK_CLIENT_ID") != "" || os.Getenv("UV_DINGTALK_CLIENT_SECRET") != "" {
+	if hasHTTPProviderEnv("DINGTALK") || os.Getenv("UV_DINGTALK_CLIENT_ID") != "" || os.Getenv("UV_DINGTALK_CLIENT_SECRET") != "" || os.Getenv("UV_DINGTALK_CARD_TEMPLATE_ID") != "" {
 		out = append(out, "dingtalk")
 	}
 	for _, item := range []struct {

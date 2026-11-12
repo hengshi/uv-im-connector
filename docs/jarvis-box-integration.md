@@ -116,6 +116,25 @@ conversation, ACL or identity authority.
 `interactive` cards still provide summary context without child resources.
 Neither representation creates group history or new Task selection rules.
 
+### Interactive identity and text fallback
+
+The neutral question flow can use either a provider-confirmed native message or
+the explicit `card-instance.v1` profile. The latter confirms an existing CardID
+as a callback-addressable WeCom/DingTalk instance without inventing a message ID.
+Jarvis must persist this scoped card ACK under its existing question effect and
+recheck the original actor, current native audience, presentation and Task/Run.
+It must not put the ACK in a quote binding or external-notification alias. An
+authenticated callback can observe unknown delivery through the same business
+transaction; it does not authorize resending the card.
+
+WeCom fixed-button cards reuse bot credentials. DingTalk native group cards need
+a published application template; direct chats and unsupported whole questions
+use complete text. Only a typed zero-attempt transport refusal permits switching
+the same complete question to text; unknown or partial sends never do. Templates,
+limits and callback profiles are owned by [interactions](./interactions.md).
+Both providers reuse the Hub's retained received context and event-bound private
+identity proof; those are not native full-history or quoteable-publication claims.
+
 ### Native group background
 
 After its existing ACL, native addressing and Task selection, Jarvis may request a

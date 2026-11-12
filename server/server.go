@@ -80,6 +80,12 @@ func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
 	if err := uvim.ValidateInteractionEvent(event); err != nil {
 		return err
 	}
+	if event.Interaction != nil && event.Interaction.SchemaVersion == uvim.InteractionCardInstanceVersionV1 {
+		provider := h.registry.Get(event.Provider, event.Connector)
+		if provider == nil || !uvim.InteractionActorSupported(event.User, provider.Capabilities()) {
+			return errors.New("interaction card-instance profile unsupported")
+		}
+	}
 	event = h.identityMapper.Apply(event)
 	if event.ID == "" {
 		event.ID = uvim.NewID("evt")
@@ -214,11 +220,15 @@ func (h *Hub) handleMeta(w http.ResponseWriter, req *http.Request) {
 		if h.authToken == "" {
 			capabilities.InteractiveMessage, capabilities.InteractiveActionCallback, capabilities.InteractiveMessageUpdate = false, false, false
 			capabilities.InteractionSchemaVersions, capabilities.InteractionUpdateVersion = nil, ""
+			capabilities.InteractionCardInstanceVersion, capabilities.CardMaxActions, capabilities.InteractionFreeText = "", 0, false
+			capabilities.InteractionActorIdentityTypes = nil
 		}
 		health := provider.Health(req.Context())
 		if h.authToken == "" {
 			health.Capabilities.InteractiveMessage, health.Capabilities.InteractiveActionCallback, health.Capabilities.InteractiveMessageUpdate = false, false, false
 			health.Capabilities.InteractionSchemaVersions, health.Capabilities.InteractionUpdateVersion = nil, ""
+			health.Capabilities.InteractionCardInstanceVersion, health.Capabilities.CardMaxActions, health.Capabilities.InteractionFreeText = "", 0, false
+			health.Capabilities.InteractionActorIdentityTypes = nil
 		}
 		if !h.nativeConversationWindowAvailable(provider) && h.receivedConversationWindowAvailable(provider) {
 			capabilities.ConversationWindowVersion = uvim.ConversationWindowVersionV1
@@ -407,7 +417,7 @@ func (h *Hub) handleMessageCreate(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if msg.Interaction != nil {
-		if err := h.interactionUpdates.recordSent(context.WithoutCancel(req.Context()), msg, result); err != nil {
+		if err := h.interactionUpdates.recordSent(context.WithoutCancel(req.Context()), msg, result, provider.Capabilities()); err != nil {
 			// The send has already happened. Missing transport recovery evidence
 			// cannot turn it into a retryable send or invent update authority.
 			result.Interaction = nil

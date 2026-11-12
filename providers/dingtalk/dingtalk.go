@@ -12,13 +12,14 @@ import (
 )
 
 type Config struct {
-	ConnectorID   string
-	BaseURL       string
-	Token         string
-	WebhookSecret string
-	ClientID      string
-	ClientSecret  string
-	ResourceStore *uvim.ResourceStore
+	ConnectorID    string
+	BaseURL        string
+	Token          string
+	WebhookSecret  string
+	ClientID       string
+	ClientSecret   string
+	CardTemplateID string
+	ResourceStore  *uvim.ResourceStore
 }
 
 func New(config Config) (*Provider, error) {
@@ -29,11 +30,22 @@ func New(config Config) (*Provider, error) {
 	}
 	config.ClientID = clientID
 	config.ClientSecret = clientSecret
+	config.CardTemplateID = strings.TrimSpace(config.CardTemplateID)
+	if config.CardTemplateID != "" && clientID == "" {
+		return nil, fmt.Errorf("dingtalk provider: card_template_id requires client_id and client_secret")
+	}
 	baseURL := config.BaseURL
 	if baseURL == "" {
 		baseURL = "https://oapi.dingtalk.com"
 	}
 	config.BaseURL = baseURL
+	cardsEnabled := config.CardTemplateID != "" && clientID != ""
+	cardInstanceVersion, cardMaxActions := "", 0
+	var cardActorIdentityTypes []string
+	if cardsEnabled {
+		cardInstanceVersion, cardMaxActions = uvim.InteractionCardInstanceVersionV1, dingtalkCardMaxActions
+		cardActorIdentityTypes = []string{"dingtalk.userid"}
+	}
 	base, err := httpchannel.New(httpchannel.Config{
 		ProviderID:        "dingtalk",
 		ConnectorID:       firstNonEmpty(config.ConnectorID, "dingtalk"),
@@ -45,17 +57,24 @@ func New(config Config) (*Provider, error) {
 		Send:              Send,
 		ParseSendResponse: ParseSendResponse,
 		Capabilities: uvim.Capabilities{
-			Inbound:          true,
-			Outbound:         true,
-			DirectMessage:    true,
-			GroupMessage:     true,
-			ReplyMessage:     true,
-			ProactiveDirect:  clientID != "",
-			ProactiveGroup:   clientID != "" || strings.TrimSpace(config.Token) != "",
-			UploadResource:   clientID != "" && config.ResourceStore != nil,
-			DownloadResource: true,
-			TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup},
-			ChannelTypes:     []string{uvim.ChannelDirect, uvim.ChannelGroup},
+			InteractiveMessage:             cardsEnabled,
+			InteractiveActionCallback:      cardsEnabled,
+			InteractionSchemaVersions:      []string{uvim.InteractionSchemaV1},
+			InteractionCardInstanceVersion: cardInstanceVersion,
+			CardMaxActions:                 cardMaxActions,
+			InteractionFreeText:            false,
+			InteractionActorIdentityTypes:  cardActorIdentityTypes,
+			Inbound:                        true,
+			Outbound:                       true,
+			DirectMessage:                  true,
+			GroupMessage:                   true,
+			ReplyMessage:                   true,
+			ProactiveDirect:                clientID != "",
+			ProactiveGroup:                 clientID != "" || strings.TrimSpace(config.Token) != "",
+			UploadResource:                 clientID != "" && config.ResourceStore != nil,
+			DownloadResource:               true,
+			TargetKinds:                    []string{uvim.TargetUser, uvim.TargetGroup},
+			ChannelTypes:                   []string{uvim.ChannelDirect, uvim.ChannelGroup},
 		},
 	})
 	if err != nil {
@@ -80,7 +99,19 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		SessionWebhook    string `json:"sessionWebhook"`
 		SessionExpiresAt  int64  `json:"sessionWebhookExpiredTime"`
 		RobotCode         string `json:"robotCode"`
-		Text              struct {
+		IsReplyMsg        bool   `json:"isReplyMsg"`
+		RepliedMsg        struct {
+			MsgID   string `json:"msgId"`
+			MsgType string `json:"msgType"`
+		} `json:"repliedMsg"`
+		QuoteMessage struct {
+			IsReplyMsg bool `json:"isReplyMsg"`
+			RepliedMsg struct {
+				MsgID   string `json:"msgId"`
+				MsgType string `json:"msgType"`
+			} `json:"repliedMsg"`
+		} `json:"quoteMessage"`
+		Text struct {
 			Content string `json:"content"`
 		} `json:"text"`
 		Content any            `json:"content"`
@@ -123,7 +154,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	if msg.CreateAt > 0 {
 		createdAt = time.UnixMilli(msg.CreateAt).UTC()
 	}
-	return uvim.Event{
+	event := uvim.Event{
 		ID:        msg.MsgID,
 		Type:      uvim.EventMessageCreate,
 		Provider:  "dingtalk",
@@ -133,7 +164,71 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		Message:   uvim.Message{ID: msg.MsgID, Text: strings.TrimSpace(text), Type: uvim.FirstNonEmpty(msg.MsgType, "text"), Resources: refs, CreatedAt: createdAt},
 		Referrer:  uvim.Referrer{MessageID: msg.MsgID, ChannelID: msg.ConversationID, ReplyToken: msg.SessionWebhook, ExpiresAt: expiresAt, Target: replyTarget},
 		Addressed: true,
-	}, true, nil
+	}
+	if !msg.IsReplyMsg && !msg.QuoteMessage.IsReplyMsg {
+		return event, true, nil
+	}
+	repliedMsg := msg.RepliedMsg
+	if msg.QuoteMessage.IsReplyMsg {
+		repliedMsg = msg.QuoteMessage.RepliedMsg
+	}
+	parentID := firstNonEmpty(repliedMsg.MsgID)
+	if parentID == "" || parentID == msg.MsgID {
+		// DingTalk asserted a reply but omitted a usable native parent. Do not
+		// turn the command into an unquoted default route. The exact typed
+		// material error lets the shared router present an explicit refusal.
+		dingtalkAddQuotedResource(&event, refs, dingtalkUnavailableQuotedMessage(config), "")
+		return event, true, nil
+	}
+	quoted := dingtalkQuotedMessageResource(config, parentID)
+	event.Referrer.ParentMessageID = parentID
+	dingtalkAddQuotedResource(&event, refs, quoted, parentID)
+	return event, true, nil
+}
+
+func dingtalkAddQuotedResource(event *uvim.Event, refs []uvim.ResourceRef, quoted uvim.ResourceRef, parentID string) {
+	event.Message.Resources = append(event.Message.Resources, quoted)
+	event.Message.Elements = append(dingtalkElements(event.Message.Text, refs), uvim.Element{
+		Type: uvim.ElementQuote, ID: parentID, Children: []uvim.Element{uvim.File(quoted)},
+	})
+}
+
+func dingtalkUnavailableQuotedMessage(config httpchannel.Config) uvim.ResourceRef {
+	return uvim.ResourceRef{
+		Provider:  "dingtalk",
+		Connector: config.ConnectorID,
+		Kind:      uvim.ElementFile,
+		Name:      "quoted-message.txt",
+		MIME:      "text/plain; charset=utf-8",
+		Error:     uvim.QuotedMessageReferenceUnavailable,
+	}
+}
+
+func dingtalkQuotedMessageResource(config httpchannel.Config, sourceMessageID string) uvim.ResourceRef {
+	// DingTalk proves the parent relation but exposes no verified plaintext for
+	// the quoted body. Do not turn a diagnostic placeholder into usable Task
+	// context: preserve the relation and mark the material unavailable.
+	return uvim.ResourceRef{
+		Provider:        "dingtalk",
+		Connector:       config.ConnectorID,
+		Kind:            uvim.ElementFile,
+		Name:            "quoted-message.txt",
+		MIME:            "text/plain; charset=utf-8",
+		SourceMessageID: sourceMessageID,
+		Metadata:        map[string]string{"message_id": sourceMessageID},
+		Error:           uvim.QuotedMessageReferenceUnavailable,
+	}
+}
+
+func dingtalkElements(text string, refs []uvim.ResourceRef) []uvim.Element {
+	elements := make([]uvim.Element, 0, 1+len(refs))
+	if strings.TrimSpace(text) != "" {
+		elements = append(elements, uvim.Text(text))
+	}
+	for _, ref := range refs {
+		elements = append(elements, uvim.File(ref))
+	}
+	return elements
 }
 
 func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Request, error) {

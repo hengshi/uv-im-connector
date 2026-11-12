@@ -88,14 +88,7 @@ func (p *Provider) UpdateInteraction(ctx context.Context, update uvim.Interactio
 	return result, nil
 }
 
-type interactionCallbackValue struct {
-	SchemaVersion string                     `json:"schema_version"`
-	CardID        string                     `json:"card_id"`
-	Revision      uint64                     `json:"revision"`
-	ActionID      string                     `json:"action_id"`
-	Kind          uvim.InteractionActionKind `json:"kind"`
-	Token         string                     `json:"token"`
-}
+type interactionCallbackValue = uvim.InteractionCallbackValue
 
 func callbackValue(card uvim.InteractionCard, action uvim.InteractionAction) interactionCallbackValue {
 	return interactionCallbackValue{SchemaVersion: uvim.InteractionSchemaV1, CardID: card.CardID, Revision: card.Revision, ActionID: action.ID, Kind: action.Kind, Token: action.Token}

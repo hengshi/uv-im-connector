@@ -209,9 +209,18 @@ func withInteractionLock(ctx context.Context, directory string, fn func() error)
 	return fn()
 }
 
-func (s *interactionTransportStore) recordSent(ctx context.Context, message uvim.OutboundMessage, result uvim.SendResult) error {
-	if s == nil || s.root == "" || message.Interaction == nil || result.Interaction == nil || result.MessageID == "" {
+func (s *interactionTransportStore) recordSent(ctx context.Context, message uvim.OutboundMessage, result uvim.SendResult, capabilities uvim.Capabilities) error {
+	if s == nil || s.root == "" || message.Interaction == nil || result.Interaction == nil || !result.Interaction.ValidFor(*message.Interaction) || result.Interaction.NativeMessageID != result.MessageID {
 		return errors.New("interaction receipt unavailable")
+	}
+	if result.Interaction.NativeCardID != "" {
+		if capabilities.InteractionCardInstanceVersion != uvim.InteractionCardInstanceVersionV1 {
+			return errors.New("interaction card-instance confirmation unsupported")
+		}
+		// This receipt confirms a callback-addressable card, not a native
+		// message that the persistent PATCH owner could update. The caller
+		// persists its business delivery receipt; no second card store is needed.
+		return nil
 	}
 	s.pruneExpired()
 	digest, err := message.Interaction.Digest()

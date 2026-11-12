@@ -27,6 +27,7 @@
 | `UV_LARK_CALLBACK_BASE_URL` | 可选 callback WebSocket endpoint base URL override。 |
 | `UV_DINGTALK_CLIENT_ID` | DingTalk 应用 Client ID。必须与 `UV_DINGTALK_CLIENT_SECRET` 同时配置；配置后使用 Stream 模式接收入站消息，不需要公网 callback。 |
 | `UV_DINGTALK_CLIENT_SECRET` | DingTalk 应用 Client Secret。必须与 `UV_DINGTALK_CLIENT_ID` 同时配置。 |
+| `UV_DINGTALK_CARD_TEMPLATE_ID` | 已在同一钉钉应用发布的互动卡片模板 ID，须符合[卡片参数契约](./interactions.md)。原生群卡片必须有模板及相应权限；留空使用完整文字。填写后必须同时配置既有 Client ID/Secret，不猜默认模板，也不需要逐群开关。 |
 | `UV_<PROVIDER>_CONNECTOR_ID` | HTTP/webhook 类 provider 的 connector ID，默认 provider ID。 |
 | `UV_<PROVIDER>_BASE_URL` | Provider API base URL override。 |
 | `UV_<PROVIDER>_TOKEN` | Provider API token。值以 `Bearer `、`Bot ` 或 `Basic ` 开头时，会原样作为 Authorization；否则当 provider 需要 Authorization header 时作为 bearer token 发送。 |
@@ -61,5 +62,7 @@ DingTalk 有两种入站模式。配置完整的 `UV_DINGTALK_CLIENT_ID` 和 `UV
 配置应用凭据后，可通过机器人 OpenAPI 向明确的原生用户或群目标发送消息，无需有效的 session webhook；图片和文件使用同一凭据上传后发送，standalone 与 HTTP upload endpoint 共用资源存储。音频和视频作为可下载文件交付，不模拟原生播放器。消息回复仍可复用未过期的入站 session webhook。未配置应用凭据时不声明主动单聊或附件发送；`UV_DINGTALK_TOKEN` 仅支持已配置的旧群机器人主动群消息。应用需具有相应的机器人发消息和媒体 API 权限，目标用户/群须满足钉钉应用范围要求。
 
 钉钉出站正文默认以 Markdown 消息发送：session webhook 和旧群机器人使用 `msgtype=markdown`，应用机器人主动单聊和群聊使用 `msgKey=sampleMarkdown`。调用方继续通过 `OutboundMessage.Text` / JSON `text` 提供正文，无需添加格式字段；通知标题取正文首个非空行。Markdown 正文不转义或裁剪，显示效果取决于钉钉支持的语法范围。附件仍按原有资源消息类型发送。
+
+企微固定按钮卡片复用 BotID/Secret，无需增加配置。钉钉原生群卡片需要应用已发布的模板、卡片实例写权限和 Stream 卡片回调；单聊及不支持的整份问题使用完整文字，不修改原生会话身份。模板配置不证明平台已授权，实际拒绝或结果未知仍按运输回执处理，不能为兜底而重复发送。三端的原生能力、模板参数和回调身份规则见[交互卡片](./interactions.md)。
 
 connector 创建的 HTTP client 不设置请求总超时。企微/飞书 WebSocket 握手、读写/ACK 超时以及飞书分片过期默认关闭；Go 调用方显式传入的正值配置和自定义 client 仍生效。心跳/ping 周期和展示名缓存淘汰不会拒绝消息或附件。嵌入使用时应传入可取消的 context。

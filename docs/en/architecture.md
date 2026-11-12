@@ -158,6 +158,8 @@ The resource matrix is separate from text/conversation support. "Inbound" means 
 
 ## Resources
 
+Interactive cards distinguish quoteable native messages from callback-addressable instances. The versioned `card-instance.v1` profile confirms `native_card_id`, bot identity and the existing card/revision/digest, never a native message locator. It creates no `PublicationLocator` or message-PATCH ledger entry. See [interactive cards](./interactions.md) for platform limits, required templates and callback proof. Business Task state and authorization remain with the caller.
+
 Provider download URLs, resource keys, encrypted payload keys, metadata needed for provider resource lookup, and raw payloads are provider-private. They must not be exposed to callers after normalization.
 
 The public resource shape is:

@@ -1,28 +1,33 @@
 package uvim
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
 
 const (
-	InteractionSchemaV1             = "interaction.v1"
-	InteractionUpdateVersionV1      = "interaction-update.v1"
-	EventInteractionAction          = "interaction.action"
-	InteractionCardMaxBytes         = 16 << 10
-	InteractionCallbackTextMaxBytes = 8 << 10
-	InteractionMaxActions           = 8
-	InteractionDelivered            = "delivered"
-	InteractionNotAttempted         = "not_attempted"
-	InteractionFailedDefinite       = "failed_definite"
-	InteractionUnknown              = "unknown"
+	InteractionSchemaV1              = "interaction.v1"
+	InteractionCardInstanceVersionV1 = "card-instance.v1"
+	InteractionUpdateVersionV1       = "interaction-update.v1"
+	EventInteractionAction           = "interaction.action"
+	InteractionCardMaxBytes          = 16 << 10
+	InteractionCallbackTextMaxBytes  = 8 << 10
+	InteractionMaxActions            = 8
+	InteractionDelivered             = "delivered"
+	InteractionNotAttempted          = "not_attempted"
+	InteractionFailedDefinite        = "failed_definite"
+	InteractionUnknown               = "unknown"
 )
 
 type InteractionActionKind string
@@ -78,6 +83,7 @@ type InteractionActionEvent struct {
 	Connector      string                `json:"connector"`
 	ConversationID string                `json:"conversation_id"`
 	MessageID      string                `json:"message_id"`
+	NativeCardID   string                `json:"native_card_id,omitempty"`
 	CardID         string                `json:"card_id"`
 	Revision       uint64                `json:"revision"`
 	ActionID       string                `json:"action_id"`
@@ -163,10 +169,32 @@ func ValidateInteractionEvent(event Event) error {
 		return nil
 	}
 	action := event.Interaction
-	if action == nil || action.SchemaVersion != InteractionSchemaV1 || action.EventID != event.ID || action.Provider != event.Provider || action.Connector != event.Connector || action.ConversationID != event.Channel.ID || action.Actor.ID != event.User.ID || action.Actor.Kind != UserKindUser || event.User.Kind != UserKindUser || action.MessageID != event.Referrer.MessageID || event.Message.Text != "" || len(event.Message.Elements) != 0 || len(event.Message.Resources) != 0 || action.Revision == 0 || action.OccurredAt.IsZero() {
+	if action == nil || action.EventID != event.ID || action.Provider != event.Provider || action.Connector != event.Connector || action.ConversationID != event.Channel.ID || action.Actor.ID != event.User.ID || action.Actor.Kind != UserKindUser || event.User.Kind != UserKindUser || action.MessageID != event.Referrer.MessageID || event.Message.Text != "" || len(event.Message.Elements) != 0 || len(event.Message.Resources) != 0 || action.Revision == 0 || action.OccurredAt.IsZero() {
 		return errors.New("invalid interaction event scope")
 	}
-	for _, value := range []string{action.EventID, action.Provider, action.Connector, action.ConversationID, action.MessageID, action.CardID, action.ActionID, action.Token, action.Actor.ID, action.BotAppID, action.BotProofDigest} {
+	switch action.SchemaVersion {
+	case InteractionSchemaV1:
+		if action.NativeCardID != "" || !interactionLabel(action.MessageID, 512) {
+			return errors.New("invalid native message interaction identity")
+		}
+	case InteractionCardInstanceVersionV1:
+		// A callback's event ID identifies the click, never the original card
+		// as a chat message. Only the provider's card-instance namespace applies.
+		if action.NativeCardID != action.CardID || action.MessageID != "" || event.Referrer.MessageID != "" || event.Referrer.ReplyToken != "" || event.Login.ID != action.BotAppID || event.Referrer.Target == nil {
+			return errors.New("invalid native card interaction identity")
+		}
+		target := *event.Referrer.Target
+		if event.Channel.Type == ChannelGroup {
+			if target.Kind != TargetGroup || target.ID != event.Channel.ID {
+				return errors.New("invalid native card group scope")
+			}
+		} else if event.Channel.Type != ChannelDirect || target.Kind != TargetUser || target.ID != event.User.ID {
+			return errors.New("invalid native card direct scope")
+		}
+	default:
+		return errors.New("unsupported interaction event schema")
+	}
+	for _, value := range []string{action.EventID, action.Provider, action.Connector, action.ConversationID, action.CardID, action.ActionID, action.Token, action.Actor.ID, action.BotAppID, action.BotProofDigest} {
 		if !interactionLabel(value, 512) {
 			return errors.New("invalid interaction event identity")
 		}
@@ -189,6 +217,11 @@ func ValidateOutboundInteraction(message OutboundMessage, capabilities Capabilit
 	}
 	if err := message.Interaction.Validate(); err != nil {
 		return err
+	}
+	if capabilities.InteractionCardInstanceVersion != "" {
+		if capabilities.InteractionCardInstanceVersion != InteractionCardInstanceVersionV1 || capabilities.CardMaxActions < 1 || len(message.Interaction.Actions) > capabilities.CardMaxActions || message.Interaction.Question != nil && message.Interaction.Question.AllowFreeText && !capabilities.InteractionFreeText {
+			return errors.New("provider card-instance presentation unsupported")
+		}
 	}
 	if capabilities.CardMaxBytes > 0 {
 		raw, _ := json.Marshal(message.Interaction)
@@ -249,5 +282,77 @@ type InteractionPublication struct {
 	CardID          string `json:"card_id"`
 	Revision        uint64 `json:"revision"`
 	PayloadSHA256   string `json:"payload_sha256"`
-	NativeMessageID string `json:"native_message_id"`
+	NativeMessageID string `json:"native_message_id,omitempty"`
+	// NativeCardID is callback-addressable, not a quoteable message locator.
+	// The supported profile uses the existing CardID as its native instance ID.
+	NativeCardID string `json:"native_card_id,omitempty"`
+	BotAppID     string `json:"bot_app_id,omitempty"`
+}
+
+// ValidFor checks transport confirmation only, never business authorization.
+func (p InteractionPublication) ValidFor(card InteractionCard) bool {
+	digest, err := card.Digest()
+	if err != nil || p.CardID != card.CardID || p.Revision != card.Revision || p.PayloadSHA256 != digest {
+		return false
+	}
+	if p.NativeCardID != "" {
+		return p.NativeCardID == card.CardID && p.NativeMessageID == "" && interactionLabel(p.BotAppID, 512)
+	}
+	return interactionLabel(p.NativeMessageID, 512)
+}
+
+// InteractionActorSupported prevents presenting an unanswerable card when a
+// provider's callback uses a different native identity namespace from ingress.
+// An operator-configured alias cannot stand in for a native callback assertion.
+func InteractionActorSupported(user User, capabilities Capabilities) bool {
+	if capabilities.InteractionCardInstanceVersion != InteractionCardInstanceVersionV1 || user.ID == "" || user.Kind != "" && user.Kind != UserKindUser {
+		return false
+	}
+	for _, identity := range user.Identities {
+		if identity.Source == IdentitySourceCallback && identity.ID == user.ID && slices.Contains(capabilities.InteractionActorIdentityTypes, identity.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+// InteractionCallbackValue carries only an existing presentation's opaque
+// action handle. Vendor envelopes, credentials and Task identities stay out.
+type InteractionCallbackValue struct {
+	SchemaVersion string                `json:"schema_version"`
+	CardID        string                `json:"card_id"`
+	Revision      uint64                `json:"revision"`
+	ActionID      string                `json:"action_id"`
+	Kind          InteractionActionKind `json:"kind"`
+	Token         string                `json:"token"`
+}
+
+func (v InteractionCallbackValue) valid() bool {
+	return v.SchemaVersion == InteractionSchemaV1 && v.Revision > 0 && interactionLabel(v.CardID, 256) && interactionLabel(v.ActionID, 256) && validInteractionKind(v.Kind) && interactionLabel(v.Token, 512)
+}
+
+func EncodeInteractionCallbackValue(card InteractionCard, action InteractionAction) (string, error) {
+	value := InteractionCallbackValue{SchemaVersion: InteractionSchemaV1, CardID: card.CardID, Revision: card.Revision, ActionID: action.ID, Kind: action.Kind, Token: action.Token}
+	if !value.valid() {
+		return "", errors.New("invalid interaction callback value")
+	}
+	raw, err := json.Marshal(value)
+	return base64.RawURLEncoding.EncodeToString(raw), err
+}
+
+func DecodeInteractionCallbackValue(encoded string) (InteractionCallbackValue, error) {
+	var value InteractionCallbackValue
+	if len(encoded) > 8192 {
+		return value, errors.New("interaction callback value too large")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return value, errors.New("invalid interaction callback encoding")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&value) != nil || decoder.Decode(&struct{}{}) != io.EOF || !value.valid() {
+		return InteractionCallbackValue{}, errors.New("invalid interaction callback value")
+	}
+	return value, nil
 }
