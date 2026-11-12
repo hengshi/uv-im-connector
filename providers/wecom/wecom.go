@@ -153,21 +153,29 @@ func (p *Provider) ID() string          { return "wecom" }
 func (p *Provider) ConnectorID() string { return p.config.ConnectorID }
 func (p *Provider) Capabilities() uvim.Capabilities {
 	return uvim.Capabilities{
-		Inbound:          true,
-		Outbound:         true,
-		DirectMessage:    true,
-		GroupMessage:     true,
-		ThreadReply:      true,
-		ReplyMessage:     true,
-		ReplyStream:      true,
-		TextMaxBytes:     20 * 1024,
-		ProactiveDirect:  true,
-		ProactiveGroup:   true,
-		TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
-		UploadResource:   p.config.ResourceStore != nil,
-		DownloadResource: true,
-		ResourceKinds:    []string{uvim.ElementImage, uvim.ElementAudio, uvim.ElementVideo, uvim.ElementFile},
-		ChannelTypes:     []string{uvim.ChannelDirect, uvim.ChannelGroup},
+		InteractiveMessage:             true,
+		InteractiveActionCallback:      true,
+		InteractionSchemaVersions:      []string{uvim.InteractionSchemaV1},
+		InteractionCardInstanceVersion: uvim.InteractionCardInstanceVersionV1,
+		InteractionActorIdentityTypes:  []string{"wecom.callback_userid"},
+		CardMaxActions:                 6,
+		InteractionFreeText:            false,
+		CardMaxBytes:                   uvim.InteractionCardMaxBytes,
+		Inbound:                        true,
+		Outbound:                       true,
+		DirectMessage:                  true,
+		GroupMessage:                   true,
+		ThreadReply:                    true,
+		ReplyMessage:                   true,
+		ReplyStream:                    true,
+		TextMaxBytes:                   20 * 1024,
+		ProactiveDirect:                true,
+		ProactiveGroup:                 true,
+		TargetKinds:                    []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
+		UploadResource:                 p.config.ResourceStore != nil,
+		DownloadResource:               true,
+		ResourceKinds:                  []string{uvim.ElementImage, uvim.ElementAudio, uvim.ElementVideo, uvim.ElementFile},
+		ChannelTypes:                   []string{uvim.ChannelDirect, uvim.ChannelGroup},
 	}
 }
 
@@ -322,9 +330,15 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) (runErr error) 
 			continue
 		}
 		if inbound.Cmd == cmdEventCallback {
-			if eventType := uvim.StringValue(uvim.MapStringAny(inbound.Body["event"])["eventtype"]); eventType == "disconnected_event" {
+			eventType := uvim.StringValue(uvim.MapStringAny(inbound.Body["event"])["eventtype"])
+			if eventType == "disconnected_event" {
 				p.setState("disconnected")
 				finishReading(fmt.Errorf("wecom disconnected_event: another connector is active"))
+				continue
+			}
+			if event, ok := p.decodeTemplateCardEvent(inbound); ok {
+				p.setState("event")
+				queued = append(queued, event)
 			}
 			continue
 		}
@@ -373,6 +387,9 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 		err = uvim.NewProviderSendOperationError("wecom send", err)
 	}()
 	if err := uvim.ValidateOutboundInteraction(msg, p.Capabilities()); err != nil {
+		if msg.Interaction != nil {
+			return uvim.SendResult{}, wecomInteractionPreparationError(err)
+		}
 		return uvim.SendResult{}, err
 	}
 	if err := uvim.ValidateOutboundText(msg, p.Capabilities()); err != nil {
@@ -383,6 +400,9 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	}
 	if err := uvim.ValidateOutboundResources(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("wecom send: %w", err)
+	}
+	if msg.Interaction != nil {
+		return p.sendInteraction(ctx, msg)
 	}
 	if hasNonTextElements(msg.Elements) {
 		sendErr := fmt.Errorf("wecom send: rich elements are not supported")

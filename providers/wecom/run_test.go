@@ -210,6 +210,63 @@ func TestRunPropagatesSinkError(t *testing.T) {
 	}
 }
 
+func TestRunTemplateCardCallbackUsesExistingEventLogDedupe(t *testing.T) {
+	card := wecomInteractionTestCard()
+	key := mustWeComInteractionKey(t, card, card.Actions[0])
+	callback := frame{Cmd: cmdEventCallback, Headers: headers{ReqID: "template-request"}, Body: map[string]any{
+		"msgid": "template-callback", "msgtype": "event", "aibotid": "bot", "chattype": "group", "chatid": "group-1",
+		"from":  map[string]any{"userid": "user-1"},
+		"event": map[string]any{"eventtype": "template_card_event", "task_id": card.CardID, "event_key": key},
+	}}
+	wsURL, _, _ := newRunTestServer(t, []frame{callback, callback}, true)
+	provider, err := New(Config{BotID: "bot", Secret: "secret", WSURL: wsURL, Now: func() time.Time { return time.Unix(100, 0).UTC() }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log, err := uvim.NewEventLog(t.TempDir() + "/events.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := server.NewHub(uvim.NewProviderRegistry(provider), log, nil)
+	hub.SetAuthToken("test")
+	seen := make(chan uvim.Event, 2)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- provider.Run(ctx, uvim.EventSinkFunc(func(ctx context.Context, event uvim.Event) error {
+			if err := hub.Emit(ctx, event); err != nil {
+				return err
+			}
+			seen <- event
+			return nil
+		}))
+	}()
+	for range 2 {
+		select {
+		case event := <-seen:
+			if event.ID != "template-callback" || event.Interaction == nil {
+				t.Fatalf("event = %+v", event)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("template card callback was not emitted")
+		}
+	}
+	events, err := log.ReadAfter(t.Context(), 0)
+	if err != nil || len(events) != 1 || events[0].ID != "template-callback" {
+		t.Fatalf("persisted events=%+v err=%v", events, err)
+	}
+	cancel()
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run after cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not stop")
+	}
+}
+
 func TestRunCancelsInFlightSink(t *testing.T) {
 	for _, trigger := range []string{"caller cancellation", "caller cancellation after TCP close"} {
 		t.Run(trigger, func(t *testing.T) {

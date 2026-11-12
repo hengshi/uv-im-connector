@@ -59,6 +59,9 @@ func AssertProviderMetadata(t *testing.T, provider uvim.Provider) {
 	if caps.TextMaxBytes < 0 || (caps.ReplyStream && !caps.ReplyMessage) {
 		t.Fatalf("provider %s has invalid text/stream capabilities", provider.ID())
 	}
+	if caps.InteractionCardInstanceVersion != "" && (caps.InteractionCardInstanceVersion != uvim.InteractionCardInstanceVersionV1 || !caps.InteractiveMessage || !caps.InteractiveActionCallback || !slices.Contains(caps.InteractionSchemaVersions, uvim.InteractionSchemaV1) || len(caps.InteractionActorIdentityTypes) == 0 || caps.CardMaxActions < 1 || caps.CardMaxActions > uvim.InteractionMaxActions) {
+		t.Fatalf("provider %s has invalid card-instance capabilities", provider.ID())
+	}
 	if _, ok := provider.(uvim.MessageUpdater); caps.EditMessage && !ok {
 		t.Fatalf("provider %s advertises edit_message without MessageUpdater", provider.ID())
 	}
