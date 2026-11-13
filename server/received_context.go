@@ -63,8 +63,6 @@ type receivedContextEntry struct {
 	ThreadID       string                    `json:"thread_id,omitempty"`
 	MessageID      string                    `json:"message_id"`
 	CreatedAt      time.Time                 `json:"created_at"`
-	SenderID       string                    `json:"sender_id,omitempty"`
-	SenderKind     string                    `json:"sender_kind,omitempty"`
 	RecordOffset   int64                     `json:"record_offset"`
 	RecordEnd      int64                     `json:"record_end"`
 	Resources      []receivedContextResource `json:"resources,omitempty"`
@@ -78,16 +76,13 @@ type receivedContextResource struct {
 }
 
 type receivedContextPending struct {
-	ID             string                    `json:"id"`
-	EventID        string                    `json:"event_id"`
-	Provider       string                    `json:"provider"`
-	Connector      string                    `json:"connector"`
-	ConversationID string                    `json:"conversation_id"`
-	ThreadID       string                    `json:"thread_id,omitempty"`
-	MessageID      string                    `json:"message_id"`
-	CreatedAt      time.Time                 `json:"created_at"`
-	Resources      []receivedContextResource `json:"resources,omitempty"`
-	PreparedAt     time.Time                 `json:"prepared_at"`
+	ID         string                    `json:"id"`
+	EventID    string                    `json:"event_id"`
+	Provider   string                    `json:"provider"`
+	Connector  string                    `json:"connector"`
+	MessageID  string                    `json:"message_id"`
+	Resources  []receivedContextResource `json:"resources,omitempty"`
+	PreparedAt time.Time                 `json:"prepared_at"`
 }
 
 type receivedContextQuery struct {
@@ -126,7 +121,7 @@ func (r *receivedContextIndex) prepare(authToken string, event uvim.Event) (stri
 	if err := r.loadLocked(); err != nil {
 		return "", err
 	}
-	sourceTime, ok := uvim.EventSourceTime(event)
+	_, ok := uvim.EventSourceTime(event)
 	if !ok {
 		return "", nil
 	}
@@ -136,8 +131,8 @@ func (r *receivedContextIndex) prepare(authToken string, event uvim.Event) (stri
 	}
 	pending := receivedContextPending{
 		ID: id, EventID: event.ID, Provider: event.Provider, Connector: event.Connector,
-		ConversationID: event.Channel.ID, ThreadID: event.Referrer.ThreadID, MessageID: event.Message.ID,
-		CreatedAt: sourceTime, PreparedAt: time.Now().UTC(),
+		MessageID:  event.Message.ID,
+		PreparedAt: time.Now().UTC(),
 	}
 	ambiguousIDs := conflictingResourceIDs(event.Message.Resources)
 	for ordinal, resource := range event.Message.Resources {
@@ -226,7 +221,7 @@ func (r *receivedContextIndex) commit(ctx context.Context, pendingID, authToken 
 	entry := receivedContextEntry{
 		Sequence: written.Sequence, EventID: written.ID, EntryDigest: digest, Provider: written.Provider, Connector: written.Connector,
 		ConversationID: written.Channel.ID, ThreadID: written.Referrer.ThreadID, MessageID: written.Message.ID, CreatedAt: sourceTime,
-		SenderID: written.User.ID, SenderKind: written.User.Kind, RecordOffset: position.Offset, RecordEnd: position.EndOffset, Resources: pending.Resources,
+		RecordOffset: position.Offset, RecordEnd: position.EndOffset, Resources: pending.Resources,
 	}
 	for index := range entry.Resources {
 		entry.Resources[index].State = "active"
@@ -600,7 +595,7 @@ func (r *receivedContextIndex) syncTailLocked(ctx context.Context) (bool, uvim.C
 		if _, exists := r.state.Entries[event.Sequence]; exists {
 			continue
 		}
-		entry, ok := receivedContextEntryFromEvent(event, cursor, nil)
+		entry, ok := receivedContextEntryFromEvent(event, cursor)
 		if !ok {
 			continue
 		}
@@ -616,17 +611,14 @@ func (r *receivedContextIndex) syncTailLocked(ctx context.Context) (bool, uvim.C
 	return changed, cursor, nil
 }
 
-func receivedContextEntryFromEvent(event uvim.Event, cursor uvim.ConversationContextCursor, resources []receivedContextResource) (receivedContextEntry, bool) {
+func receivedContextEntryFromEvent(event uvim.Event, cursor uvim.ConversationContextCursor) (receivedContextEntry, bool) {
 	digest, digestErr := uvim.ConversationEventDigest(event)
 	createdAt, sourceTimeOK := uvim.EventSourceTime(event)
 	position, positionOK := receivedContextRecordFromCursor(cursor, event.Sequence)
 	if digestErr != nil || !sourceTimeOK || !positionOK {
 		return receivedContextEntry{}, false
 	}
-	entry := receivedContextEntry{Sequence: event.Sequence, EventID: event.ID, EntryDigest: digest, Provider: event.Provider, Connector: event.Connector, ConversationID: event.Channel.ID, ThreadID: event.Referrer.ThreadID, MessageID: event.Message.ID, CreatedAt: createdAt, SenderID: event.User.ID, SenderKind: event.User.Kind, RecordOffset: position.Offset, RecordEnd: position.EndOffset, Resources: resources}
-	if resources != nil {
-		return entry, true
-	}
+	entry := receivedContextEntry{Sequence: event.Sequence, EventID: event.ID, EntryDigest: digest, Provider: event.Provider, Connector: event.Connector, ConversationID: event.Channel.ID, ThreadID: event.Referrer.ThreadID, MessageID: event.Message.ID, CreatedAt: createdAt, RecordOffset: position.Offset, RecordEnd: position.EndOffset}
 	for ordinal, resource := range event.Message.Resources {
 		entry.Resources = append(entry.Resources, receivedContextResource{Ordinal: ordinal, Descriptor: uvim.ContextResource{Source: "received", SourceMessageID: event.Message.ID, SourceGeneration: cursor.Generation, SourceEntryDigest: digest, SourceSequence: event.Sequence, SourceOrdinal: ordinal, Kind: resource.Kind, Name: resource.Name, MIME: resource.MIME, SizeBytes: resource.SizeBytes, SHA256: resource.SHA256, Availability: "unrecoverable"}, State: "unrecoverable"})
 	}

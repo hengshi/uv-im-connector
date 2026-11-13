@@ -130,7 +130,7 @@ func (p *Provider) Capabilities() uvim.Capabilities {
 	return uvim.Capabilities{
 		InteractiveMessage: true, InteractiveActionCallback: true, InteractiveMessageUpdate: true,
 		InteractionSchemaVersions: []string{uvim.InteractionSchemaV1}, InteractionUpdateVersion: uvim.InteractionUpdateVersionV1,
-		CardMaxBytes: uvim.InteractionCardMaxBytes, CallbackTextMaxBytes: uvim.InteractionCallbackTextMaxBytes, UpdateMinIntervalMS: 500,
+		CardMaxBytes: uvim.InteractionCardMaxBytes, UpdateMinIntervalMS: 500,
 		Inbound:                        true,
 		Outbound:                       true,
 		DirectMessage:                  true,
@@ -281,7 +281,7 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) (runErr error) 
 
 // readEvents acknowledges frames without waiting for display-name lookups or
 // attachment downloads. Run retains received events until serial delivery ends.
-func (p *Provider) readEvents(ctx context.Context, conn WSConn, writeMu *sync.Mutex, serviceID int32, decoder DecoderConfig, events chan<- uvim.Event, actionSink ...uvim.EventSink) error {
+func (p *Provider) readEvents(ctx context.Context, conn WSConn, writeMu *sync.Mutex, serviceID int32, decoder DecoderConfig, events chan<- uvim.Event, actionSink uvim.EventSink) error {
 	assembler := newChunkAssembler(p.config.ChunkTTL, p.config.Now)
 	for {
 		if err := conn.SetReadDeadline(uvim.OptionalDeadline(p.now(), p.config.ReadDeadline)); err != nil {
@@ -349,13 +349,13 @@ func (p *Provider) readEvents(ctx context.Context, conn WSConn, writeMu *sync.Mu
 				return errors.New("interaction native scope is unavailable")
 			}
 			event.Referrer.ParentMessageID, event.Referrer.RootMessageID, event.Referrer.ThreadID = native.ParentID, native.RootID, native.ThreadID
-			if len(actionSink) != 1 || actionSink[0] == nil {
+			if actionSink == nil {
 				_ = p.writeFrame(writeMu, conn, newAckFrame(inbound, false))
 				return errors.New("interaction durable sink is unavailable")
 			}
 			// The same EventLog must accept the typed action before transport ACK.
 			// Normal message enrichment is deliberately not on this callback path.
-			if emitErr := actionSink[0].Emit(ctx, event); emitErr != nil {
+			if emitErr := actionSink.Emit(ctx, event); emitErr != nil {
 				_ = p.writeFrame(writeMu, conn, newAckFrame(inbound, false))
 				return errors.New("interaction durable append failed")
 			}
