@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -32,28 +33,28 @@ type conversationSearchFilter struct {
 }
 
 type conversationSearchCursor struct {
-	IssuedAt    time.Time
-	Provider    string
-	Connector   string
-	Source      string
-	EventID     string
-	MessageID   string
-	EventDigest string
-	Audience    string
-	Filter      conversationSearchFilter
-	Limit       int
-	Scope       uvim.ConversationSearchScope
-	PageToken   string
-	TokenHashes []string
+	IssuedAt    time.Time                    `json:"issued_at"`
+	Provider    string                       `json:"provider"`
+	Connector   string                       `json:"connector"`
+	Source      string                       `json:"source,omitempty"`
+	EventID     string                       `json:"trigger_event_id"`
+	MessageID   string                       `json:"trigger_message_id"`
+	EventDigest string                       `json:"event_digest"`
+	Audience    string                       `json:"audience_digest"`
+	Filter      conversationSearchFilter     `json:"filter"`
+	Limit       int                          `json:"limit"`
+	Scope       uvim.ConversationSearchScope `json:"scope"`
+	PageToken   string                       `json:"-"`
+	TokenHashes []string                     `json:"token_hashes,omitempty"`
 	// SourceGeneration, SourceFileIdentity, and IndexLowerBound bind every
 	// continuation to the exact retained EventLog projection.  The file proof
 	// prevents a replacement that preserves the same trigger digest from
 	// resuming an old native provider token.
-	SourceGeneration       string
-	SourceFileIdentity     string
-	IndexLowerBound        int64
-	ReceivedBeforeTime     time.Time
-	ReceivedBeforeSequence int64
+	SourceGeneration       string    `json:"source_generation,omitempty"`
+	SourceFileIdentity     string    `json:"source_file_identity,omitempty"`
+	IndexLowerBound        int64     `json:"index_lower_bound_sequence,omitempty"`
+	ReceivedBeforeTime     time.Time `json:"received_before_time,omitempty"`
+	ReceivedBeforeSequence int64     `json:"received_before_sequence,omitempty"`
 }
 
 // conversationSearchCursorRecord is stored only in the Hub-private material
@@ -62,27 +63,11 @@ type conversationSearchCursor struct {
 // The source generation/lower bound make a received cursor invalid as soon as
 // its retained projection rolls over.
 type conversationSearchCursorRecord struct {
-	Version                int                          `json:"version"`
-	ID                     string                       `json:"id"`
-	IssuedAt               time.Time                    `json:"issued_at"`
-	ExpiresAt              time.Time                    `json:"expires_at"`
-	Provider               string                       `json:"provider"`
-	Connector              string                       `json:"connector"`
-	Source                 string                       `json:"source,omitempty"`
-	TriggerEventID         string                       `json:"trigger_event_id"`
-	TriggerMessageID       string                       `json:"trigger_message_id"`
-	EventDigest            string                       `json:"event_digest"`
-	AudienceDigest         string                       `json:"audience_digest"`
-	Filter                 conversationSearchFilter     `json:"filter"`
-	Limit                  int                          `json:"limit"`
-	Scope                  uvim.ConversationSearchScope `json:"scope"`
-	PageTokenCipher        string                       `json:"page_token_cipher,omitempty"`
-	TokenHashes            []string                     `json:"token_hashes,omitempty"`
-	SourceGeneration       string                       `json:"source_generation,omitempty"`
-	SourceFileIdentity     string                       `json:"source_file_identity,omitempty"`
-	IndexLowerBound        int64                        `json:"index_lower_bound_sequence,omitempty"`
-	ReceivedBeforeTime     time.Time                    `json:"received_before_time,omitempty"`
-	ReceivedBeforeSequence int64                        `json:"received_before_sequence,omitempty"`
+	conversationSearchCursor
+	Version         int       `json:"version"`
+	ID              string    `json:"id"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	PageTokenCipher string    `json:"page_token_cipher,omitempty"`
 }
 
 func (h *Hub) handleConversationSearch(w http.ResponseWriter, req *http.Request) {
@@ -624,7 +609,7 @@ func cloneConversationSearchFilter(input conversationSearchFilter) conversationS
 }
 
 func sameConversationSearchFilter(left, right conversationSearchFilter) bool {
-	return sameOptionalTime(left.From, right.From) && left.HasTo == right.HasTo && (!left.HasTo || left.To.Equal(right.To)) && slicesEqual(left.SenderIDs, right.SenderIDs) && slicesEqual(left.Keywords, right.Keywords)
+	return sameOptionalTime(left.From, right.From) && left.HasTo == right.HasTo && (!left.HasTo || left.To.Equal(right.To)) && slices.Equal(left.SenderIDs, right.SenderIDs) && slices.Equal(left.Keywords, right.Keywords)
 }
 
 func cloneTime(value *time.Time) *time.Time {
@@ -637,18 +622,6 @@ func cloneTime(value *time.Time) *time.Time {
 
 func sameOptionalTime(left, right *time.Time) bool {
 	return left == nil && right == nil || left != nil && right != nil && left.Equal(*right)
-}
-
-func slicesEqual(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func filterConversationSearchCandidates(candidates []uvim.ConversationSearchCandidate, filter conversationSearchFilter) []uvim.ConversationSearchCandidate {
@@ -820,14 +793,12 @@ func (r *conversationMaterialRegistry) storeSearchCursor(authToken string, curso
 		return "", err
 	}
 	record := conversationSearchCursorRecord{
-		Version: 1, ID: id, IssuedAt: cursor.IssuedAt.UTC(), ExpiresAt: cursor.IssuedAt.UTC().Add(conversationSearchCursorTTL),
-		Provider: cursor.Provider, Connector: cursor.Connector, Source: cursor.Source,
-		TriggerEventID: cursor.EventID, TriggerMessageID: cursor.MessageID, EventDigest: cursor.EventDigest, AudienceDigest: cursor.Audience,
-		Filter: cloneConversationSearchFilter(cursor.Filter), Limit: cursor.Limit, Scope: cursor.Scope,
-		TokenHashes: append([]string(nil), cursor.TokenHashes...), SourceGeneration: cursor.SourceGeneration, IndexLowerBound: cursor.IndexLowerBound,
-		SourceFileIdentity: cursor.SourceFileIdentity,
-		ReceivedBeforeTime: cursor.ReceivedBeforeTime.UTC(), ReceivedBeforeSequence: cursor.ReceivedBeforeSequence,
+		conversationSearchCursor: cloneConversationSearchCursor(cursor),
+		Version:                  1, ID: id, ExpiresAt: cursor.IssuedAt.UTC().Add(conversationSearchCursorTTL),
 	}
+	record.IssuedAt = cursor.IssuedAt.UTC()
+	record.ReceivedBeforeTime = cursor.ReceivedBeforeTime.UTC()
+	record.PageToken = ""
 	if cursor.Source != "received" {
 		record.PageTokenCipher, err = conversationMaterialEncryptCursorToken(authToken, cursor.PageToken)
 		if err != nil {
@@ -904,13 +875,7 @@ func validConversationSearchCursorRecord(record conversationSearchCursorRecord, 
 	if record.Version != 1 || record.ID != id || record.IssuedAt.IsZero() || !record.ExpiresAt.Equal(record.IssuedAt.Add(conversationSearchCursorTTL)) {
 		return false
 	}
-	cursor := conversationSearchCursor{
-		IssuedAt: record.IssuedAt, Provider: record.Provider, Connector: record.Connector, Source: record.Source,
-		EventID: record.TriggerEventID, MessageID: record.TriggerMessageID, EventDigest: record.EventDigest, Audience: record.AudienceDigest,
-		Filter: record.Filter, Limit: record.Limit, Scope: record.Scope, TokenHashes: record.TokenHashes,
-		SourceGeneration: record.SourceGeneration, SourceFileIdentity: record.SourceFileIdentity, IndexLowerBound: record.IndexLowerBound,
-		ReceivedBeforeTime: record.ReceivedBeforeTime, ReceivedBeforeSequence: record.ReceivedBeforeSequence,
-	}
+	cursor := record.conversationSearchCursor
 	if record.Source == "received" {
 		return record.PageTokenCipher == "" && validConversationSearchCursor(cursor)
 	}
@@ -929,13 +894,7 @@ func conversationSearchCursorFromRecord(authToken string, record conversationSea
 	if !validConversationSearchCursorRecord(record, record.ID) {
 		return conversationSearchCursor{}, errors.New("invalid conversation search cursor")
 	}
-	cursor := conversationSearchCursor{
-		IssuedAt: record.IssuedAt, Provider: record.Provider, Connector: record.Connector, Source: record.Source,
-		EventID: record.TriggerEventID, MessageID: record.TriggerMessageID, EventDigest: record.EventDigest, Audience: record.AudienceDigest,
-		Filter: cloneConversationSearchFilter(record.Filter), Limit: record.Limit, Scope: record.Scope,
-		TokenHashes: append([]string(nil), record.TokenHashes...), SourceGeneration: record.SourceGeneration, SourceFileIdentity: record.SourceFileIdentity, IndexLowerBound: record.IndexLowerBound,
-		ReceivedBeforeTime: record.ReceivedBeforeTime, ReceivedBeforeSequence: record.ReceivedBeforeSequence,
-	}
+	cursor := cloneConversationSearchCursor(record.conversationSearchCursor)
 	if record.Source == "received" {
 		return cursor, nil
 	}
@@ -948,12 +907,7 @@ func conversationSearchCursorFromRecord(authToken string, record conversationSea
 }
 
 func conversationSearchCursorRecordMetadataBytes(record conversationSearchCursorRecord) int {
-	cursor := conversationSearchCursor{
-		Provider: record.Provider, Connector: record.Connector, Source: record.Source, EventID: record.TriggerEventID, MessageID: record.TriggerMessageID,
-		EventDigest: record.EventDigest, Audience: record.AudienceDigest, Filter: record.Filter, Limit: record.Limit, Scope: record.Scope,
-		PageToken: record.PageTokenCipher, TokenHashes: record.TokenHashes, SourceGeneration: record.SourceGeneration, SourceFileIdentity: record.SourceFileIdentity,
-	}
-	return conversationSearchCursorMetadataBytes(cursor)
+	return conversationSearchCursorMetadataBytes(record.conversationSearchCursor) + len(record.PageTokenCipher)
 }
 
 func (r *conversationMaterialRegistry) searchCursorCountLocked(connector string) int {

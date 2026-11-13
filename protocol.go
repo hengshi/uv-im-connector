@@ -337,28 +337,27 @@ type Capabilities struct {
 	// callback namespaces; configured aliases are not interchangeable actors.
 	InteractionActorIdentityTypes []string `json:"interaction_actor_identity_types,omitempty"`
 
-	CardMaxBytes         int      `json:"card_max_bytes,omitempty"`
-	CallbackTextMaxBytes int      `json:"callback_text_max_bytes,omitempty"`
-	UpdateMinIntervalMS  int      `json:"update_min_interval_ms,omitempty"`
-	Inbound              bool     `json:"inbound"`
-	Outbound             bool     `json:"outbound"`
-	DirectMessage        bool     `json:"direct_message,omitempty"`
-	GroupMessage         bool     `json:"group_message,omitempty"`
-	ThreadReply          bool     `json:"thread_reply,omitempty"`
-	ReplyMessage         bool     `json:"reply_message,omitempty"`
-	ReplyStream          bool     `json:"reply_stream,omitempty"` // Live passive reply-token route only.
-	ReplyMaxUses         int      `json:"reply_max_uses,omitempty"`
-	TextMaxBytes         int      `json:"text_max_bytes,omitempty"` // Normalized UTF-8 bytes per send/update; zero is unknown.
-	ProactiveDirect      bool     `json:"proactive_direct,omitempty"`
-	ProactiveGroup       bool     `json:"proactive_group,omitempty"`
-	TargetKinds          []string `json:"target_kinds,omitempty"`
-	TargetIDTypes        []string `json:"target_id_types,omitempty"`
-	EditMessage          bool     `json:"edit_message,omitempty"`
-	DeleteMessage        bool     `json:"delete_message,omitempty"`
-	UploadResource       bool     `json:"upload_resource,omitempty"`
-	DownloadResource     bool     `json:"download_resource,omitempty"`
-	ResourceKinds        []string `json:"resource_kinds,omitempty"`
-	ChannelTypes         []string `json:"channel_types,omitempty"`
+	CardMaxBytes        int      `json:"card_max_bytes,omitempty"`
+	UpdateMinIntervalMS int      `json:"update_min_interval_ms,omitempty"`
+	Inbound             bool     `json:"inbound"`
+	Outbound            bool     `json:"outbound"`
+	DirectMessage       bool     `json:"direct_message,omitempty"`
+	GroupMessage        bool     `json:"group_message,omitempty"`
+	ThreadReply         bool     `json:"thread_reply,omitempty"`
+	ReplyMessage        bool     `json:"reply_message,omitempty"`
+	ReplyStream         bool     `json:"reply_stream,omitempty"` // Live passive reply-token route only.
+	ReplyMaxUses        int      `json:"reply_max_uses,omitempty"`
+	TextMaxBytes        int      `json:"text_max_bytes,omitempty"` // Normalized UTF-8 bytes per send/update; zero is unknown.
+	ProactiveDirect     bool     `json:"proactive_direct,omitempty"`
+	ProactiveGroup      bool     `json:"proactive_group,omitempty"`
+	TargetKinds         []string `json:"target_kinds,omitempty"`
+	TargetIDTypes       []string `json:"target_id_types,omitempty"`
+	EditMessage         bool     `json:"edit_message,omitempty"`
+	DeleteMessage       bool     `json:"delete_message,omitempty"`
+	UploadResource      bool     `json:"upload_resource,omitempty"`
+	DownloadResource    bool     `json:"download_resource,omitempty"`
+	ResourceKinds       []string `json:"resource_kinds,omitempty"`
+	ChannelTypes        []string `json:"channel_types,omitempty"`
 	// PublicationLocatorVersion is advertised only by providers that can
 	// confirm the native message and conversation that a successful send
 	// published. An empty value means no locator is available.

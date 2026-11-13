@@ -88,10 +88,8 @@ func (p *Provider) UpdateInteraction(ctx context.Context, update uvim.Interactio
 	return result, nil
 }
 
-type interactionCallbackValue = uvim.InteractionCallbackValue
-
-func callbackValue(card uvim.InteractionCard, action uvim.InteractionAction) interactionCallbackValue {
-	return interactionCallbackValue{SchemaVersion: uvim.InteractionSchemaV1, CardID: card.CardID, Revision: card.Revision, ActionID: action.ID, Kind: action.Kind, Token: action.Token}
+func callbackValue(card uvim.InteractionCard, action uvim.InteractionAction) uvim.InteractionCallbackValue {
+	return uvim.InteractionCallbackValue{SchemaVersion: uvim.InteractionSchemaV1, CardID: card.CardID, Revision: card.Revision, ActionID: action.ID, Kind: action.Kind, Token: action.Token}
 }
 
 // Render Card JSON 2.0 using neutral fields only. No vendor card JSON or
@@ -181,7 +179,7 @@ func decodeInteractionAction(env eventEnvelope, config DecoderConfig) (uvim.Even
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(body.Action.Value)))
 	decoder.DisallowUnknownFields()
-	var value interactionCallbackValue
+	var value uvim.InteractionCallbackValue
 	if err := decoder.Decode(&value); err != nil {
 		return uvim.Event{}, false, errors.New("invalid interaction callback value")
 	}

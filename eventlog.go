@@ -26,17 +26,6 @@ var errConversationWindowTriggerUnavailable = errors.New("conversation window tr
 
 var errConversationContextUnavailable = errors.New("conversation context unavailable")
 
-// ConversationContextTail is the bounded EventLog evidence window used by a
-// received-context projection. It stores no second copy of message text; its
-// generation and entry digests let projections fail closed after replacement,
-// truncation or corruption.
-type ConversationContextTail struct {
-	Generation         string
-	LowerBoundSequence int64
-	Events             []Event
-	Cursor             ConversationContextCursor
-}
-
 // ConversationContextCursor is a persisted, metadata-only position in the
 // bounded EventLog tail. It contains file offsets and sequence numbers, never
 // a second copy of message bodies or provider-private material. FileIdentity,
@@ -238,18 +227,6 @@ func (l *EventLog) ReadAfter(ctx context.Context, sequence int64) ([]Event, erro
 			out = append(out, event)
 		}
 	}
-}
-
-// ConversationContextTail reads at most the final 64 MiB and 10,000 complete
-// EventLog records. New callers should retain Cursor and use
-// ConversationContextAdvance; this wrapper preserves the original full-tail
-// API for the initial/rebuild path.
-func (l *EventLog) ConversationContextTail(ctx context.Context) (ConversationContextTail, error) {
-	delta, err := l.ConversationContextAdvance(ctx, ConversationContextCursor{})
-	if err != nil {
-		return ConversationContextTail{}, err
-	}
-	return ConversationContextTail{Generation: delta.Cursor.Generation, LowerBoundSequence: delta.Cursor.LowerBoundSequence, Events: delta.Events, Cursor: delta.Cursor}, nil
 }
 
 // ConversationContextAdvance reads only complete records appended after a
