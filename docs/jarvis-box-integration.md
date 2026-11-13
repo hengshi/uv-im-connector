@@ -16,7 +16,7 @@ jarvis-box should treat `uv-im-connector` as an external IM infrastructure depen
 jarvis-box owns:
 
 - Target, Task, Run, Workspace, and runtime-agent lifecycle;
-- native resume and handoff;
+- native session continuity;
 - run artifacts such as `prompt.txt`, `run-context.json`, and `reply.md`;
 - team visibility, redaction, status UI, and retry policy.
 
@@ -184,26 +184,32 @@ states explicit rather than claiming complete group-history absence. Connector
 API support alone does not establish which Jarvis release consumes it or qualify
 an installed client's capability handoff.
 
-When a search row has media, a trusted caller may use the
-additive `conversation_materialize_version=v1` capability. The row contains
-only an opaque `materialize_handle`, a per-resource `source_epoch`, readable
-descriptor and provenance. `POST /v1/conversation.materialize` repeats the
-same trigger/audience proof and accepts no source message override, URL, key,
-path or native scope. The connector durably records one provider attempt before
-it begins; a crash after that record is `unknown` rather than a retried download.
-Only a revalidated `ready` result carries an internal resource reference. The
-caller must still apply its own exact-Run grant and materialization receipt; the
-connector handle is not Task authority and must never reach an Agent or public
-artifact.
+When a search row has media, a trusted caller may use the additive
+`conversation_materialize_version=v1` capability. The row contains an opaque
+`materialize_handle`, per-resource `source_epoch`, readable descriptor and
+provenance. `POST /v1/conversation.materialize` repeats the same trigger/audience
+proof and accepts no source-message override, URL, key, path or native scope.
+The handle already binds its source; `source_epoch` can be omitted, while an
+explicit value must match. The connector caches complete, verified files only.
+Interrupted reads can retry after scope revalidation instead of becoming a
+permanent unknown attempt. Replays of completed handles preserve the original
+bytes and source, and different handles do not share a private-resource cache.
 
-The separate service capability
-`conversation_context_query_version=v1` permits `source="received"` on the
-same search request. This is connector-retained ingress only, not a claim that
-the bot can read older provider history. Its result and every resource include
-generation/digest/sequence source proof, which the caller must seal into its
-own query receipt before materialization. A generation change, missing retained
-entry, deletion or lower-bound limit invalidates that proof; a caller must not
-turn it into a wider native lookup or a retry with a provider key.
+Jarvis may pass this opaque handle through its current-Run Agent channel while
+keeping service credentials and trigger/audience fields server-owned. It checks
+current authorization before and after transport, then atomically publishes the
+verified complete file as Run-local material. It does not mint a second handle or
+persist a Task query/materialization lifecycle. Only a revalidated `ready`
+result carries an internal resource reference; the Agent receives the verified
+Run-local path, never a provider reference or service token.
+
+The separate service capability `conversation_context_query_version=v1` permits
+`source="received"` on the same search request. This is connector-retained ingress
+only, not older provider history. Its result and resources carry generation,
+digest and sequence proof. The caller validates the search result and the Hub
+retains that proof with the opaque handle. A changed generation, missing/deleted
+entry or lower-bound limit invalidates the source. It never authorizes a wider
+native lookup or a retry with a provider key.
 
 ### Event-bound inbound identity
 

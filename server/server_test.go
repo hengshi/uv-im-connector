@@ -1155,7 +1155,7 @@ func TestHubConversationSearchBindsTriggerCursorAndAudience(t *testing.T) {
 	}
 }
 
-func TestHubConversationSearchMaterializesOpaqueNativeResourceOnce(t *testing.T) {
+func TestHubConversationSearchRetriesReadsAndCachesCompletedResource(t *testing.T) {
 	dir := t.TempDir()
 	anchor := time.Date(2026, time.November, 6, 11, 30, 0, 0, time.UTC)
 	scope := uvim.ConversationSearchScope{Provider: "lark", Connector: "main", ConversationID: "oc-group", TriggerMessageID: "om-trigger", AnchorTime: anchor}
@@ -1204,23 +1204,35 @@ func TestHubConversationSearchMaterializesOpaqueNativeResourceOnce(t *testing.T)
 		t.Fatalf("search leaked private resource: %s", encoded)
 	}
 	request := uvim.ConversationMaterializeRequest{Provider: search.Provider, Connector: search.Connector, TriggerEventID: search.TriggerEventID, TriggerMessageID: search.TriggerMessageID, ExpectedEventDigest: search.ExpectedEventDigest, AudienceDigest: search.AudienceDigest, SourceEpoch: resource.SourceEpoch, MaterializeHandle: resource.MaterializeHandle}
+	provider.conversationMaterializeErr = errors.New("interrupted read")
+	failed, err := c.ConversationMaterialize(t.Context(), request)
+	if err != nil || failed.State == "ready" || provider.conversationMaterializeCalls != 1 {
+		t.Fatalf("read failure=%+v calls=%d err=%v", failed, provider.conversationMaterializeCalls, err)
+	}
+	provider.conversationMaterializeErr = nil
+	hub.materialResources = newConversationMaterialRegistry(log)
 	materialized, err := c.ConversationMaterialize(t.Context(), request)
-	if err != nil || materialized.State != "ready" || materialized.Resource.InternalURL == "" || provider.conversationMaterializeCalls != 1 {
+	if err != nil || materialized.State != "ready" || materialized.Resource.InternalURL == "" || provider.conversationMaterializeCalls != 2 {
 		t.Fatalf("first materialize=%+v calls=%d err=%v", materialized, provider.conversationMaterializeCalls, err)
 	}
 	again, err := c.ConversationMaterialize(t.Context(), request)
-	if err != nil || again.State != "ready" || again.Resource.InternalURL != materialized.Resource.InternalURL || provider.conversationMaterializeCalls != 1 {
+	if err != nil || again.State != "ready" || again.Resource.InternalURL != materialized.Resource.InternalURL || provider.conversationMaterializeCalls != 2 {
 		t.Fatalf("second materialize=%+v calls=%d err=%v", again, provider.conversationMaterializeCalls, err)
 	}
 	wrongEpoch := request
 	wrongEpoch.SourceEpoch = "wrong"
 	blocked, err := c.ConversationMaterialize(t.Context(), wrongEpoch)
-	if err != nil || blocked.State != "unavailable" || provider.conversationMaterializeCalls != 1 {
+	if err != nil || blocked.State != "unavailable" || provider.conversationMaterializeCalls != 2 {
 		t.Fatalf("wrong epoch=%+v calls=%d err=%v", blocked, provider.conversationMaterializeCalls, err)
+	}
+	request.SourceEpoch = ""
+	withoutEpoch, err := c.ConversationMaterialize(t.Context(), request)
+	if err != nil || withoutEpoch.State != "ready" || provider.conversationMaterializeCalls != 2 {
+		t.Fatalf("opaque handle alone=%+v calls=%d err=%v", withoutEpoch, provider.conversationMaterializeCalls, err)
 	}
 }
 
-func TestConversationMaterialJournalRestartsAsUnknownWithoutPrivateReferenceLeak(t *testing.T) {
+func TestConversationResourceHandleSurvivesRestartWithoutPrivateReferenceLeak(t *testing.T) {
 	dir := t.TempDir()
 	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
 	registry := newConversationMaterialRegistry(log)
@@ -1233,9 +1245,9 @@ func TestConversationMaterialJournalRestartsAsUnknownWithoutPrivateReferenceLeak
 	}
 	descriptor := result.Items[0].Resources[0]
 	request := uvim.ConversationMaterializeRequest{Provider: input.Provider, Connector: input.Connector, TriggerEventID: input.TriggerEventID, TriggerMessageID: input.TriggerMessageID, ExpectedEventDigest: input.ExpectedEventDigest, AudienceDigest: input.AudienceDigest, SourceEpoch: descriptor.SourceEpoch, MaterializeHandle: descriptor.MaterializeHandle}
-	record, private, started, err := registry.reserve("token", request)
-	if err != nil || !started || record.State != "effect_started" || private.Key != "restart-private-key" {
-		t.Fatalf("reserve record=%+v started=%t private=%+v err=%v", record, started, private.Sanitized(), err)
+	record, private, err := registry.resolve("token", request)
+	if err != nil || record.Resource.InternalURL != "" || private.Key != "restart-private-key" {
+		t.Fatalf("resolve record=%+v private=%+v err=%v", record, private.Sanitized(), err)
 	}
 	raw, err := os.ReadFile(registry.path)
 	if err != nil {
@@ -1245,10 +1257,59 @@ func TestConversationMaterialJournalRestartsAsUnknownWithoutPrivateReferenceLeak
 		t.Fatalf("journal leaked provider key: %s", raw)
 	}
 	restarted := newConversationMaterialRegistry(log)
-	record, private, started, err = restarted.reserve("token", request)
-	if err != nil || started || record.State != "unknown" || private.Key != "" {
-		t.Fatalf("restart record=%+v started=%t private=%+v err=%v", record, started, private.Sanitized(), err)
+	record, private, err = restarted.resolve("token", request)
+	if err != nil || record.Resource.InternalURL != "" || private.Key != "restart-private-key" {
+		t.Fatalf("restart record=%+v private=%+v err=%v", record, private.Sanitized(), err)
 	}
+	// A failed durable completion must not turn a later retry into a memory-only
+	// ready response that disappears on restart.
+	path := restarted.path
+	blockedParent := filepath.Join(dir, "blocked-parent")
+	if err := os.WriteFile(blockedParent, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	restarted.path = filepath.Join(blockedParent, "records.json")
+	ready := uvim.ResourceRef{ID: "complete", InternalURL: "internal://complete", SHA256: strings.Repeat("a", 64), SizeBytes: 4}
+	if _, err := restarted.complete("token", request.MaterializeHandle, ready); err == nil {
+		t.Fatal("completion unexpectedly persisted")
+	}
+	restarted.path = path
+	stillUnread, _, err := restarted.resolve("token", request)
+	if err != nil || stillUnread.Resource.InternalURL != "" {
+		t.Fatalf("failed persistence exposed completed bytes: %+v %v", stillUnread, err)
+	}
+	if _, err := restarted.complete("token", request.MaterializeHandle, ready); err != nil {
+		t.Fatal(err)
+	}
+	committed, _, err := newConversationMaterialRegistry(log).resolve("token", request)
+	if err != nil || committed.Resource.SHA256 != ready.SHA256 {
+		t.Fatalf("completion lost after restart: %+v %v", committed, err)
+	}
+
+	// Prior v1 invalidation cleared Resource after a completed cache was lost.
+	// Preserve that actual stored shape as a closed handle, not a fresh read.
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prior map[string]any
+	if err := json.Unmarshal(raw, &prior); err != nil {
+		t.Fatal(err)
+	}
+	row := prior["records"].(map[string]any)[request.MaterializeHandle].(map[string]any)
+	row["state"], row["reason"] = "unavailable", "cached_resource_unavailable"
+	delete(row, "resource")
+	raw, err = json.Marshal(prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := newConversationMaterialRegistry(log).resolve("token", request); err == nil {
+		t.Fatal("legacy completed cache loss became a new read")
+	}
+
 }
 
 func TestHubReceivedContextIsLazyGenerationBoundAndMaterializesOnce(t *testing.T) {
@@ -1515,7 +1576,7 @@ func TestHubReceivedConversationWindowReportsRetainedCapacityLoss(t *testing.T) 
 	}
 }
 
-func TestHubReceivedMaterialHandlesKeepProvenanceSeparateAndReuseReadyBytes(t *testing.T) {
+func TestHubReceivedMaterialHandlesKeepProvenanceAndCompletedBytesSeparate(t *testing.T) {
 	dir := t.TempDir()
 	anchor := time.Date(2026, time.November, 6, 12, 50, 0, 0, time.UTC)
 	provider := &downloadProvider{id: "lark", connector: "main"}
@@ -1562,7 +1623,7 @@ func TestHubReceivedMaterialHandlesKeepProvenanceSeparateAndReuseReadyBytes(t *t
 	}
 	firstReady := materialize(first)
 	secondReady := materialize(second)
-	if firstReady.State != "ready" || secondReady.State != "ready" || firstReady.Resource.InternalURL == "" || secondReady.Resource.InternalURL != firstReady.Resource.InternalURL || firstReady.Resource.SourceMessageID != first.SourceMessageID || secondReady.Resource.SourceMessageID != second.SourceMessageID || provider.downloadCalls != 1 {
+	if firstReady.State != "ready" || secondReady.State != "ready" || firstReady.Resource.InternalURL == "" || secondReady.Resource.InternalURL == "" || secondReady.Resource.InternalURL == firstReady.Resource.InternalURL || firstReady.Resource.SourceMessageID != first.SourceMessageID || secondReady.Resource.SourceMessageID != second.SourceMessageID || provider.downloadCalls != 2 {
 		t.Fatalf("provenance cache first=%+v second=%+v downloads=%d", firstReady, secondReady, provider.downloadCalls)
 	}
 	file, _, err := hub.resources.Open(firstReady.Resource.InternalURL)
@@ -1577,19 +1638,16 @@ func TestHubReceivedMaterialHandlesKeepProvenanceSeparateAndReuseReadyBytes(t *t
 		t.Fatal(err)
 	}
 	staleReady := materialize(first)
-	if staleReady.State != "unavailable" || staleReady.Reason != "cached_resource_unavailable" || provider.downloadCalls != 1 {
+	if staleReady.State != "unavailable" || staleReady.Reason != "cached_resource_unavailable" || provider.downloadCalls != 2 {
 		t.Fatalf("ready cache loss retried source: result=%+v downloads=%d", staleReady, provider.downloadCalls)
 	}
-	// Remove the other ready fast path too. Known cache loss must remain
-	// physical-attempt evidence when the last ready record is invalidated.
-	secondLost := materialize(second)
-	if secondLost.State != "unavailable" || provider.downloadCalls != 1 {
-		t.Fatalf("second ready replay=%+v downloads=%d", secondLost, provider.downloadCalls)
+	secondAgain := materialize(second)
+	if secondAgain.State != "ready" || provider.downloadCalls != 2 {
+		t.Fatalf("unrelated completed bytes were invalidated: %+v downloads=%d", secondAgain, provider.downloadCalls)
 	}
-	third := result.Items[2].Resources[0]
-	thirdResult := materialize(third)
-	if thirdResult.State != "unavailable" || thirdResult.Reason != "cached_resource_unavailable" || provider.downloadCalls != 1 {
-		t.Fatalf("corrupt cache retried source: result=%+v downloads=%d", thirdResult, provider.downloadCalls)
+	thirdResult := materialize(result.Items[2].Resources[0])
+	if thirdResult.State != "ready" || provider.downloadCalls != 3 {
+		t.Fatalf("independent source could not be read: %+v downloads=%d", thirdResult, provider.downloadCalls)
 	}
 }
 

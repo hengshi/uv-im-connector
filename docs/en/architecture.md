@@ -78,24 +78,23 @@ The recent-window request and native filtering neither accept nor use `reference
 
 `POST /v1/conversation.search` is for trusted infrastructure that has already applied its own ACL and current-Run authorization. A request carries an exact Bearer, persisted provider/connector/event/message trigger tuple, SHA-256 of the sanitized trigger, and the SHA-256 audience digest of the currently authorized Run capability. It accepts no chat, thread, path, or native `page_token`. The Hub re-proves the trigger and digest; Lark revalidates the exact native trigger, chat, time, and actual thread on every page. A rotated capability audience cannot reuse an older cursor.
 
-`conversation_materialize_version=v1` is a separate optional companion for a
-selected search-media descriptor. Search returns only an opaque
-`materialize_handle`, per-resource `source_epoch`, sanitized provenance and
-readable metadata; it never returns a provider key, private URL, `internal://`
-value or bytes. Trusted infrastructure may call
-`POST /v1/conversation.materialize` with that handle, the exact same trigger
-proof and audience digest. The Hub journals the private reference under its
-EventLog-owned state directory before presentation, binds it to the verified
-scope, and records `effect_started` before its single provider attempt. A
-restart at that point returns `unknown`, never a second download. Each opaque
-handle binds exactly one source record/provenance tuple; equal physical bytes
-may be reused only after each distinct source record has separately revalidated.
-Lark proves
-the trigger and exact source message/resource still belong to that scope before
-download; a mismatch, expiry or withdrawal returns a normalized unavailable or
-revoked result. Only `ready` returns a sanitized internal `ResourceRef` to the
-trusted caller. This route grants neither Task/Run authority nor arbitrary
-provider resource access.
+`conversation_materialize_version=v1` is an optional companion for a selected
+search-media descriptor. Search returns an opaque `materialize_handle`,
+per-resource `source_epoch`, sanitized provenance and readable metadata, never a
+provider key, private URL, `internal://` value or bytes. Trusted infrastructure
+calls `POST /v1/conversation.materialize` with the same trigger proof and
+current-Run audience digest. The handle already binds its source, so callers may
+omit `source_epoch`; a supplied legacy value must still match. The Hub retains
+encrypted private references and completed files under its EventLog-owned state
+directory, with no attempt ledger, failed-read state or recovery plan.
+Interrupted reads can retry after revalidation. A completed handle returns its
+original hash-verified bytes without overwriting them. Different handles retain
+separate provenance and files, without cross-handle physical-cache reuse.
+Lark re-proves the trigger and source-message/resource membership before download.
+Mismatch, expiry or withdrawal returns a normalized unavailable result. Only
+`ready` returns a sanitized internal `ResourceRef` to the trusted caller.
+The caller still owns current-Run authorization and local artifact publication;
+a handle grants no Task/Run or arbitrary provider-resource access.
 
 The additive service capability `conversation_context_query_version=v1` also
 permits `source="received"` on `conversation.search`. It reads only the
