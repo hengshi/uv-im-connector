@@ -19,7 +19,7 @@ func (p *Provider) MaterializeConversationResource(ctx context.Context, request 
 		return uvim.ResourceRef{}, err
 	}
 	trigger, code, err := p.nativeWindowMessage(ctx, token, request.Trigger.Message.ID)
-	if err != nil || code != 0 || !validNativeSearchTrigger(request.Trigger, trigger) || !sameNativeSearchScope(nativeSearchScope(p, request.Trigger, trigger), request.Scope) {
+	if err != nil || code != 0 || !validNativeWindowTrigger(request.Trigger, trigger) || !sameNativeSearchScope(nativeSearchScope(p, request.Trigger, trigger), request.Scope) {
 		return uvim.ResourceRef{}, uvim.ErrConversationResourceUnavailable
 	}
 	source, code, err := p.nativeWindowMessage(ctx, token, request.SourceMessage)

@@ -43,7 +43,7 @@ func New(config Config) (*Provider, error) {
 	cardInstanceVersion, cardMaxActions := "", 0
 	var cardActorIdentityTypes []string
 	if cardsEnabled {
-		cardInstanceVersion, cardMaxActions = uvim.InteractionCardInstanceVersionV1, dingtalkCardMaxActions
+		cardInstanceVersion, cardMaxActions = uvim.InteractionCardInstanceVersionV1, uvim.InteractionMaxActions
 		cardActorIdentityTypes = []string{"dingtalk.userid"}
 	}
 	base, err := httpchannel.New(httpchannel.Config{
@@ -177,7 +177,7 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		// DingTalk asserted a reply but omitted a usable native parent. Do not
 		// turn the command into an unquoted default route. The exact typed
 		// material error lets the shared router present an explicit refusal.
-		dingtalkAddQuotedResource(&event, refs, dingtalkUnavailableQuotedMessage(config), "")
+		dingtalkAddQuotedResource(&event, refs, dingtalkQuotedMessageResource(config, ""), "")
 		return event, true, nil
 	}
 	quoted := dingtalkQuotedMessageResource(config, parentID)
@@ -193,31 +193,19 @@ func dingtalkAddQuotedResource(event *uvim.Event, refs []uvim.ResourceRef, quote
 	})
 }
 
-func dingtalkUnavailableQuotedMessage(config httpchannel.Config) uvim.ResourceRef {
-	return uvim.ResourceRef{
-		Provider:  "dingtalk",
-		Connector: config.ConnectorID,
-		Kind:      uvim.ElementFile,
-		Name:      "quoted-message.txt",
-		MIME:      "text/plain; charset=utf-8",
-		Error:     uvim.QuotedMessageReferenceUnavailable,
-	}
-}
-
 func dingtalkQuotedMessageResource(config httpchannel.Config, sourceMessageID string) uvim.ResourceRef {
-	// DingTalk proves the parent relation but exposes no verified plaintext for
-	// the quoted body. Do not turn a diagnostic placeholder into usable Task
-	// context: preserve the relation and mark the material unavailable.
-	return uvim.ResourceRef{
-		Provider:        "dingtalk",
-		Connector:       config.ConnectorID,
-		Kind:            uvim.ElementFile,
-		Name:            "quoted-message.txt",
-		MIME:            "text/plain; charset=utf-8",
-		SourceMessageID: sourceMessageID,
-		Metadata:        map[string]string{"message_id": sourceMessageID},
-		Error:           uvim.QuotedMessageReferenceUnavailable,
+	// The native parent relation is optional; a diagnostic placeholder is never
+	// readable quote material, with or without that relation.
+	ref := uvim.ResourceRef{
+		Provider: "dingtalk", Connector: config.ConnectorID, Kind: uvim.ElementFile,
+		Name: "quoted-message.txt", MIME: "text/plain; charset=utf-8",
+		Error: uvim.QuotedMessageReferenceUnavailable,
 	}
+	if sourceMessageID != "" {
+		ref.SourceMessageID = sourceMessageID
+		ref.Metadata = map[string]string{"message_id": sourceMessageID}
+	}
+	return ref
 }
 
 func dingtalkElements(text string, refs []uvim.ResourceRef) []uvim.Element {

@@ -14,7 +14,6 @@ import (
 )
 
 const (
-	dingtalkCardMaxActions    = uvim.InteractionMaxActions
 	dingtalkCardCallbackParam = "jarvis_callback"
 )
 
@@ -140,9 +139,6 @@ func dingtalkCardData(card uvim.InteractionCard) (map[string]string, error) {
 	}
 	if card.Question != nil && card.Question.AllowFreeText {
 		return nil, fmt.Errorf("dingtalk card: free-text questions are unsupported")
-	}
-	if len(card.Actions) > dingtalkCardMaxActions {
-		return nil, fmt.Errorf("dingtalk card: too many actions")
 	}
 	facts := make([]string, 0, len(card.Facts))
 	for _, fact := range card.Facts {

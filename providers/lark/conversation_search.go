@@ -23,7 +23,7 @@ func (p *Provider) ReadConversationSearchPage(ctx context.Context, request uvim.
 	if err != nil || code != 0 {
 		return nativeSearchUnavailable(request.Trigger, code, err)
 	}
-	if !validNativeSearchTrigger(request.Trigger, trigger) {
+	if !validNativeWindowTrigger(request.Trigger, trigger) {
 		return nativeSearchUnavailable(request.Trigger, 0, nil)
 	}
 	scope := nativeSearchScope(p, request.Trigger, trigger)
@@ -44,12 +44,6 @@ func (p *Provider) ReadConversationSearchPage(ctx context.Context, request uvim.
 		HasMore:         hasMore,
 		NextPageToken:   nextPageToken,
 	}
-}
-
-func validNativeSearchTrigger(event uvim.Event, item quotedMessageItem) bool {
-	anchor, hasSourceTime := uvim.EventSourceTime(event)
-	nativeTime := parseMillis(item.CreateTime)
-	return hasSourceTime && item.ID == event.Message.ID && item.ChatID == event.Channel.ID && !item.Deleted && !nativeTime.IsZero() && nativeTime.Equal(anchor) && (event.Referrer.ThreadID == "" || item.ThreadID == event.Referrer.ThreadID)
 }
 
 func nativeSearchScope(p *Provider, event uvim.Event, trigger quotedMessageItem) uvim.ConversationSearchScope {
