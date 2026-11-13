@@ -67,7 +67,7 @@ func (h *Hub) handleInboundIdentity(w http.ResponseWriter, req *http.Request) {
 	// Direct channels require current private-participant proof. Room adapters
 	// can prove a private room without pretending its target is a user ID.
 	if event.Channel.Type == uvim.ChannelDirect || event.Channel.Type == uvim.ChannelRoom {
-		_, target, proofErr := h.identityEvent(req.Context(), result.Event)
+		target, proofErr := h.identityEventTarget(req.Context(), event)
 		if proofErr != nil {
 			writeError(w, http.StatusUnprocessableEntity, "private_target_unavailable")
 			return
@@ -77,7 +77,7 @@ func (h *Hub) handleInboundIdentity(w http.ResponseWriter, req *http.Request) {
 		// Callback chat classification is not supplied by the caller. The
 		// provider may prove a current private target; otherwise the complete
 		// actor/link set stays useful without granting direct delivery.
-		if _, target, proofErr := h.identityEvent(req.Context(), result.Event); proofErr == nil {
+		if target, proofErr := h.identityEventTarget(req.Context(), event); proofErr == nil {
 			result.DirectTarget = &target
 		}
 	}

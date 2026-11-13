@@ -67,7 +67,7 @@ func TestNewRejectsCardTemplateWithoutStreamCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	caps := provider.Capabilities()
-	if !caps.InteractiveMessage || !caps.InteractiveActionCallback || caps.InteractionCardInstanceVersion != uvim.InteractionCardInstanceVersionV1 || caps.CardMaxActions != dingtalkCardMaxActions || caps.InteractionFreeText || len(caps.InteractionActorIdentityTypes) != 1 || caps.InteractionActorIdentityTypes[0] != "dingtalk.userid" {
+	if !caps.InteractiveMessage || !caps.InteractiveActionCallback || caps.InteractionCardInstanceVersion != uvim.InteractionCardInstanceVersionV1 || caps.CardMaxActions != uvim.InteractionMaxActions || caps.InteractionFreeText || len(caps.InteractionActorIdentityTypes) != 1 || caps.InteractionActorIdentityTypes[0] != "dingtalk.userid" {
 		t.Fatalf("card capabilities = %+v", caps)
 	}
 }

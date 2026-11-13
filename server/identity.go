@@ -238,33 +238,47 @@ func (h *Hub) identityEvent(ctx context.Context, clientID string, ref uvim.Ident
 		if h.scoped() && !h.clients.OwnsEvent(clientID, event) {
 			return uvim.Event{}, uvim.OutboundTarget{}, errors.New("native IM event is outside caller scope")
 		}
-		if !personalIdentityEvent(event) {
-			return uvim.Event{}, uvim.OutboundTarget{}, errors.New("personal IM message event is required")
-		}
-		if event.User.ID == "" || (event.User.Kind != "" && event.User.Kind != uvim.UserKindUser) {
-			return uvim.Event{}, uvim.OutboundTarget{}, errors.New("personal IM account is required")
-		}
-		if !provider.Capabilities().ProactiveDirect {
-			return uvim.Event{}, uvim.OutboundTarget{}, errors.New("proactive private messages are not supported")
-		}
-		var target uvim.OutboundTarget
-		if private, ok := provider.(uvim.PrivateTargetResolver); ok {
-			var err error
-			target, err = private.PrivateTarget(ctx, event)
-			if err != nil {
-				return uvim.Event{}, uvim.OutboundTarget{}, err
-			}
-		} else if event.Type != uvim.EventMessageCreate || event.Channel.Type != uvim.ChannelDirect || event.Referrer.Target == nil {
-			return uvim.Event{}, uvim.OutboundTarget{}, errors.New("verified private IM target is required")
-		} else {
-			target = *event.Referrer.Target
-		}
-		if err := uvim.ValidateOutboundTarget(uvim.OutboundMessage{Provider: ref.Provider, Connector: ref.Connector, Target: &target, ChannelType: uvim.ChannelDirect}, provider.Capabilities()); err != nil {
+		target, err := h.identityEventTarget(ctx, event)
+		if err != nil {
 			return uvim.Event{}, uvim.OutboundTarget{}, err
 		}
 		return event, target, nil
 	}
 	return uvim.Event{}, uvim.OutboundTarget{}, errors.New("native IM event was not found")
+}
+
+// identityEventTarget proves private delivery from the exact retained event.
+// Callers that already loaded the event must not re-read a different snapshot.
+func (h *Hub) identityEventTarget(ctx context.Context, event uvim.Event) (uvim.OutboundTarget, error) {
+	provider := h.registry.Get(event.Provider, event.Connector)
+	if provider == nil {
+		return uvim.OutboundTarget{}, errors.New("provider_not_found")
+	}
+	if !personalIdentityEvent(event) {
+		return uvim.OutboundTarget{}, errors.New("personal IM message event is required")
+	}
+	if event.User.ID == "" || (event.User.Kind != "" && event.User.Kind != uvim.UserKindUser) {
+		return uvim.OutboundTarget{}, errors.New("personal IM account is required")
+	}
+	if !provider.Capabilities().ProactiveDirect {
+		return uvim.OutboundTarget{}, errors.New("proactive private messages are not supported")
+	}
+	var target uvim.OutboundTarget
+	if private, ok := provider.(uvim.PrivateTargetResolver); ok {
+		var err error
+		target, err = private.PrivateTarget(ctx, event)
+		if err != nil {
+			return uvim.OutboundTarget{}, err
+		}
+	} else if event.Type != uvim.EventMessageCreate || event.Channel.Type != uvim.ChannelDirect || event.Referrer.Target == nil {
+		return uvim.OutboundTarget{}, errors.New("verified private IM target is required")
+	} else {
+		target = *event.Referrer.Target
+	}
+	if err := uvim.ValidateOutboundTarget(uvim.OutboundMessage{Provider: event.Provider, Connector: event.Connector, Target: &target, ChannelType: uvim.ChannelDirect}, provider.Capabilities()); err != nil {
+		return uvim.OutboundTarget{}, err
+	}
+	return target, nil
 }
 
 func (h *Hub) handleIdentity(w http.ResponseWriter, req *http.Request) {
