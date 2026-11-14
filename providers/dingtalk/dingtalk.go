@@ -41,9 +41,10 @@ func New(config Config) (*Provider, error) {
 	config.BaseURL = baseURL
 	cardsEnabled := config.CardTemplateID != "" && clientID != ""
 	cardInstanceVersion, cardMaxActions := "", 0
-	var cardActorIdentityTypes []string
+	var cardSchemaVersions, cardActorIdentityTypes []string
 	if cardsEnabled {
 		cardInstanceVersion, cardMaxActions = uvim.InteractionCardInstanceVersionV1, uvim.InteractionMaxActions
+		cardSchemaVersions = []string{uvim.InteractionSchemaV1}
 		cardActorIdentityTypes = []string{"dingtalk.userid"}
 	}
 	base, err := httpchannel.New(httpchannel.Config{
@@ -59,7 +60,7 @@ func New(config Config) (*Provider, error) {
 		Capabilities: uvim.Capabilities{
 			InteractiveMessage:             cardsEnabled,
 			InteractiveActionCallback:      cardsEnabled,
-			InteractionSchemaVersions:      []string{uvim.InteractionSchemaV1},
+			InteractionSchemaVersions:      cardSchemaVersions,
 			InteractionCardInstanceVersion: cardInstanceVersion,
 			CardMaxActions:                 cardMaxActions,
 			InteractionFreeText:            false,

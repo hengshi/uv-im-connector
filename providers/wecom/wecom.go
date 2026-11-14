@@ -158,7 +158,7 @@ func (p *Provider) Capabilities() uvim.Capabilities {
 		InteractionSchemaVersions:      []string{uvim.InteractionSchemaV1},
 		InteractionCardInstanceVersion: uvim.InteractionCardInstanceVersionV1,
 		InteractionActorIdentityTypes:  []string{"wecom.callback_userid"},
-		CardMaxActions:                 6,
+		CardMaxActions:                 wecomTemplateCardMaxButtons,
 		InteractionFreeText:            false,
 		CardMaxBytes:                   uvim.InteractionCardMaxBytes,
 		Inbound:                        true,

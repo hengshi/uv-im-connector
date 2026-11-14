@@ -133,8 +133,6 @@ func (r *conversationMaterialRegistry) present(authToken string, input uvim.Conv
 			}
 			safe := *descriptor
 			safe.MaterializeHandle, safe.SourceEpoch = "", ""
-			safe.Source = descriptor.Source
-			safe.SourceMessageID = descriptor.SourceMessageID
 			safe.Availability = "available"
 			safe.Resource = uvim.ResourceRef{}
 			r.state.Records[handle] = conversationMaterialRecord{
@@ -365,11 +363,7 @@ func conversationMaterialEncrypt(authToken string, resource uvim.ResourceRef) (s
 	if err != nil {
 		return "", err
 	}
-	block, err := aes.NewCipher(conversationMaterialKey(authToken))
-	if err != nil {
-		return "", err
-	}
-	aead, err := cipher.NewGCM(block)
+	aead, err := conversationMaterialAEAD(authToken)
 	if err != nil {
 		return "", err
 	}
@@ -386,11 +380,7 @@ func conversationMaterialDecrypt(authToken, encoded string) (uvim.ResourceRef, e
 	if err != nil {
 		return uvim.ResourceRef{}, err
 	}
-	block, err := aes.NewCipher(conversationMaterialKey(authToken))
-	if err != nil {
-		return uvim.ResourceRef{}, err
-	}
-	aead, err := cipher.NewGCM(block)
+	aead, err := conversationMaterialAEAD(authToken)
 	if err != nil || len(raw) < aead.NonceSize() {
 		return uvim.ResourceRef{}, errors.New("invalid conversation material cipher")
 	}
@@ -410,11 +400,7 @@ func conversationMaterialEncryptCursorToken(authToken, token string) (string, er
 	if strings.TrimSpace(token) == "" {
 		return "", errors.New("conversation search continuation is required")
 	}
-	block, err := aes.NewCipher(conversationMaterialKey(authToken))
-	if err != nil {
-		return "", err
-	}
-	aead, err := cipher.NewGCM(block)
+	aead, err := conversationMaterialAEAD(authToken)
 	if err != nil {
 		return "", err
 	}
@@ -431,11 +417,7 @@ func conversationMaterialDecryptCursorToken(authToken, encoded string) (string, 
 	if err != nil {
 		return "", err
 	}
-	block, err := aes.NewCipher(conversationMaterialKey(authToken))
-	if err != nil {
-		return "", err
-	}
-	aead, err := cipher.NewGCM(block)
+	aead, err := conversationMaterialAEAD(authToken)
 	if err != nil || len(raw) < aead.NonceSize() {
 		return "", errors.New("invalid conversation search cursor cipher")
 	}
@@ -450,6 +432,14 @@ type conversationMaterialPrivateResource struct {
 	Resource uvim.ResourceRef  `json:"resource"`
 	Secret   string            `json:"secret,omitempty"`
 	Private  map[string]string `json:"private,omitempty"`
+}
+
+func conversationMaterialAEAD(authToken string) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(conversationMaterialKey(authToken))
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
 }
 
 func conversationMaterialKey(authToken string) []byte {

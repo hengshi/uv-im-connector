@@ -218,17 +218,11 @@ func (h *Hub) handleMeta(w http.ResponseWriter, req *http.Request) {
 	for _, provider := range h.registry.List() {
 		capabilities := provider.Capabilities()
 		if h.authToken == "" {
-			capabilities.InteractiveMessage, capabilities.InteractiveActionCallback, capabilities.InteractiveMessageUpdate = false, false, false
-			capabilities.InteractionSchemaVersions, capabilities.InteractionUpdateVersion = nil, ""
-			capabilities.InteractionCardInstanceVersion, capabilities.CardMaxActions, capabilities.InteractionFreeText = "", 0, false
-			capabilities.InteractionActorIdentityTypes = nil
+			clearInteractionCapabilities(&capabilities)
 		}
 		health := provider.Health(req.Context())
 		if h.authToken == "" {
-			health.Capabilities.InteractiveMessage, health.Capabilities.InteractiveActionCallback, health.Capabilities.InteractiveMessageUpdate = false, false, false
-			health.Capabilities.InteractionSchemaVersions, health.Capabilities.InteractionUpdateVersion = nil, ""
-			health.Capabilities.InteractionCardInstanceVersion, health.Capabilities.CardMaxActions, health.Capabilities.InteractionFreeText = "", 0, false
-			health.Capabilities.InteractionActorIdentityTypes = nil
+			clearInteractionCapabilities(&health.Capabilities)
 		}
 		if !h.nativeConversationWindowAvailable(provider) && h.receivedConversationWindowAvailable(provider) {
 			capabilities.ConversationWindowVersion = uvim.ConversationWindowVersionV1
@@ -259,6 +253,13 @@ func (h *Hub) handleMeta(w http.ResponseWriter, req *http.Request) {
 		meta.ConversationContextQueryVersion = uvim.ConversationContextQueryVersionV1
 	}
 	writeJSON(w, http.StatusOK, meta)
+}
+
+func clearInteractionCapabilities(capabilities *uvim.Capabilities) {
+	capabilities.InteractiveMessage, capabilities.InteractiveActionCallback, capabilities.InteractiveMessageUpdate = false, false, false
+	capabilities.InteractionSchemaVersions, capabilities.InteractionUpdateVersion = nil, ""
+	capabilities.InteractionCardInstanceVersion, capabilities.CardMaxActions, capabilities.InteractionFreeText = "", 0, false
+	capabilities.InteractionActorIdentityTypes = nil
 }
 
 // nativeConversationWindowAvailable requires both the explicit adapter
@@ -552,9 +553,7 @@ func (h *Hub) receivedConversationWindow(ctx context.Context, input uvim.Convers
 	result.CandidateCount, result.HasMore = query.CandidateCount, query.HasMore
 	for _, item := range query.Items {
 		for resourceIndex := range item.Resources {
-			resource := &item.Resources[resourceIndex]
-			resource.MaterializeHandle, resource.SourceEpoch = "", ""
-			resource.Resource = uvim.ResourceRef{}
+			clearConversationResourcePresentation(&item.Resources[resourceIndex], "")
 		}
 		result.Items = append(result.Items, item)
 	}

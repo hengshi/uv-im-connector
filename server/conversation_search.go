@@ -350,10 +350,7 @@ func markConversationResourcesUnavailable(result *uvim.ConversationSearchResult)
 	}
 	for itemIndex := range result.Items {
 		for resourceIndex := range result.Items[itemIndex].Resources {
-			resource := &result.Items[itemIndex].Resources[resourceIndex]
-			resource.MaterializeHandle, resource.SourceEpoch = "", ""
-			resource.Availability = "unavailable"
-			resource.Resource = uvim.ResourceRef{}
+			clearConversationResourcePresentation(&result.Items[itemIndex].Resources[resourceIndex], "unavailable")
 		}
 	}
 }
@@ -468,12 +465,20 @@ func markConversationResourcesUnrecoverable(result *uvim.ConversationSearchResul
 	}
 	for itemIndex := range result.Items {
 		for resourceIndex := range result.Items[itemIndex].Resources {
-			resource := &result.Items[itemIndex].Resources[resourceIndex]
-			resource.MaterializeHandle, resource.SourceEpoch = "", ""
-			resource.Availability = "unrecoverable"
-			resource.Resource = uvim.ResourceRef{}
+			clearConversationResourcePresentation(&result.Items[itemIndex].Resources[resourceIndex], "unrecoverable")
 		}
 	}
+}
+
+// clearConversationResourcePresentation removes Hub-private materialization
+// state before a descriptor crosses a result boundary. An empty availability
+// preserves the source-specific state for callers that only need redaction.
+func clearConversationResourcePresentation(resource *uvim.ContextResource, availability string) {
+	resource.MaterializeHandle, resource.SourceEpoch = "", ""
+	if availability != "" {
+		resource.Availability = availability
+	}
+	resource.Resource = uvim.ResourceRef{}
 }
 
 func sameConversationSearchResultTrigger(result uvim.ConversationSearchResult, trigger uvim.Event) bool {
@@ -862,7 +867,7 @@ func (r *conversationMaterialRegistry) loadSearchCursor(authToken, id string) (c
 }
 
 func validConversationSearchCursor(cursor conversationSearchCursor) bool {
-	if cursor.IssuedAt.IsZero() || cursor.Provider == "" || cursor.Connector == "" || cursor.EventID == "" || cursor.MessageID == "" || cursor.EventDigest == "" || cursor.Audience == "" || cursor.Limit < 1 || cursor.Limit > conversationSearchMaxLimit || !validConversationSearchSource(cursor.Source) || !validConversationSearchScope(cursor.Scope, cursor) || len(cursor.TokenHashes) >= conversationSearchCursorCapacity {
+	if !validConversationSearchCursorCore(cursor) {
 		return false
 	}
 	if cursor.Source == "received" {
@@ -883,7 +888,11 @@ func validConversationSearchCursorRecord(record conversationSearchCursorRecord, 
 }
 
 func validConversationSearchCursorShape(cursor conversationSearchCursor) bool {
-	return !cursor.IssuedAt.IsZero() && cursor.Provider != "" && cursor.Connector != "" && cursor.EventID != "" && cursor.MessageID != "" && cursor.EventDigest != "" && cursor.Audience != "" && cursor.Limit >= 1 && cursor.Limit <= conversationSearchMaxLimit && validConversationSearchSource(cursor.Source) && cursor.Source != "received" && validConversationSearchScope(cursor.Scope, cursor) && len(cursor.TokenHashes) > 0 && len(cursor.TokenHashes) < conversationSearchCursorCapacity
+	return validConversationSearchCursorCore(cursor) && cursor.Source != "received" && len(cursor.TokenHashes) > 0
+}
+
+func validConversationSearchCursorCore(cursor conversationSearchCursor) bool {
+	return !cursor.IssuedAt.IsZero() && cursor.Provider != "" && cursor.Connector != "" && cursor.EventID != "" && cursor.MessageID != "" && cursor.EventDigest != "" && cursor.Audience != "" && cursor.Limit >= 1 && cursor.Limit <= conversationSearchMaxLimit && validConversationSearchSource(cursor.Source) && validConversationSearchScope(cursor.Scope, cursor) && len(cursor.TokenHashes) < conversationSearchCursorCapacity
 }
 
 func validConversationSearchScope(scope uvim.ConversationSearchScope, cursor conversationSearchCursor) bool {
