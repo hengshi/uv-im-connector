@@ -13,6 +13,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -53,22 +54,69 @@ const (
 	ElementFile  = "file"
 )
 
+// QuotedMessageReferenceUnavailable records a native quote whose source ID
+// cannot be proved. It must not be interpreted as an ordinary unquoted input.
+const QuotedMessageReferenceUnavailable = "quoted_message_reference_unavailable"
+
 type Event struct {
-	Sequence  int64     `json:"sequence,omitempty"`
-	ID        string    `json:"id"`
-	Type      string    `json:"type"`
-	Provider  string    `json:"provider"`
-	Connector string    `json:"connector,omitempty"`
-	Time      time.Time `json:"time"`
-	Login     Login     `json:"login,omitempty"`
-	Channel   Channel   `json:"channel,omitempty"`
-	User      User      `json:"user,omitempty"`
-	Message   Message   `json:"message,omitempty"`
-	Referrer  Referrer  `json:"referrer,omitempty"`
-	Addressed bool      `json:"addressed,omitempty"`
+	Sequence    int64                   `json:"sequence,omitempty"`
+	ID          string                  `json:"id"`
+	Type        string                  `json:"type"`
+	Provider    string                  `json:"provider"`
+	Connector   string                  `json:"connector,omitempty"`
+	Time        time.Time               `json:"time"`
+	Login       Login                   `json:"login,omitempty"`
+	Channel     Channel                 `json:"channel,omitempty"`
+	User        User                    `json:"user,omitempty"`
+	Message     Message                 `json:"message,omitempty"`
+	Referrer    Referrer                `json:"referrer,omitempty"`
+	Addressed   bool                    `json:"addressed,omitempty"`
+	Interaction *InteractionActionEvent `json:"interaction,omitempty"`
+	// BotMentionPrefix records native leading-mention provenance. true proves
+	// the first native mention token after leading whitespace addressed this
+	// connector's bot. false is an explicit negative guard (for example, another
+	// account held that position or rich text lost token provenance). nil leaves
+	// ordinary text available to a caller's literal-name parser.
+	BotMentionPrefix *bool `json:"bot_mention_prefix,omitempty"`
+}
+
+// EventSourceTime is the immutable time anchor for connector-source context.
+// Message.CreatedAt is preferred, while Event.Time is the durable fallback for
+// providers that omit per-message time. It deliberately returns a value rather
+// than normalizing Event in place: callers must preserve the exact persisted
+// event when calculating trigger and entry digests.
+func EventSourceTime(event Event) (time.Time, bool) {
+	if !event.Message.CreatedAt.IsZero() {
+		return event.Message.CreatedAt.UTC(), true
+	}
+	if !event.Time.IsZero() {
+		return event.Time.UTC(), true
+	}
+	return time.Time{}, false
+}
+
+const (
+	EventSourceTimeMessageCreatedAt = "message_created_at"
+	EventSourceTimeEventTime        = "event_time"
+)
+
+// EventSourceTimeSource reports which persisted field supplied EventSourceTime.
+// It is display/provenance metadata only and does not normalize or otherwise
+// alter the event used for digests.
+func EventSourceTimeSource(event Event) string {
+	if !event.Message.CreatedAt.IsZero() {
+		return EventSourceTimeMessageCreatedAt
+	}
+	if !event.Time.IsZero() {
+		return EventSourceTimeEventTime
+	}
+	return ""
 }
 
 func (e Event) DedupeKey() string {
+	if e.Type == EventInteractionAction && e.Interaction != nil {
+		return e.Provider + ":" + e.Connector + ":" + EventInteractionAction + ":" + e.Interaction.EventID
+	}
 	eventType := strings.TrimSpace(e.Type)
 	if eventType == "" {
 		eventType = "event"
@@ -216,24 +264,44 @@ type Referrer struct {
 }
 
 type ResourceRef struct {
-	ID          string            `json:"id,omitempty"`
-	Provider    string            `json:"provider,omitempty"`
-	Connector   string            `json:"connector,omitempty"`
-	Kind        string            `json:"kind,omitempty"`
-	Name        string            `json:"name,omitempty"`
-	Key         string            `json:"key,omitempty"`
-	URL         string            `json:"url,omitempty"`
-	InternalURL string            `json:"internal_url,omitempty"`
-	MIME        string            `json:"mime,omitempty"`
-	SizeBytes   int64             `json:"size_bytes,omitempty"`
-	SHA256      string            `json:"sha256,omitempty"`
-	Error       string            `json:"error,omitempty"`
-	Secret      string            `json:"-"`
-	Private     map[string]string `json:"-"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	// SourceMessageID associates reference material (or its lookup error) with
+	// the explicitly quoted native message. It is not a new instruction, a
+	// publication locator, or authority to select or continue a Task.
+	SourceMessageID string `json:"source_message_id,omitempty"`
+	// SourceBotAppID is present only when a native lookup verifies that the
+	// referenced message belongs to this connector's own bot application.
+	// It can prevent unsafe fallback for an unindexed bot reply, never grant
+	// access to a Task or stand in for a confirmed publication locator.
+	SourceBotAppID string `json:"source_bot_app_id,omitempty"`
+	// ReferencedMessageIDs identifies only accepted ancestor nodes rendered into
+	// a successful synthetic quote context. It is descriptive material identity,
+	// never a resource locator, access grant, or Task authority.
+	ReferencedMessageIDs []string          `json:"referenced_message_ids,omitempty"`
+	ID                   string            `json:"id,omitempty"`
+	Provider             string            `json:"provider,omitempty"`
+	Connector            string            `json:"connector,omitempty"`
+	Kind                 string            `json:"kind,omitempty"`
+	Name                 string            `json:"name,omitempty"`
+	Key                  string            `json:"key,omitempty"`
+	URL                  string            `json:"url,omitempty"`
+	InternalURL          string            `json:"internal_url,omitempty"`
+	MIME                 string            `json:"mime,omitempty"`
+	SizeBytes            int64             `json:"size_bytes,omitempty"`
+	SHA256               string            `json:"sha256,omitempty"`
+	Error                string            `json:"error,omitempty"`
+	Secret               string            `json:"-"`
+	Private              map[string]string `json:"-"`
+	Metadata             map[string]string `json:"metadata,omitempty"`
 }
 
 func (r ResourceRef) Sanitized() ResourceRef {
+	if r.Error != "" {
+		// Failed material cannot attest that its ancestor bytes were stored.
+		// Preserve the explicitly quoted source independently of this list.
+		r.ReferencedMessageIDs = nil
+	} else {
+		r.ReferencedMessageIDs = slices.Clone(r.ReferencedMessageIDs)
+	}
 	r.Key = ""
 	r.URL = ""
 	r.Secret = ""
@@ -254,25 +322,58 @@ func SanitizeResources(resources []ResourceRef) []ResourceRef {
 }
 
 type Capabilities struct {
-	Inbound          bool     `json:"inbound"`
-	Outbound         bool     `json:"outbound"`
-	DirectMessage    bool     `json:"direct_message,omitempty"`
-	GroupMessage     bool     `json:"group_message,omitempty"`
-	ThreadReply      bool     `json:"thread_reply,omitempty"`
-	ReplyMessage     bool     `json:"reply_message,omitempty"`
-	ReplyStream      bool     `json:"reply_stream,omitempty"` // Live passive reply-token route only.
-	ReplyMaxUses     int      `json:"reply_max_uses,omitempty"`
-	TextMaxBytes     int      `json:"text_max_bytes,omitempty"` // Normalized UTF-8 bytes per send/update; zero is unknown.
-	ProactiveDirect  bool     `json:"proactive_direct,omitempty"`
-	ProactiveGroup   bool     `json:"proactive_group,omitempty"`
-	TargetKinds      []string `json:"target_kinds,omitempty"`
-	TargetIDTypes    []string `json:"target_id_types,omitempty"`
-	EditMessage      bool     `json:"edit_message,omitempty"`
-	DeleteMessage    bool     `json:"delete_message,omitempty"`
-	UploadResource   bool     `json:"upload_resource,omitempty"`
-	DownloadResource bool     `json:"download_resource,omitempty"`
-	ResourceKinds    []string `json:"resource_kinds,omitempty"`
-	ChannelTypes     []string `json:"channel_types,omitempty"`
+	InteractiveMessage        bool     `json:"interactive_message,omitempty"`
+	InteractiveActionCallback bool     `json:"interactive_action_callback,omitempty"`
+	InteractiveMessageUpdate  bool     `json:"interactive_message_update,omitempty"`
+	InteractionSchemaVersions []string `json:"interaction_schema_versions,omitempty"`
+	InteractionUpdateVersion  string   `json:"interaction_update_version,omitempty"`
+
+	// Card instances can accept authenticated callbacks without exposing a
+	// quoteable native message ID. This is separate from PublicationLocator.
+	InteractionCardInstanceVersion string `json:"interaction_card_instance_version,omitempty"`
+	CardMaxActions                 int    `json:"card_max_actions,omitempty"`
+	InteractionFreeText            bool   `json:"interaction_free_text,omitempty"`
+	// Card callbacks must use a primary actor ID in one of these native
+	// callback namespaces; configured aliases are not interchangeable actors.
+	InteractionActorIdentityTypes []string `json:"interaction_actor_identity_types,omitempty"`
+
+	CardMaxBytes        int      `json:"card_max_bytes,omitempty"`
+	UpdateMinIntervalMS int      `json:"update_min_interval_ms,omitempty"`
+	Inbound             bool     `json:"inbound"`
+	Outbound            bool     `json:"outbound"`
+	DirectMessage       bool     `json:"direct_message,omitempty"`
+	GroupMessage        bool     `json:"group_message,omitempty"`
+	ThreadReply         bool     `json:"thread_reply,omitempty"`
+	ReplyMessage        bool     `json:"reply_message,omitempty"`
+	ReplyStream         bool     `json:"reply_stream,omitempty"` // Live passive reply-token route only.
+	ReplyMaxUses        int      `json:"reply_max_uses,omitempty"`
+	TextMaxBytes        int      `json:"text_max_bytes,omitempty"` // Normalized UTF-8 bytes per send/update; zero is unknown.
+	ProactiveDirect     bool     `json:"proactive_direct,omitempty"`
+	ProactiveGroup      bool     `json:"proactive_group,omitempty"`
+	TargetKinds         []string `json:"target_kinds,omitempty"`
+	TargetIDTypes       []string `json:"target_id_types,omitempty"`
+	EditMessage         bool     `json:"edit_message,omitempty"`
+	DeleteMessage       bool     `json:"delete_message,omitempty"`
+	UploadResource      bool     `json:"upload_resource,omitempty"`
+	DownloadResource    bool     `json:"download_resource,omitempty"`
+	ResourceKinds       []string `json:"resource_kinds,omitempty"`
+	ChannelTypes        []string `json:"channel_types,omitempty"`
+	// PublicationLocatorVersion is advertised only by providers that can
+	// confirm the native message and conversation that a successful send
+	// published. An empty value means no locator is available.
+	PublicationLocatorVersion string `json:"publication_locator_version,omitempty"`
+	// ConversationWindowVersion is advertised only by providers with a native,
+	// authenticated bounded conversation-window read. An empty value means the
+	// adapter cannot provide background conversation material.
+	ConversationWindowVersion string `json:"conversation_window_version,omitempty"`
+	// ConversationSearchVersion is advertised only by providers with a native,
+	// authenticated paginated conversation search. An empty value means that
+	// the adapter cannot provide the explicit, bounded history reader.
+	ConversationSearchVersion string `json:"conversation_search_version,omitempty"`
+	// ConversationMaterializeVersion is advertised only by providers that can
+	// revalidate a selected native resource and turn the Hub-private reference
+	// into an internal resource. It never authorizes a caller-selected URL/key.
+	ConversationMaterializeVersion string `json:"conversation_materialize_version,omitempty"`
 }
 
 type OutboundTarget struct {
@@ -282,19 +383,24 @@ type OutboundTarget struct {
 }
 
 type OutboundMessage struct {
-	IdentityLink *IdentityLinkRef  `json:"identity_link,omitempty"`
-	ID           string            `json:"id,omitempty"`
-	Provider     string            `json:"provider"`
-	Connector    string            `json:"connector,omitempty"`
-	Target       *OutboundTarget   `json:"target,omitempty"`
-	ChannelID    string            `json:"channel_id,omitempty"`
-	ChannelType  string            `json:"channel_type,omitempty"`
-	Text         string            `json:"text,omitempty"`
-	Elements     []Element         `json:"elements,omitempty"`
-	Resources    []ResourceRef     `json:"resources,omitempty"`
-	Referrer     Referrer          `json:"referrer,omitempty"`
-	Final        bool              `json:"final,omitempty"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
+	Interaction  *InteractionCard `json:"interaction,omitempty"`
+	IdentityLink *IdentityLinkRef `json:"identity_link,omitempty"`
+	ID           string           `json:"id,omitempty"`
+	Provider     string           `json:"provider"`
+	Connector    string           `json:"connector,omitempty"`
+	Target       *OutboundTarget  `json:"target,omitempty"`
+	ChannelID    string           `json:"channel_id,omitempty"`
+	ChannelType  string           `json:"channel_type,omitempty"`
+	Text         string           `json:"text,omitempty"`
+	Elements     []Element        `json:"elements,omitempty"`
+	Resources    []ResourceRef    `json:"resources,omitempty"`
+	Referrer     Referrer         `json:"referrer,omitempty"`
+	Final        bool             `json:"final,omitempty"`
+	// RequestPublicationLocator is an internal transport request for a
+	// post-send native receipt. It is intentionally not connector configuration:
+	// callers set it only for publications that need quote continuation.
+	RequestPublicationLocator bool              `json:"request_publication_locator,omitempty"`
+	Metadata                  map[string]string `json:"metadata,omitempty"`
 }
 
 // MessageUpdate replaces a bot-created message, preserving its native identity.
@@ -337,6 +443,9 @@ func ValidateOutboundText(msg OutboundMessage, capabilities Capabilities) error 
 }
 
 func ValidateMessageUpdate(msg MessageUpdate, capabilities Capabilities) error {
+	if msg.Interaction != nil {
+		return fmt.Errorf("interaction cards require the interaction update protocol")
+	}
 	if strings.TrimSpace(msg.Provider) == "" || strings.TrimSpace(msg.Connector) == "" || strings.TrimSpace(msg.MessageID) == "" {
 		return fmt.Errorf("provider, connector and message_id are required")
 	}
@@ -475,11 +584,41 @@ func ValidateOutboundResources(m OutboundMessage, capabilities Capabilities) err
 }
 
 type SendResult struct {
-	Provider   string    `json:"provider"`
-	Connector  string    `json:"connector,omitempty"`
-	MessageID  string    `json:"message_id,omitempty"`
-	Time       time.Time `json:"time"`
-	MessageIDs []string  `json:"message_ids,omitempty"`
+	Interaction  *InteractionPublication `json:"interaction,omitempty"`
+	Provider     string                  `json:"provider"`
+	Connector    string                  `json:"connector,omitempty"`
+	MessageID    string                  `json:"message_id,omitempty"`
+	Time         time.Time               `json:"time"`
+	MessageIDs   []string                `json:"message_ids,omitempty"`
+	Publications []Publication           `json:"publications,omitempty"`
+}
+
+const (
+	PublicationLocatorVersionV1  = "v1"
+	PublicationDeliveryConfirmed = "confirmed"
+)
+
+// Publication is a confirmed native-message receipt. Providers must omit it
+// rather than infer a conversation or bot identity from a requested recipient.
+// PartOrdinal is one-based when a logical send was split into multiple parts.
+type Publication struct {
+	PartOrdinal   int                `json:"part_ordinal,omitempty"`
+	DeliveryState string             `json:"delivery_state"`
+	Locator       PublicationLocator `json:"locator"`
+}
+
+// PublicationLocator preserves the provider-confirmed native identifiers that
+// are required to safely quote an outbound publication later. NativeTarget is
+// the actual native conversation target, never a requested user recipient.
+type PublicationLocator struct {
+	Provider               string         `json:"provider"`
+	Connector              string         `json:"connector,omitempty"`
+	MessageID              string         `json:"message_id"`
+	NativeConversationID   string         `json:"native_conversation_id"`
+	NativeConversationType string         `json:"native_conversation_type,omitempty"`
+	BotAppID               string         `json:"bot_app_id"`
+	BotAppIDType           string         `json:"bot_app_id_type"`
+	NativeTarget           OutboundTarget `json:"native_target"`
 }
 
 const (
@@ -514,6 +653,9 @@ type SendFailure struct {
 	RequestID           string   `json:"request_id,omitempty"`
 	DeliveredCount      int      `json:"delivered_count,omitempty"`
 	DeliveredMessageIDs []string `json:"delivered_message_ids,omitempty"`
+	// DeliveredPublications contains only confirmed successful-prefix parts.
+	// A failed or unknown part never receives a synthetic publication locator.
+	DeliveredPublications []Publication `json:"delivered_publications,omitempty"`
 }
 
 // Sanitized returns a failure suitable for persistence and policy.

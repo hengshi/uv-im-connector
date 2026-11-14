@@ -39,15 +39,18 @@ The normalized protocol has these stable objects:
 
 - `Event`: inbound event envelope with provider, connector, channel, user, message, and referrer.
 - `User.Identities`: account identifiers with type, scope and provenance, separate from conversation/send addresses; see [User identities and native addresses](./identities.md).
-- `Message`: text, structured elements, and resource references.
-- `ResourceRef`: file/image/audio/video reference with sanitized internal URL and private provider fields.
+- `Message`: text, structured elements, and resource references. DingTalk preserves callback `createAt` as native `message.created_at` and `conversationTitle` as `channel.name`. Missing native time stays absent; the existing ingress event time supplies the received-context fallback anchor. Names never select identities or addresses.
+- `ResourceRef`: file/image/audio/video reference with sanitized internal URL and private provider fields; optional `source_message_id` retains explicit reference-material lineage, and a successful synthetic quote context can carry `referenced_message_ids` for ancestor material actually delivered in it. Neither field grants Task, access, or execution authority.
 - `OutboundMessage`: explicit target, text/elements/resources, and optional referrer for replies or threads.
 - `MessageUpdate`: embeds `OutboundMessage` with a top-level `message_id` identifying an exact bot-created message; replaces text only.
-- `Capabilities`: explicit feature declaration for each provider, including reply, proactive send, and accepted target kinds.
+- `SendResult`: sent message IDs and, when provider-confirmed, native `publications` locators that are never inferred from a recipient address.
+- `Capabilities`: explicit feature declaration for each provider, including reply, proactive send, accepted target kinds, and optional `publication_locator_version`.
 
 `OutboundMessage.target` contains an `id` and a `kind`. The kind is `user`, `group`, `channel`, or `conversation`, and callers must use a kind declared by that provider in `capabilities.target_kinds`. An inbound event's `referrer.target` is the exact reply destination selected by the provider adapter; callers should copy the complete `referrer` when replying. Target resolution prefers outbound `target`, then `referrer.target`, then legacy channel fields. Protocol v1 continues to accept the legacy `channel_id` / `channel_type` fields: `direct` maps to `user`, `group` to `group`, `thread` to `channel`, and `room` or an empty type maps to `conversation`. The legacy `channel_id` remains the provider-native existing conversation/channel ID; only its semantic kind is mapped, so it is not reinterpreted as a proactive user ID. A legacy request must include a channel ID or a message/reply handle. Unknown non-empty legacy channel types are rejected instead of being guessed.
 
 `reply_message` means that an outbound message can carry an inbound event's `referrer` to reply to an existing message. `proactive_direct` and `proactive_group` mean the server can send to a direct or group target without a current inbound message. Callers should read these capabilities from `/v1/meta` instead of inferring them from a provider name.
+
+Only when a provider advertises `publication_locator_version` may an internal notification caller explicitly request a confirmed locator with `OutboundMessage.request_publication_locator`. Ordinary sends do not request or trigger a lookup. If the POST succeeded but locator retrieval or validation fails, the send remains successful and is not retried; only the locator is absent. On a split send failure, `failure.delivered_publications` contains only the confirmed successful prefix. The service-level `publication_locator_version` describes the HTTP schema only and does not replace the provider capability. `native_conversation_type` is optional evidence: Lark message lookup cannot prove a chat type, so its absence must be preserved rather than inferred as `direct` or `group` from the proactive recipient.
 
 Some inbound `referrer` values contain short-lived or limited-use reply handles. `referrer.expires_at` is the provider-supplied or adapter-derived deadline, and `capabilities.reply_max_uses` is the maximum number of outbound attempts that may carry the handle; an omitted or zero maximum means that no finite use limit is declared. After the deadline or use limit, callers must remove the message/reply handle and may use `referrer.target` only when the corresponding proactive capability and target kind are available. Provider business windows without reply-handle semantics remain provider constraints and must not be treated as a generic retry of the same proactive message.
 
@@ -56,6 +59,57 @@ Optional `target.id_type` distinguishes native address schemes and must be adver
 Optional WeCom enterprise lookup runs in the event-emission worker, with bounded token/member caching. Failures preserve the original message and do not block socket ACK dispatch. See [WeCom setup and directory identities](./guide/wecom.md) for configuration and account-verification rules.
 
 `reply_stream` applies only to live passive reply-token routes. `edit_message` requires a genuine optional `MessageUpdater`. `text_max_bytes` bounds normalized UTF-8 text bytes per call; zero or absent means unknown. See [application integration](./guide/application-integration.md#complete-text-reply-streams-and-editing) for streaming, editing, long content, and compatibility.
+
+## Recent conversation window
+
+Optional provider capability `conversation_window_version=v1` is implemented by the Lark/Feishu `ConversationWindowReader`, without extending the mandatory `Provider` method set. If that native reader capability is absent, an authenticated Hub with its durable received-context projection advertises the same window version for a retained-ingress fallback. `POST /v1/conversation.window` requires a matching Bearer header even when older local APIs permit empty authentication; a URL token is insufficient. Trusted caller infrastructure must first authorize the user and conversation. Do not give this service credential to an Agent or treat the endpoint as Task authority.
+
+Requests contain only `provider`, `connector`, `trigger_event_id` and `trigger_message_id`, with no caller-selected conversation, thread, time or path. Within the last 64 MiB and final 10,000 event-log records, the Hub verifies the exact persisted, addressed group trigger. Missing, corrupt or conflicting evidence causes zero native-history calls. The log proves ingress, not chat history, and no second body index is created. Lark then reads the exact native trigger under current bot permissions and verifies chat, time and real `thread_id`; parent/root IDs are not thread evidence.
+
+One native page contains at most 10 candidates, queried newest-first and returned oldest-first after strict pre-trigger chat/thread filtering. Trigger, explicit parent, equal/future-time items, duplicate/deleted/wrong-scope messages and app cards are excluded. A failed thread query never widens to the chat, paginates or retries. The automatic metadata operation has a 5-second deadline, independent of explicit attachment downloads. Results have `version=v1`, source/status/scope/anchor, candidate and boundary-omission counts, `has_more`, and messages with native sender identity/time/readable text. Media has kind/name descriptors only: no download keys, URLs, handles or bytes. Posts reuse readable quote rendering; forwards are not expanded recursively.
+
+The recent-window request and native filtering neither accept nor use `referenced_message_ids`. A caller that avoids repeated material in its own prepared references may remove only those exact IDs from an already validated window result after it has obtained the exact `quoted-message.txt` bytes and verified them against the same sanitized `ResourceRef.sha256`; it must not infer identity from body text, filenames, or positional IDs. The list grants no access or Task authority, and missing, errored, or unverified provenance leaves window items intact. If caller-local removal leaves this page empty, it may render local `none`, but must retain the source candidate count, boundary omissions, `has_more`, and any `scan_limited` condition; it must not paginate, retry, or widen the native read.
+
+`available` describes one usable page; `none` means no matching item on that page, never complete-history absence. Boundary omissions with more results or a full page produce `scan_limited`; `permission_denied`, `rate_limited` and `unavailable` distinguish failures using normalized reasons rather than vendor response bodies. When selected because the native reader was absent, the received fallback takes exactly one 10-item metadata page from the same generation-bound EventLog projection, identifies source generation/trigger digest/lower bound, uses ingress `sequence` rather than timestamp as its pre-trigger proof, and retains only safe media descriptors (kind/name/MIME/availability/provenance): never a resource handle, private reference or download. A native reader failure never falls back. Background grants no command, message binding or Task authority.
+
+## Explicit native conversation search
+
+`conversation_search_version=v1` is an independent optional capability, currently implemented only by Lark/Feishu. It does not alter the four-field `conversation_window_version` request, its one-page budget, or automatic-window behavior. When the Hub service Bearer is absent, `/v1/meta` masks both capabilities. A connector without the search capability returns normalized `unsupported` only after Bearer authentication and performs no native read.
+
+`POST /v1/conversation.search` is for trusted infrastructure that has already applied its own ACL and current-Run authorization. A request carries an exact Bearer, persisted provider/connector/event/message trigger tuple, SHA-256 of the sanitized trigger, and the SHA-256 audience digest of the currently authorized Run capability. It accepts no chat, thread, path, or native `page_token`. The Hub re-proves the trigger and digest; Lark revalidates the exact native trigger, chat, time, and actual thread on every page. A rotated capability audience cannot reuse an older cursor.
+
+`conversation_materialize_version=v1` is an optional companion for a selected
+search-media descriptor. Search returns an opaque `materialize_handle`,
+per-resource `source_epoch`, sanitized provenance and readable metadata, never a
+provider key, private URL, `internal://` value or bytes. Trusted infrastructure
+calls `POST /v1/conversation.materialize` with the same trigger proof and
+current-Run audience digest. The handle already binds its source, so callers may
+omit `source_epoch`; a supplied legacy value must still match. The Hub retains
+encrypted private references and completed files under its EventLog-owned state
+directory, with no attempt ledger, failed-read state or recovery plan.
+Interrupted reads can retry after revalidation. A completed handle returns its
+original hash-verified bytes without overwriting them. Different handles retain
+separate provenance and files, without cross-handle physical-cache reuse.
+Lark re-proves the trigger and source-message/resource membership before download.
+Mismatch, expiry or withdrawal returns a normalized unavailable result. Only
+`ready` returns a sanitized internal `ResourceRef` to the trusted caller.
+The caller still owns current-Run authorization and local artifact publication;
+a handle grants no Task/Run or arbitrary provider-resource access.
+
+The additive service capability `conversation_context_query_version=v1` also
+permits `source="received"` on `conversation.search`. It reads only the
+connector's retained EventLog projection, never provider history, and is
+separate from the default native source. Each received result identifies its
+`event_log_generation`, exact `trigger_entry_digest`, and index lower bound;
+each received resource additionally carries its source generation, entry digest
+and sequence. Those fields are required source proof for a caller that elects
+to use received material. The projection is capped at the EventLog's final
+64 MiB/10,000 records, stores no second body copy, and invalidates resources on
+generation, entry-digest, sequence or deletion mismatch.
+
+Native filtering is local to verified scope: `from` is inclusive, `to` is exclusive and capped by the immutable anchor, sender IDs are ORed, and Unicode-lowercased keywords are ANDed substrings. The immutable source time prefers persisted `Message.CreatedAt` and falls back to persisted `Event.Time` without rewriting the digested event. Results expose that choice as optional `anchor_time_source` (`message_created_at` or `event_time`). Received filtering uses the same explicit predicates but has no implicit timestamp upper bound: ingress sequence alone proves that an item precedes the trigger, while timestamps are sorting/display data. Received search scans at most five 1–10-item metadata pages (at most 50 candidates), stops at the first matching page, returns rows oldest-first, and reports its actual scanned/candidate/match/returned counts. Its projection persists exact-scope ordered metadata plus an EventLog EOF/inode/generation cursor: a warm read advances only appended records, then rereads and revalidates only the selected candidates; replacement, truncation, or invalid source proof rebuilds fail closed. It exposes only a random, short-lived Hub cursor—never a native continuation, credential, download handle, or media byte. Cursor records live in the Hub-private 0600 journal with a ciphertext native continuation and may survive a restart only while their trigger digest, filter/limit, verified scope, audience, source generation/lower bound (for received), and 15-minute expiry remain valid; they cannot widen scope.
+
+Coverage reports effective requested bounds, safe scanned candidate bounds, page and candidate/match/return/boundary counts. `has_more` without `next_cursor` is permitted only at the explicit cursor metadata/chain-depth capacity boundary; other continuable `available` or `scan_limited` results must provide a Hub cursor. Unknown, malformed, or cyclic native continuations return neither rows nor cursor. Zero matches, partial scans, and capacity boundaries never claim that full group history is empty.
 
 ## Provider Capability Matrix
 
@@ -103,6 +157,8 @@ The resource matrix is separate from text/conversation support. "Inbound" means 
 
 ## Resources
 
+Interactive cards distinguish quoteable native messages from callback-addressable instances. The versioned `card-instance.v1` profile confirms `native_card_id`, bot identity and the existing card/revision/digest, never a native message locator. It creates no `PublicationLocator` or message-PATCH ledger entry. See [interactive cards](./interactions.md) for platform limits, required templates and callback proof. Business Task state and authorization remain with the caller.
+
 Provider download URLs, resource keys, encrypted payload keys, metadata needed for provider resource lookup, and raw payloads are provider-private. They must not be exposed to callers after normalization.
 
 The public resource shape is:
@@ -131,6 +187,9 @@ ResourceRef
 | `GET /v1/events/ws?after=<seq>` | Watch normalized events. |
 | `POST /v1/message.create` | Send outbound message. |
 | `POST /v1/message.update` | Edit an exact connector's bot-created text message; requires capability and `MessageUpdater`. |
+| `POST /v1/conversation.window` | Read one recent native page, or the retained received fallback only when native capability is absent, under a persisted trigger's scope; requires Bearer authentication and optional provider capability. |
+| `POST /v1/conversation.search` | Read bounded explicit native or explicitly requested retained received material under the same verified trigger scope and local filters; requires Bearer, audience digest, and optional provider capability. |
+| `POST /v1/conversation.materialize` | Materialize one opaque, current-query context resource after trigger/source revalidation; requires Bearer, audience digest and optional provider capability. |
 | `POST /v1/upload.create` | Create internal resource from local bytes. |
 | `POST /v1/resource.download` | Trusted request to resolve a provider-private resource into an internal resource. |
 | `POST /v1/webhook/{provider}/{connector}` | Provider webhook ingress. Webhook verification is owned by the provider adapter. |

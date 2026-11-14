@@ -1,0 +1,45 @@
+# Interactive cards and callbacks
+
+`interaction.v1` adds neutral cards, questions and actions to the existing message protocol. It owns presentation and transport only. The caller remains responsible for current Task ownership, authorization and single-use business actions. Select behavior from each provider/connector's `/v1/meta` capabilities; no feature switch is required. Interactive transport requires the existing `UV_IM_AUTH_TOKEN`. Without it the Hub disables interactive capabilities, rejects card sends/updates/ingress and filters historical private action handles from both event readers; ordinary messaging retains its released behavior.
+
+## Capabilities and application setup
+
+Lark supports Card JSON 2.0, native-message callbacks and PATCH. WeCom supports fixed-button template cards and authenticated `template_card_event` callbacks for direct/group targets using its existing bot credentials. DingTalk supports native group cards with a published application template and Stream card callbacks; direct conversations use complete text without changing their existing conversation IDs. Unsupported whole presentations use complete text. Plain `MessageUpdate` rejects cards.
+
+The `interaction_card_instance_version=card-instance.v1`, `card_max_actions` and `interaction_free_text` capabilities describe callback-addressable instances separately from quoteable native messages. Unknown versions or unsupported whole questions must fall back without losing options. WeCom allows six buttons, an unchanged valid `task_id` of at most128 bytes, and encoded keys of at most1024 bytes. Free-text questions use complete text.
+
+DingTalk requires `UV_DINGTALK_CARD_TEMPLATE_ID`, the existing Client ID/Secret pair, card-instance write permission and `/v1.0/card/instances/callback`. An empty template disables native cards; a template without application credentials fails startup. Configuration does not establish granted permissions or live delivery. This is a necessary external application resource, not a per-group switch.
+
+The template displays `cardData.cardParamMap`: `title`, `summary`, `facts` (one `Label: Value` per line), `question`, `question_help`, `detail_url`, `action_count`; for n=1..8, `action_n_id`, `action_n_label`, `action_n_callback`, `action_n_disabled`. Hide absent actions and honor disabled state. A button returns its ID as the sole `cardPrivateData.actionIds` item and its callback as the sole `cardPrivateData.params.jarvis_callback` entry. Do not display or allow editing that private value. The connector supplies fixed parameters, not caller-provided vendor JSON; no guessed designer-import artifact is supplied. Publish and verify the actual template before claiming live support.
+
+In addition to existing send/read permissions and `im.message.receive_v1`, subscribe to `card.action.trigger` and publish the application configuration. Updating a card first verifies the current app's ownership and the exact native chat/thread. A deleted message, permission failure or target mismatch prevents PATCH. Advertised implementation support does not prove a tenant's permissions, published event subscription or live operation.
+
+Limits are 16 KiB per card, eight actions, 8 KiB submitted text and at least 500 ms between updates of one message. The renderer escapes Markdown/plain text and does not accept arbitrary vendor card JSON. Action tokens must be private opaque handles, without commands, credentials or user text.
+
+Action kinds are `answer` (submit an option or text), `cancel` (request cancellation of the current work), and `details` (request its current status). A button label does not define its semantics. Other kinds are rejected before sending or accepting a callback. The caller still authorizes the actual business effect.
+
+## Durable callback ingress
+
+Callbacks enter the existing authenticated event stream as `interaction.action`, with typed `Event.interaction` and empty ordinary message bodies. Each native callback event ID is deduplicated independently; distinct clicks on one card are not collapsed by message ID. The actor comes from `operator.open_id`; provider, connector, chat, message, card, presentation revision and app proof digest are preserved. Vendor update credentials are discarded.
+
+The adapter first verifies the app, message and chat with the native message lookup and restores the actual parent/root/thread. It acknowledges only after the EventLog and its parent directory have synced. Startup truncates only an unterminated, uncommitted tail; invalid complete records still fail closed. A durable callback whose ACK was lost remains deduplicated after restart. Missing durable storage, malformed callbacks or failed persistence do not receive a success ACK. The stream retains existing bearer authentication and private-file access. Cross-target identity resolution separately queries the current native chat for card callbacks. Only `chat_mode=p2p` proves a private conversation target; group/denied/unavailable lookups retain the verified actor and full identity set without inheriting an old link target. This needs native chat-info read permission; ordinary direct-message identity resolution keeps its existing proof and gains no extra lookup dependency. Consumers must revalidate business ownership, actor, expiry, generation and action policy; presentation revisions are not business fences.
+
+## Update receipts and recovery
+
+Card-instance callbacks use the explicit `card-instance.v1` profile: `native_card_id` equals `card_id`; original `message_id` and `referrer.message_id` stay empty. `Event.id` identifies only the actual click for deduplication. WeCom verifies the authenticated bot, explicit single/group classification and current native actor/target; groups need an actual chat ID. DingTalk verifies its authenticated Stream application, current group space, user identity type and instance. Missing scope cannot be filled from an old presentation.
+
+Card-instance sends confirm `SendResult.interaction.native_card_id`, `bot_app_id` and the existing card/revision/digest. They produce neither `native_message_id` nor `publications`, and cannot create quote aliases, notification routes or private-room authority. The caller persists question delivery evidence and rechecks business authorization. These instances do not enter the message-PATCH ledger. WeCom's short-lived callback update and DingTalk's instance ID are not native message PATCH evidence; the adapters do not advertise persistent card updates for them.
+
+A successful Lark message-card send includes `SendResult.interaction`: actual native message ID, card ID, revision and payload SHA-256. The bearer-protected `POST /v1/interaction.update` accepts `interaction-update.v1`, exact native scope, card ID, expected and replacement revisions, complete card/digest and operation ID. Replacement must equal expected + 1.
+
+A private ledger under the existing state root retains scope, committed revision/digest and operation receipts, without card bodies, action tokens or Tasks. It durably reserves the operation before unlocked provider I/O. Replaying the same operation/payload returns its receipt; changed payload, missing records, expiry, stale revision or scope mismatches are rejected before I/O.
+
+An interrupted call, timeout or lost acknowledgement becomes `unknown`, blocking automatic resend and further updates. Lark's successful PATCH response has no message-ID echo; the adapter retains the verified request identity without inventing an echo or claiming native CAS. Exact observation of an unknown Lark PATCH is not supported. Callers should preserve the last proven presentation and reject stale actions using business fences.
+
+Records expire within seven days and are pruned in bounded batches during normal use. An old callback cannot recreate missing authorization. Presentation refreshes never change Task lifecycle or resend failed messages.
+
+Protocol-shaped regression fixtures exercise actual adapter, Hub HTTP, durable EventLog and WebSocket paths, including distinct clicks, persistence before ACK, target mismatch, PATCH without an ID echo, restart replay, interrupted settlement and zero resend after unknown outcomes. Tenant permissions, subscriptions, mobile rendering and live platform operations require deployed-application qualification.
+
+References: [Card JSON 2.0](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/component-json-v2-overview), [card callbacks](https://open.feishu.cn/document/feishu-cards/card-callback-communication), [card updates](https://open.feishu.cn/document/server-docs/im-v1/message-card/patch).
+
+WeCom: [official types](https://github.com/WecomTeam/aibot-node-sdk/tree/main/src/types), [send and callback-scoped update](https://github.com/WecomTeam/aibot-node-sdk/blob/main/src/client.ts). DingTalk: [official Stream model](https://github.com/open-dingtalk/dingtalk-stream-sdk-go/blob/main/card/model.go), [create and deliver](https://open.dingtalk.com/document/orgapp/create-and-deliver-cards), [publish a template](https://open.dingtalk.com/document/orgapp/card-template-building-and-publishing).

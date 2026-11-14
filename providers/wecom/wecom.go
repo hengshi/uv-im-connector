@@ -153,21 +153,29 @@ func (p *Provider) ID() string          { return "wecom" }
 func (p *Provider) ConnectorID() string { return p.config.ConnectorID }
 func (p *Provider) Capabilities() uvim.Capabilities {
 	return uvim.Capabilities{
-		Inbound:          true,
-		Outbound:         true,
-		DirectMessage:    true,
-		GroupMessage:     true,
-		ThreadReply:      true,
-		ReplyMessage:     true,
-		ReplyStream:      true,
-		TextMaxBytes:     20 * 1024,
-		ProactiveDirect:  true,
-		ProactiveGroup:   true,
-		TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
-		UploadResource:   p.config.ResourceStore != nil,
-		DownloadResource: true,
-		ResourceKinds:    []string{uvim.ElementImage, uvim.ElementAudio, uvim.ElementVideo, uvim.ElementFile},
-		ChannelTypes:     []string{uvim.ChannelDirect, uvim.ChannelGroup},
+		InteractiveMessage:             true,
+		InteractiveActionCallback:      true,
+		InteractionSchemaVersions:      []string{uvim.InteractionSchemaV1},
+		InteractionCardInstanceVersion: uvim.InteractionCardInstanceVersionV1,
+		InteractionActorIdentityTypes:  []string{"wecom.callback_userid"},
+		CardMaxActions:                 wecomTemplateCardMaxButtons,
+		InteractionFreeText:            false,
+		CardMaxBytes:                   uvim.InteractionCardMaxBytes,
+		Inbound:                        true,
+		Outbound:                       true,
+		DirectMessage:                  true,
+		GroupMessage:                   true,
+		ThreadReply:                    true,
+		ReplyMessage:                   true,
+		ReplyStream:                    true,
+		TextMaxBytes:                   20 * 1024,
+		ProactiveDirect:                true,
+		ProactiveGroup:                 true,
+		TargetKinds:                    []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
+		UploadResource:                 p.config.ResourceStore != nil,
+		DownloadResource:               true,
+		ResourceKinds:                  []string{uvim.ElementImage, uvim.ElementAudio, uvim.ElementVideo, uvim.ElementFile},
+		ChannelTypes:                   []string{uvim.ChannelDirect, uvim.ChannelGroup},
 	}
 }
 
@@ -322,9 +330,15 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) (runErr error) 
 			continue
 		}
 		if inbound.Cmd == cmdEventCallback {
-			if eventType := uvim.StringValue(uvim.MapStringAny(inbound.Body["event"])["eventtype"]); eventType == "disconnected_event" {
+			eventType := uvim.StringValue(uvim.MapStringAny(inbound.Body["event"])["eventtype"])
+			if eventType == "disconnected_event" {
 				p.setState("disconnected")
 				finishReading(fmt.Errorf("wecom disconnected_event: another connector is active"))
+				continue
+			}
+			if event, ok := p.decodeTemplateCardEvent(inbound); ok {
+				p.setState("event")
+				queued = append(queued, event)
 			}
 			continue
 		}
@@ -372,6 +386,12 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	defer func() {
 		err = uvim.NewProviderSendOperationError("wecom send", err)
 	}()
+	if err := uvim.ValidateOutboundInteraction(msg, p.Capabilities()); err != nil {
+		if msg.Interaction != nil {
+			return uvim.SendResult{}, wecomInteractionPreparationError(err)
+		}
+		return uvim.SendResult{}, err
+	}
 	if err := uvim.ValidateOutboundText(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, err
 	}
@@ -380,6 +400,9 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	}
 	if err := uvim.ValidateOutboundResources(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("wecom send: %w", err)
+	}
+	if msg.Interaction != nil {
+		return p.sendInteraction(ctx, msg)
 	}
 	if hasNonTextElements(msg.Elements) {
 		sendErr := fmt.Errorf("wecom send: rich elements are not supported")
@@ -624,12 +647,20 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 	msgType := uvim.StringValue(body["msgtype"])
 	text := p.messageText(body, msgType)
 	resources := p.messageResources(body, msgType)
+	ensureResourceIDs(resources)
+	elements := elementsFromTextAndResources(text, resources)
 	if quote := uvim.MapStringAny(body["quote"]); len(quote) > 0 {
 		quoteType := uvim.StringValue(quote["msgtype"])
-		resources = append(resources, p.messageResources(quote, quoteType)...)
+		quotedResources := p.messageResources(quote, quoteType)
 		if quoteText := quotedMessageText(quote, quoteType); quoteText != "" {
-			resources = append(resources, p.quotedTextResource(quoteType, quoteText))
+			quotedResources = append(quotedResources, p.quotedTextResource(quoteType, quoteText))
 		}
+		ensureResourceIDs(quotedResources)
+		resources = append(resources, quotedResources...)
+		// WeCom quote payloads do not carry a trustworthy native parent ID. Keep
+		// the relation explicit without promoting callback maps into Task, thread,
+		// or referrer authority.
+		elements = append(elements, uvim.Element{Type: uvim.ElementQuote, Children: elementsFromTextAndResources("", quotedResources)})
 	}
 	if strings.TrimSpace(text) == "" && len(resources) == 0 {
 		return uvim.Event{}, false
@@ -648,8 +679,10 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 	now := p.now().UTC()
 	expiresAt := now.Add(10 * time.Minute)
 	targetKind := uvim.TargetUser
+	targetID := userID
 	if channelType == uvim.ChannelGroup {
 		targetKind = uvim.TargetGroup
+		targetID = channelID
 	}
 	return uvim.Event{
 		ID:        uvim.FirstNonEmpty(uvim.StringValue(body["msgid"]), in.Headers.ReqID),
@@ -666,10 +699,10 @@ func (p *Provider) decodeMessage(in frame) (uvim.Event, bool) {
 			ID:        messageID,
 			Type:      msgType,
 			Text:      text,
-			Elements:  elementsFromTextAndResources(text, resources),
+			Elements:  elements,
 			Resources: resources,
 		},
-		Referrer: uvim.Referrer{MessageID: messageID, ChannelID: channelID, ReplyToken: in.Headers.ReqID, ExpiresAt: &expiresAt, Target: &uvim.OutboundTarget{ID: channelID, Kind: targetKind}},
+		Referrer: uvim.Referrer{MessageID: messageID, ChannelID: channelID, ReplyToken: in.Headers.ReqID, ExpiresAt: &expiresAt, Target: &uvim.OutboundTarget{ID: targetID, Kind: targetKind}},
 		// AI Bot callbacks are interactions delivered to this bot, including group @mentions.
 		Addressed: true,
 	}, true
@@ -795,6 +828,14 @@ func resourceFromBody(body map[string]any, msgType, provider, connector string) 
 		Secret:    uvim.StringValue(payload["aeskey"]),
 	}
 	return ref, ref.URL != ""
+}
+
+func ensureResourceIDs(resources []uvim.ResourceRef) {
+	for i := range resources {
+		if resources[i].ID == "" && resources[i].InternalURL == "" {
+			resources[i].ID = uvim.NewID("res")
+		}
+	}
 }
 
 func elementsFromTextAndResources(text string, refs []uvim.ResourceRef) []uvim.Element {

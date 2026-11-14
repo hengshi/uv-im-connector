@@ -4,13 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	uvim "github.com/hengshi/uv-im-connector"
 )
 
 type DecoderConfig struct {
+	Now        func() time.Time
 	AppID      string
 	BotOpenID  string
 	BotUnionID string
@@ -28,6 +31,9 @@ func DecodePayload(payload []byte, config DecoderConfig) (uvim.Event, bool, erro
 	if env.Type != "" && env.Type != "event_callback" {
 		return uvim.Event{}, false, nil
 	}
+	if env.Header.EventType == "card.action.trigger" {
+		return decodeInteractionAction(env, config)
+	}
 	if env.Header.EventType != "im.message.receive_v1" {
 		return uvim.Event{}, false, nil
 	}
@@ -40,11 +46,24 @@ func DecodePayload(payload []byte, config DecoderConfig) (uvim.Event, bool, erro
 	}
 	resources := messageResources(evt.Message.MessageType, evt.Message.Content)
 	body := messageBody(evt.Message.MessageType, evt.Message.Content)
+	var botMentionPrefix *bool
+	switch evt.Message.MessageType {
+	case "text":
+		botMentionPrefix = leadingNativeBotMention(body, evt.Message.Mentions, config.BotOpenID, config.BotUnionID)
+	case "post":
+		// Rich post spans retain only display text after flattening, so they
+		// cannot prove which native mention token appeared first.
+		unproven := false
+		botMentionPrefix = &unproven
+	}
 	body = resolveMentions(body, evt.Message.Mentions, config.BotOpenID, config.BotUnionID)
 	channelType := normalizeChatType(evt.Message.ChatType)
 	messageID := evt.Message.MessageID
 	channelID := evt.Message.ChatID
 	for i := range resources {
+		if resources[i].ID == "" && resources[i].InternalURL == "" {
+			resources[i].ID = uvim.NewID("res")
+		}
 		resources[i].Provider = "lark"
 		resources[i].Connector = config.Connector
 		if resources[i].Metadata == nil {
@@ -87,18 +106,21 @@ func DecodePayload(payload []byte, config DecoderConfig) (uvim.Event, bool, erro
 			MessageID:       messageID,
 			ParentMessageID: evt.Message.ParentID,
 			RootMessageID:   evt.Message.RootID,
+			ThreadID:        evt.Message.ThreadID,
 			ChannelID:       channelID,
 			Target:          &uvim.OutboundTarget{ID: channelID, Kind: uvim.TargetConversation},
 		},
-		Addressed: channelType != uvim.ChannelGroup || containsBotMention(evt.Message.Mentions, config.BotOpenID, config.BotUnionID),
+		Addressed:        channelType != uvim.ChannelGroup || containsBotMention(evt.Message.Mentions, config.BotOpenID, config.BotUnionID),
+		BotMentionPrefix: botMentionPrefix,
 	}, true, nil
 }
 
 type eventEnvelope struct {
-	Schema string          `json:"schema"`
-	Type   string          `json:"type"`
-	Header eventHeader     `json:"header"`
-	Event  json.RawMessage `json:"event"`
+	Context interactionCallbackContext `json:"context"`
+	Schema  string                     `json:"schema"`
+	Type    string                     `json:"type"`
+	Header  eventHeader                `json:"header"`
+	Event   json.RawMessage            `json:"event"`
 }
 
 type eventHeader struct {
@@ -123,6 +145,7 @@ type messageReceiveEvent struct {
 		MessageID   string    `json:"message_id"`
 		ParentID    string    `json:"parent_id"`
 		RootID      string    `json:"root_id"`
+		ThreadID    string    `json:"thread_id"`
 		ChatID      string    `json:"chat_id"`
 		ChatType    string    `json:"chat_type"`
 		MessageType string    `json:"message_type"`
@@ -328,13 +351,7 @@ func resolveMentions(text string, mentions []mention, botOpenID, botUnionID stri
 	if text == "" || len(mentions) == 0 {
 		return text
 	}
-	sorted := make([]mention, 0, len(mentions))
-	for _, mention := range mentions {
-		if mention.Key != "" {
-			sorted = append(sorted, mention)
-		}
-	}
-	sort.SliceStable(sorted, func(i, j int) bool { return len(sorted[i].Key) > len(sorted[j].Key) })
+	sorted := sortedMentionKeys(mentions)
 	var out strings.Builder
 	for i := 0; i < len(text); {
 		var matched *mention
@@ -365,7 +382,29 @@ func resolveMentions(text string, mentions []mention, botOpenID, botUnionID stri
 		}
 		i = end
 	}
-	return strings.TrimSpace(out.String())
+	return out.String()
+}
+
+func leadingNativeBotMention(text string, mentions []mention, botOpenID, botUnionID string) *bool {
+	text = strings.TrimLeftFunc(text, unicode.IsSpace)
+	for _, mention := range sortedMentionKeys(mentions) {
+		if strings.HasPrefix(text, mention.Key) {
+			isBot := isBotMention(mention, botOpenID, botUnionID)
+			return &isBot
+		}
+	}
+	return nil
+}
+
+func sortedMentionKeys(mentions []mention) []mention {
+	sorted := make([]mention, 0, len(mentions))
+	for _, mention := range mentions {
+		if mention.Key != "" {
+			sorted = append(sorted, mention)
+		}
+	}
+	sort.SliceStable(sorted, func(i, j int) bool { return len(sorted[i].Key) > len(sorted[j].Key) })
+	return sorted
 }
 
 func isBotMention(mention mention, botOpenID, botUnionID string) bool {
@@ -413,14 +452,13 @@ func parseMillis(value string) time.Time {
 	if value == "" {
 		return time.Time{}
 	}
-	var n int64
 	for _, ch := range value {
 		if ch < '0' || ch > '9' {
 			return time.Time{}
 		}
-		n = n*10 + int64(ch-'0')
 	}
-	if n == 0 {
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n <= 0 {
 		return time.Time{}
 	}
 	return time.UnixMilli(n).UTC()

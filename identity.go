@@ -53,6 +53,38 @@ type IdentityResolveResult struct {
 	Link    *IdentityLink `json:"link,omitempty"`
 }
 
+// IdentityInboundResolveRequest names only connector-owned durable evidence.
+// Native actor, business identities and private targets cannot be supplied.
+type IdentityInboundResolveRequest struct {
+	Provider  string `json:"provider"`
+	Connector string `json:"connector"`
+	EventID   string `json:"event_id"`
+}
+
+type IdentityNativeActor struct {
+	Provider  string `json:"provider"`
+	Connector string `json:"connector"`
+	UserID    string `json:"user_id"`
+	Kind      string `json:"kind"`
+}
+
+type IdentityInboundLink struct {
+	Identity UserIdentity    `json:"identity"`
+	Link     IdentityLinkRef `json:"link"`
+	Target   OutboundTarget  `json:"target"`
+}
+
+// IdentityInboundResolveResult is service-private. Links is the complete
+// currently valid canonical identity set for this native actor, never an
+// implicit preferred identity. DirectTarget is absent for a group event.
+type IdentityInboundResolveResult struct {
+	Event        IdentityEventRef      `json:"event"`
+	EventDigest  string                `json:"event_digest"`
+	NativeActor  IdentityNativeActor   `json:"native_actor"`
+	DirectTarget *OutboundTarget       `json:"direct_target"`
+	Links        []IdentityInboundLink `json:"links"`
+}
+
 // NormalizeUserIdentities omits absent identifiers and preserves the first
 // assertion for each type/scope pair. Native identifiers are not case folded.
 func NormalizeUserIdentities(values ...UserIdentity) []UserIdentity {

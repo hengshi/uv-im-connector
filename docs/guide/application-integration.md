@@ -125,6 +125,16 @@ DingTalk 的原始文本预算也保持未知。官方[群聊服务端发送接�
 
 这些字段和 endpoint 是协议 v1 的增量能力。新调用方须先读取精确 provider/connector 的 metadata；旧服务缺少能力字段时保持追加策略，不调用编辑 endpoint。旧调用方继续使用 `message.create`。使用新 Go client/API 的应用须固定包含这些 API 的依赖版本，并升级服务二进制后再启用能力；仅更新本地 Go 依赖不会升级运行中的服务。
 
+## 已确认的出站发布定位符
+
+需要让后续系统安全引用一条**本 bot 已发送**的通知时，内部调用方可在 `message.create` 的请求体附加 `request_publication_locator: true`。这不是面向终端用户的设置或 connector 配置；普通消息不带该字段，connector 不会为它新增消息查询。调用方必须先在精确 provider/connector 的 `capabilities.publication_locator_version` 中确认支持 `v1`；服务级 `publication_locator_version` 仅表示当前 HTTP 协议能够序列化该结构，不能推断所有 provider 均可确认定位符。
+
+当前 Lark / Feishu adapter 支持 `v1`。它先完成原生 POST，再仅在显式请求时 GET 该 POST 返回的精确 `message_id`。只有查得同一消息、非 deleted、发送者是当前 app（`app_id` 与配置 app 一致），且返回非空 `chat_id` 时，成功 `SendResult.publications` 才包含 `delivery_state: "confirmed"` 的记录。记录含 provider、connector、message ID、实际 native conversation target 和 bot app ID；它绝不把主动发送时的用户 Open ID 猜作会话 ID。未声明该 capability 的 adapter 不得伪造 locator。
+
+原生 POST 一旦明确成功，后续 GET 的权限、网络、删除或响应校验失败都**不会**将这次发送改写为失败、unknown 或自动重试：仍返回原 `message_id` 的成功 `SendResult`，仅省略 `publications`。调用方因而只能把 `confirmed` locator 作为可引用凭据；缺失 locator 只能走自己的安全降级路径，不能从收件人或消息文本重建。
+
+一次逻辑发送被拆为 text/resources 多个 native part 时，`publications` 按成功 part 返回，并以一开始的 `part_ordinal` 标记顺序。若后续 part 出错，已有的已确认 locator 只出现在 `failure.delivered_publications` 的成功前缀；失败或 delivery-unknown 的 part 没有 locator，整批仍不得重放。
+
 ## 恢复
 
 事件日志按 sequence 递增。Consumer 可以带上最后处理过的 sequence 重连：

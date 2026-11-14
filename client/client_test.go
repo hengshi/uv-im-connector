@@ -147,6 +147,92 @@ func TestServiceMetaReturnsTypedServiceMetadata(t *testing.T) {
 	}
 }
 
+func TestConversationWindowUsesTypedAuthenticatedRoute(t *testing.T) {
+	for _, statusCode := range []int{http.StatusOK, http.StatusUnauthorized} {
+		t.Run(http.StatusText(statusCode), func(t *testing.T) {
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.Method != http.MethodPost || req.URL.Path != "/v1/conversation.window" || req.Header.Get("Authorization") != "Bearer token" {
+					t.Errorf("request=%s %s authorization=%q", req.Method, req.URL.Path, req.Header.Get("Authorization"))
+				}
+				var input uvim.ConversationWindowRequest
+				if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+					t.Error(err)
+				}
+				if input != (uvim.ConversationWindowRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om"}) {
+					t.Errorf("input=%+v", input)
+				}
+				w.WriteHeader(statusCode)
+				if statusCode == http.StatusOK {
+					_ = json.NewEncoder(w).Encode(uvim.ConversationWindowResult{Version: uvim.ConversationWindowVersionV1, Source: "native", Status: "none", TriggerMessageID: "om"})
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+			}))
+			defer api.Close()
+
+			c := New(api.URL)
+			c.Token = "token"
+			result, err := c.ConversationWindow(t.Context(), uvim.ConversationWindowRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om"})
+			if statusCode == http.StatusOK {
+				if err != nil || result.Status != "none" || result.Source != "native" || result.Version != uvim.ConversationWindowVersionV1 {
+					t.Fatalf("result=%+v err=%v", result, err)
+				}
+				return
+			}
+			var httpErr *HTTPError
+			if !errors.As(err, &httpErr) || httpErr.StatusCode != statusCode {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestConversationSearchUsesTypedAuthenticatedRoute(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost || req.URL.Path != "/v1/conversation.search" || req.Header.Get("Authorization") != "Bearer token" {
+			t.Errorf("request=%s %s authorization=%q", req.Method, req.URL.Path, req.Header.Get("Authorization"))
+		}
+		var input uvim.ConversationSearchRequest
+		if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+			t.Error(err)
+		}
+		if input.Provider != "lark" || input.Connector != "main" || input.TriggerEventID != "evt" || input.TriggerMessageID != "om" || input.ExpectedEventDigest != "event-sha" || input.AudienceDigest != "cap-sha" || input.Filter != nil || input.Limit != 0 || input.Cursor != "cursor" {
+			t.Errorf("input=%+v", input)
+		}
+		_ = json.NewEncoder(w).Encode(uvim.ConversationSearchResult{Version: uvim.ConversationSearchVersionV1, Source: "native", Status: "none", EventDigest: "event-sha"})
+	}))
+	defer api.Close()
+	c := New(api.URL)
+	c.Token = "token"
+	result, err := c.ConversationSearch(t.Context(), uvim.ConversationSearchRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om", ExpectedEventDigest: "event-sha", AudienceDigest: "cap-sha", Cursor: "cursor"})
+	if err != nil || result.Version != uvim.ConversationSearchVersionV1 || result.Status != "none" || result.EventDigest != "event-sha" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestConversationMaterializeUsesOpaqueTypedRoute(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost || req.URL.Path != "/v1/conversation.materialize" || req.Header.Get("Authorization") != "Bearer token" {
+			t.Errorf("request=%s %s authorization=%q", req.Method, req.URL.Path, req.Header.Get("Authorization"))
+		}
+		var input uvim.ConversationMaterializeRequest
+		if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+			t.Error(err)
+		}
+		if input != (uvim.ConversationMaterializeRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om", ExpectedEventDigest: "event-sha", AudienceDigest: "cap-sha", SourceEpoch: "epoch", MaterializeHandle: "opaque"}) {
+			t.Errorf("input=%+v", input)
+		}
+		_ = json.NewEncoder(w).Encode(uvim.ConversationMaterializeResult{Version: uvim.ConversationMaterializeVersionV1, State: "ready", Resource: uvim.ResourceRef{ID: "r1", InternalURL: "internal://r1"}})
+	}))
+	defer api.Close()
+	c := New(api.URL)
+	c.Token = "token"
+	result, err := c.ConversationMaterialize(t.Context(), uvim.ConversationMaterializeRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om", ExpectedEventDigest: "event-sha", AudienceDigest: "cap-sha", SourceEpoch: "epoch", MaterializeHandle: "opaque"})
+	if err != nil || result.Version != uvim.ConversationMaterializeVersionV1 || result.State != "ready" || result.Resource.InternalURL != "internal://r1" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
 func TestUpdatePreservesExactMessageAndFailureFacts(t *testing.T) {
 	for _, status := range []int{200, 502, 404} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
@@ -212,6 +298,15 @@ func TestSendSurfacesStructuredProviderFailureDetail(t *testing.T) {
 				HTTPStatus:        http.StatusTooManyRequests,
 				ProviderCode:      "230020",
 				RetryAfterSeconds: 3,
+				DeliveredCount:    1,
+				DeliveredPublications: []uvim.Publication{{
+					PartOrdinal:   1,
+					DeliveryState: uvim.PublicationDeliveryConfirmed,
+					Locator: uvim.PublicationLocator{
+						Provider: "lark", Connector: "main", MessageID: "om_confirmed", NativeConversationID: "oc_confirmed",
+						BotAppID: "app", BotAppIDType: "app_id", NativeTarget: uvim.OutboundTarget{ID: "oc_confirmed", Kind: uvim.TargetConversation},
+					},
+				}},
 			},
 		})
 	}))
@@ -225,7 +320,7 @@ func TestSendSurfacesStructuredProviderFailureDetail(t *testing.T) {
 	if !errors.As(err, &httpErr) || httpErr.Failure == nil {
 		t.Fatalf("Send error = %T %v, want typed HTTPError failure", err, err)
 	}
-	if httpErr.Failure.Category != uvim.SendFailureRateLimited || !httpErr.Failure.Retryable || httpErr.Failure.ProviderCode != "230020" {
+	if httpErr.Failure.Category != uvim.SendFailureRateLimited || !httpErr.Failure.Retryable || httpErr.Failure.ProviderCode != "230020" || len(httpErr.Failure.DeliveredPublications) != 1 || httpErr.Failure.DeliveredPublications[0].Locator.MessageID != "om_confirmed" {
 		t.Fatalf("Send failure = %+v", httpErr.Failure)
 	}
 }

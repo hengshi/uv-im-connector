@@ -12,13 +12,14 @@ import (
 )
 
 type Config struct {
-	ConnectorID   string
-	BaseURL       string
-	Token         string
-	WebhookSecret string
-	ClientID      string
-	ClientSecret  string
-	ResourceStore *uvim.ResourceStore
+	ConnectorID    string
+	BaseURL        string
+	Token          string
+	WebhookSecret  string
+	ClientID       string
+	ClientSecret   string
+	CardTemplateID string
+	ResourceStore  *uvim.ResourceStore
 }
 
 func New(config Config) (*Provider, error) {
@@ -29,11 +30,23 @@ func New(config Config) (*Provider, error) {
 	}
 	config.ClientID = clientID
 	config.ClientSecret = clientSecret
+	config.CardTemplateID = strings.TrimSpace(config.CardTemplateID)
+	if config.CardTemplateID != "" && clientID == "" {
+		return nil, fmt.Errorf("dingtalk provider: card_template_id requires client_id and client_secret")
+	}
 	baseURL := config.BaseURL
 	if baseURL == "" {
 		baseURL = "https://oapi.dingtalk.com"
 	}
 	config.BaseURL = baseURL
+	cardsEnabled := config.CardTemplateID != "" && clientID != ""
+	cardInstanceVersion, cardMaxActions := "", 0
+	var cardSchemaVersions, cardActorIdentityTypes []string
+	if cardsEnabled {
+		cardInstanceVersion, cardMaxActions = uvim.InteractionCardInstanceVersionV1, uvim.InteractionMaxActions
+		cardSchemaVersions = []string{uvim.InteractionSchemaV1}
+		cardActorIdentityTypes = []string{"dingtalk.userid"}
+	}
 	base, err := httpchannel.New(httpchannel.Config{
 		ProviderID:        "dingtalk",
 		ConnectorID:       firstNonEmpty(config.ConnectorID, "dingtalk"),
@@ -45,17 +58,24 @@ func New(config Config) (*Provider, error) {
 		Send:              Send,
 		ParseSendResponse: ParseSendResponse,
 		Capabilities: uvim.Capabilities{
-			Inbound:          true,
-			Outbound:         true,
-			DirectMessage:    true,
-			GroupMessage:     true,
-			ReplyMessage:     true,
-			ProactiveDirect:  clientID != "",
-			ProactiveGroup:   clientID != "" || strings.TrimSpace(config.Token) != "",
-			UploadResource:   clientID != "" && config.ResourceStore != nil,
-			DownloadResource: true,
-			TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup},
-			ChannelTypes:     []string{uvim.ChannelDirect, uvim.ChannelGroup},
+			InteractiveMessage:             cardsEnabled,
+			InteractiveActionCallback:      cardsEnabled,
+			InteractionSchemaVersions:      cardSchemaVersions,
+			InteractionCardInstanceVersion: cardInstanceVersion,
+			CardMaxActions:                 cardMaxActions,
+			InteractionFreeText:            false,
+			InteractionActorIdentityTypes:  cardActorIdentityTypes,
+			Inbound:                        true,
+			Outbound:                       true,
+			DirectMessage:                  true,
+			GroupMessage:                   true,
+			ReplyMessage:                   true,
+			ProactiveDirect:                clientID != "",
+			ProactiveGroup:                 clientID != "" || strings.TrimSpace(config.Token) != "",
+			UploadResource:                 clientID != "" && config.ResourceStore != nil,
+			DownloadResource:               true,
+			TargetKinds:                    []string{uvim.TargetUser, uvim.TargetGroup},
+			ChannelTypes:                   []string{uvim.ChannelDirect, uvim.ChannelGroup},
 		},
 	})
 	if err != nil {
@@ -66,19 +86,33 @@ func New(config Config) (*Provider, error) {
 
 func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	var msg struct {
-		MsgID            string `json:"msgId"`
-		MsgType          string `json:"msgtype"`
-		SenderStaffID    string `json:"senderStaffId"`
-		SenderUnionID    string `json:"senderUnionId"`
-		SenderID         string `json:"senderId"`
-		SenderCorpID     string `json:"senderCorpId"`
-		SenderNick       string `json:"senderNick"`
-		ConversationID   string `json:"conversationId"`
-		ConversationType string `json:"conversationType"`
-		SessionWebhook   string `json:"sessionWebhook"`
-		SessionExpiresAt int64  `json:"sessionWebhookExpiredTime"`
-		RobotCode        string `json:"robotCode"`
-		Text             struct {
+		MsgID             string `json:"msgId"`
+		MsgType           string `json:"msgtype"`
+		SenderStaffID     string `json:"senderStaffId"`
+		SenderUnionID     string `json:"senderUnionId"`
+		SenderID          string `json:"senderId"`
+		SenderCorpID      string `json:"senderCorpId"`
+		SenderNick        string `json:"senderNick"`
+		ConversationID    string `json:"conversationId"`
+		ConversationType  string `json:"conversationType"`
+		ConversationTitle string `json:"conversationTitle"`
+		CreateAt          int64  `json:"createAt"`
+		SessionWebhook    string `json:"sessionWebhook"`
+		SessionExpiresAt  int64  `json:"sessionWebhookExpiredTime"`
+		RobotCode         string `json:"robotCode"`
+		IsReplyMsg        bool   `json:"isReplyMsg"`
+		RepliedMsg        struct {
+			MsgID   string `json:"msgId"`
+			MsgType string `json:"msgType"`
+		} `json:"repliedMsg"`
+		QuoteMessage struct {
+			IsReplyMsg bool `json:"isReplyMsg"`
+			RepliedMsg struct {
+				MsgID   string `json:"msgId"`
+				MsgType string `json:"msgType"`
+			} `json:"repliedMsg"`
+		} `json:"quoteMessage"`
+		Text struct {
 			Content string `json:"content"`
 		} `json:"text"`
 		Content any            `json:"content"`
@@ -117,17 +151,73 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 		value := time.UnixMilli(msg.SessionExpiresAt).UTC()
 		expiresAt = &value
 	}
-	return uvim.Event{
+	var createdAt time.Time
+	if msg.CreateAt > 0 {
+		createdAt = time.UnixMilli(msg.CreateAt).UTC()
+	}
+	event := uvim.Event{
 		ID:        msg.MsgID,
 		Type:      uvim.EventMessageCreate,
 		Provider:  "dingtalk",
 		Connector: config.ConnectorID,
-		Channel:   uvim.Channel{ID: msg.ConversationID, Type: channelType},
+		Channel:   uvim.Channel{ID: msg.ConversationID, Type: channelType, Name: msg.ConversationTitle},
 		User:      user,
-		Message:   uvim.Message{ID: msg.MsgID, Text: strings.TrimSpace(text), Type: uvim.FirstNonEmpty(msg.MsgType, "text"), Resources: refs},
+		Message:   uvim.Message{ID: msg.MsgID, Text: strings.TrimSpace(text), Type: uvim.FirstNonEmpty(msg.MsgType, "text"), Resources: refs, CreatedAt: createdAt},
 		Referrer:  uvim.Referrer{MessageID: msg.MsgID, ChannelID: msg.ConversationID, ReplyToken: msg.SessionWebhook, ExpiresAt: expiresAt, Target: replyTarget},
 		Addressed: true,
-	}, true, nil
+	}
+	if !msg.IsReplyMsg && !msg.QuoteMessage.IsReplyMsg {
+		return event, true, nil
+	}
+	repliedMsg := msg.RepliedMsg
+	if msg.QuoteMessage.IsReplyMsg {
+		repliedMsg = msg.QuoteMessage.RepliedMsg
+	}
+	parentID := firstNonEmpty(repliedMsg.MsgID)
+	if parentID == "" || parentID == msg.MsgID {
+		// DingTalk asserted a reply but omitted a usable native parent. Do not
+		// turn the command into an unquoted default route. The exact typed
+		// material error lets the shared router present an explicit refusal.
+		dingtalkAddQuotedResource(&event, refs, dingtalkQuotedMessageResource(config, ""), "")
+		return event, true, nil
+	}
+	quoted := dingtalkQuotedMessageResource(config, parentID)
+	event.Referrer.ParentMessageID = parentID
+	dingtalkAddQuotedResource(&event, refs, quoted, parentID)
+	return event, true, nil
+}
+
+func dingtalkAddQuotedResource(event *uvim.Event, refs []uvim.ResourceRef, quoted uvim.ResourceRef, parentID string) {
+	event.Message.Resources = append(event.Message.Resources, quoted)
+	event.Message.Elements = append(dingtalkElements(event.Message.Text, refs), uvim.Element{
+		Type: uvim.ElementQuote, ID: parentID, Children: []uvim.Element{uvim.File(quoted)},
+	})
+}
+
+func dingtalkQuotedMessageResource(config httpchannel.Config, sourceMessageID string) uvim.ResourceRef {
+	// The native parent relation is optional; a diagnostic placeholder is never
+	// readable quote material, with or without that relation.
+	ref := uvim.ResourceRef{
+		Provider: "dingtalk", Connector: config.ConnectorID, Kind: uvim.ElementFile,
+		Name: "quoted-message.txt", MIME: "text/plain; charset=utf-8",
+		Error: uvim.QuotedMessageReferenceUnavailable,
+	}
+	if sourceMessageID != "" {
+		ref.SourceMessageID = sourceMessageID
+		ref.Metadata = map[string]string{"message_id": sourceMessageID}
+	}
+	return ref
+}
+
+func dingtalkElements(text string, refs []uvim.ResourceRef) []uvim.Element {
+	elements := make([]uvim.Element, 0, 1+len(refs))
+	if strings.TrimSpace(text) != "" {
+		elements = append(elements, uvim.Text(text))
+	}
+	for _, ref := range refs {
+		elements = append(elements, uvim.File(ref))
+	}
+	return elements
 }
 
 func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Request, error) {

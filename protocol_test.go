@@ -9,7 +9,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -25,12 +28,15 @@ func TestEventDedupeKeyUsesProviderConnectorAndMessage(t *testing.T) {
 
 func TestSanitizedResourceDropsProviderSecrets(t *testing.T) {
 	ref := ResourceRef{
-		Key:         "provider-key",
-		URL:         "https://download.example",
-		Secret:      "secret",
-		Private:     map[string]string{"token": "x"},
-		Metadata:    map[string]string{"message_id": "m1"},
-		InternalURL: "internal://r1",
+		Key:                  "provider-key",
+		URL:                  "https://download.example",
+		Secret:               "secret",
+		Private:              map[string]string{"token": "x"},
+		Metadata:             map[string]string{"message_id": "m1"},
+		InternalURL:          "internal://r1",
+		SourceMessageID:      "m1",
+		SourceBotAppID:       "app",
+		ReferencedMessageIDs: []string{"ancestor-1", "ancestor-2"},
 	}
 	got := ref.Sanitized()
 	if got.Key != "" || got.URL != "" || got.Secret != "" || got.Private != nil || got.Metadata != nil {
@@ -38,6 +44,19 @@ func TestSanitizedResourceDropsProviderSecrets(t *testing.T) {
 	}
 	if got.InternalURL != "internal://r1" {
 		t.Fatalf("InternalURL = %q", got.InternalURL)
+	}
+	if got.SourceMessageID != "m1" {
+		t.Fatalf("public reference lineage was removed: %+v", got)
+	}
+	if got.SourceBotAppID != "app" {
+		t.Fatalf("verified source bot ownership was removed: %+v", got)
+	}
+	if !slices.Equal(got.ReferencedMessageIDs, ref.ReferencedMessageIDs) {
+		t.Fatalf("referenced message IDs = %v, want %v", got.ReferencedMessageIDs, ref.ReferencedMessageIDs)
+	}
+	got.ReferencedMessageIDs[0] = "mutated"
+	if ref.ReferencedMessageIDs[0] == "mutated" {
+		t.Fatal("sanitized resource aliases referenced message IDs")
 	}
 }
 
@@ -77,6 +96,29 @@ func TestEventSanitizedFillsDirectChannelNameFromUser(t *testing.T) {
 	}
 }
 
+func TestEventBotMentionPrefixIsOptionalAndSurvivesSanitization(t *testing.T) {
+	for _, value := range []bool{true, false} {
+		t.Run(strconv.FormatBool(value), func(t *testing.T) {
+			event := Event{BotMentionPrefix: &value}
+			got := event.Sanitized().BotMentionPrefix
+			if got == nil || *got != value {
+				t.Fatalf("Sanitized().BotMentionPrefix = %v, want %v", got, value)
+			}
+			raw, err := json.Marshal(event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := `"bot_mention_prefix":` + strconv.FormatBool(value)
+			if !strings.Contains(string(raw), want) {
+				t.Fatalf("event JSON = %s, want %s", raw, want)
+			}
+		})
+	}
+	if raw, err := json.Marshal(Event{}); err != nil || strings.Contains(string(raw), "bot_mention_prefix") {
+		t.Fatalf("zero Event JSON = %s, err=%v", raw, err)
+	}
+}
+
 func TestEventDedupeKeyIncludesTypeAndStableMessageID(t *testing.T) {
 	create := Event{ID: "evt-1", Type: EventMessageCreate, Provider: "p", Connector: "c", Channel: Channel{ID: "room"}, Message: Message{ID: "m1"}}
 	retry := Event{ID: "evt-2", Type: EventMessageCreate, Provider: "p", Connector: "c", Channel: Channel{ID: "room"}, Message: Message{ID: "m1"}}
@@ -108,6 +150,156 @@ func TestEventLogDedupesAfterSuccessfulAppend(t *testing.T) {
 	}
 	if _, fresh, err := log.Append(nil, event); err != nil || fresh {
 		t.Fatalf("second append fresh=%v err=%v", fresh, err)
+	}
+}
+
+func TestConversationEventDigestUsesSanitizedEvent(t *testing.T) {
+	base := Event{
+		ID: "evt", Type: EventMessageCreate, Provider: "lark", Connector: "main",
+		Channel: Channel{ID: "oc", Type: ChannelGroup},
+		Message: Message{ID: "om", Text: "hello", Resources: []ResourceRef{{
+			ID: "r", Kind: ElementFile, InternalURL: "internal://r", Key: "private-key",
+			URL: "https://private.example/a", Secret: "secret", Private: map[string]string{"token": "secret"},
+		}}},
+	}
+	other := base
+	other.Message.Resources = append([]ResourceRef(nil), base.Message.Resources...)
+	other.Message.Resources[0].Key = "different-private-key"
+	other.Message.Resources[0].URL = "https://private.example/b"
+	other.Message.Resources[0].Secret = "other-secret"
+	firstDigest, err := ConversationEventDigest(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := ConversationEventDigest(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest == "" || firstDigest != secondDigest {
+		t.Fatalf("sanitized event digests differ first=%q second=%q", firstDigest, secondDigest)
+	}
+}
+
+func TestEventLogConversationWindowTriggerRequiresExactAddressedGroupMessage(t *testing.T) {
+	log, err := NewEventLog(filepath.Join(t.TempDir(), "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Date(2026, time.November, 6, 9, 0, 0, 0, time.UTC)
+	valid, fresh, err := log.Append(t.Context(), Event{
+		ID:        "evt-window",
+		Type:      EventMessageCreate,
+		Provider:  "lark",
+		Connector: "main",
+		Channel:   Channel{ID: "oc-group", Type: ChannelGroup},
+		User:      User{ID: "ou-user", Kind: UserKindUser},
+		Message:   Message{ID: "om-window", CreatedAt: createdAt},
+		Addressed: true,
+	})
+	if err != nil || !fresh {
+		t.Fatalf("append valid trigger fresh=%v err=%v", fresh, err)
+	}
+	if _, fresh, err = log.Append(t.Context(), Event{
+		ID:        "evt-direct",
+		Type:      EventMessageCreate,
+		Provider:  "lark",
+		Connector: "main",
+		Channel:   Channel{ID: "ou-direct", Type: ChannelDirect},
+		User:      User{ID: "ou-user", Kind: UserKindUser},
+		Message:   Message{ID: "om-direct", CreatedAt: createdAt},
+		Addressed: true,
+	}); err != nil || !fresh {
+		t.Fatalf("append direct event fresh=%v err=%v", fresh, err)
+	}
+	if _, fresh, err = log.Append(t.Context(), Event{
+		ID:        "evt-bot",
+		Type:      EventMessageCreate,
+		Provider:  "lark",
+		Connector: "main",
+		Channel:   Channel{ID: "oc-group", Type: ChannelGroup},
+		User:      User{ID: "ou-bot", Kind: "BOT"},
+		Message:   Message{ID: "om-bot", CreatedAt: createdAt},
+		Addressed: true,
+	}); err != nil || !fresh {
+		t.Fatalf("append bot event fresh=%v err=%v", fresh, err)
+	}
+
+	got, err := log.ConversationWindowTrigger(t.Context(), ConversationWindowRequest{
+		Provider:         "LARK",
+		Connector:        "MAIN",
+		TriggerEventID:   valid.ID,
+		TriggerMessageID: valid.Message.ID,
+	})
+	if err != nil || got.Sequence != valid.Sequence || got.Channel.ID != "oc-group" || !got.Message.CreatedAt.Equal(createdAt) {
+		t.Fatalf("trigger=%+v err=%v", got, err)
+	}
+	if _, err := log.ConversationWindowTrigger(t.Context(), ConversationWindowRequest{
+		Provider:         "lark",
+		Connector:        "main",
+		TriggerEventID:   "evt-direct",
+		TriggerMessageID: "om-direct",
+	}); err == nil {
+		t.Fatal("direct event was accepted as a conversation-window trigger")
+	}
+	if _, err := log.ConversationWindowTrigger(t.Context(), ConversationWindowRequest{
+		Provider:         "lark",
+		Connector:        "main",
+		TriggerEventID:   "evt-bot",
+		TriggerMessageID: "om-bot",
+	}); err == nil {
+		t.Fatal("bot event was accepted as a conversation-window trigger")
+	}
+
+	file, err := os.OpenFile(log.Path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRecord := func(event Event) {
+		t.Helper()
+		raw, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write(append(raw, '\n')); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeRecord(valid)
+	if err := file.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := log.ConversationWindowTrigger(t.Context(), ConversationWindowRequest{
+		Provider:         "lark",
+		Connector:        "main",
+		TriggerEventID:   valid.ID,
+		TriggerMessageID: valid.Message.ID,
+	}); err == nil {
+		t.Fatal("duplicate exact trigger was accepted")
+	}
+	for i := 0; i < conversationWindowLogRecords; i++ {
+		id := strconv.Itoa(i)
+		writeRecord(Event{
+			Sequence:  int64(i + 10),
+			ID:        "evt-tail-" + id,
+			Type:      EventMessageCreate,
+			Provider:  "other",
+			Connector: "main",
+			Channel:   Channel{ID: "oc-tail", Type: ChannelGroup},
+			User:      User{ID: "ou-user", Kind: UserKindUser},
+			Message:   Message{ID: "om-tail-" + id, CreatedAt: createdAt},
+			Addressed: true,
+		})
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := log.ConversationWindowTrigger(t.Context(), ConversationWindowRequest{
+		Provider:         "lark",
+		Connector:        "main",
+		TriggerEventID:   valid.ID,
+		TriggerMessageID: valid.Message.ID,
+	}); err == nil {
+		t.Fatal("exact trigger older than final log window was accepted")
 	}
 }
 
