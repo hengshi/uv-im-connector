@@ -62,12 +62,20 @@ func TestNewRejectsCardTemplateWithoutStreamCredentials(t *testing.T) {
 	if _, err := New(Config{CardTemplateID: "published-template"}); err == nil {
 		t.Fatal("New() accepted a card template without Stream credentials")
 	}
+	withoutTemplate, err := New(Config{ClientID: "app", ClientSecret: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutTemplateCaps := withoutTemplate.Capabilities()
+	if withoutTemplateCaps.InteractiveMessage || withoutTemplateCaps.InteractiveActionCallback || len(withoutTemplateCaps.InteractionSchemaVersions) != 0 || withoutTemplateCaps.InteractionCardInstanceVersion != "" || withoutTemplateCaps.CardMaxActions != 0 || len(withoutTemplateCaps.InteractionActorIdentityTypes) != 0 {
+		t.Fatalf("card-disabled capabilities = %+v", withoutTemplateCaps)
+	}
 	provider, err := New(Config{ClientID: "app", ClientSecret: "secret", CardTemplateID: "published-template"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	caps := provider.Capabilities()
-	if !caps.InteractiveMessage || !caps.InteractiveActionCallback || caps.InteractionCardInstanceVersion != uvim.InteractionCardInstanceVersionV1 || caps.CardMaxActions != uvim.InteractionMaxActions || caps.InteractionFreeText || len(caps.InteractionActorIdentityTypes) != 1 || caps.InteractionActorIdentityTypes[0] != "dingtalk.userid" {
+	if !caps.InteractiveMessage || !caps.InteractiveActionCallback || len(caps.InteractionSchemaVersions) != 1 || caps.InteractionSchemaVersions[0] != uvim.InteractionSchemaV1 || caps.InteractionCardInstanceVersion != uvim.InteractionCardInstanceVersionV1 || caps.CardMaxActions != uvim.InteractionMaxActions || caps.InteractionFreeText || len(caps.InteractionActorIdentityTypes) != 1 || caps.InteractionActorIdentityTypes[0] != "dingtalk.userid" {
 		t.Fatalf("card capabilities = %+v", caps)
 	}
 }
