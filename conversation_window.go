@@ -26,18 +26,18 @@ type ConversationWindowResult struct {
 	Version string `json:"version"`
 	// Source is native for an adapter history read or received for the Hub's
 	// bounded EventLog projection.
-	Source           string           `json:"source,omitempty"`
-	Status           string           `json:"status"`
-	Reason           string           `json:"reason,omitempty"`
+	Source string `json:"source,omitempty"`
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
 	// Received-only durable source proof. These are not authorization grants
 	// and remain empty for adapter-native reads.
-	EventLogGeneration      string           `json:"event_log_generation,omitempty"`
-	TriggerEntryDigest      string           `json:"trigger_entry_digest,omitempty"`
-	IndexLowerBoundSequence int64            `json:"index_lower_bound_sequence,omitempty"`
-	ConversationID   string           `json:"conversation_id,omitempty"`
-	ThreadID         string           `json:"thread_id,omitempty"`
-	TriggerMessageID string           `json:"trigger_message_id,omitempty"`
-	AnchorTime       time.Time        `json:"anchor_time,omitempty"`
+	EventLogGeneration      string    `json:"event_log_generation,omitempty"`
+	TriggerEntryDigest      string    `json:"trigger_entry_digest,omitempty"`
+	IndexLowerBoundSequence int64     `json:"index_lower_bound_sequence,omitempty"`
+	ConversationID          string    `json:"conversation_id,omitempty"`
+	ThreadID                string    `json:"thread_id,omitempty"`
+	TriggerMessageID        string    `json:"trigger_message_id,omitempty"`
+	AnchorTime              time.Time `json:"anchor_time,omitempty"`
 	// AnchorTimeSource is message_created_at or event_time when the trigger
 	// needed the immutable Event.Time fallback.
 	AnchorTimeSource string           `json:"anchor_time_source,omitempty"`
@@ -48,7 +48,7 @@ type ConversationWindowResult struct {
 }
 
 type ContextMessage struct {
-	MessageID    string            `json:"message_id"`
+	MessageID string `json:"message_id"`
 	// Sequence is EventLog ingress order for received context only. Native
 	// adapters leave it zero; callers must never use a native message ID as a
 	// time/order surrogate.

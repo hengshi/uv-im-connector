@@ -33,10 +33,9 @@ const (
 type InteractionActionKind string
 
 const (
-	InteractionAnswer   InteractionActionKind = "answer"
-	InteractionContinue InteractionActionKind = "continue"
-	InteractionCancel   InteractionActionKind = "cancel"
-	InteractionDetails  InteractionActionKind = "details"
+	InteractionAnswer  InteractionActionKind = "answer"
+	InteractionCancel  InteractionActionKind = "cancel"
+	InteractionDetails InteractionActionKind = "details"
 )
 
 type CardFact struct {
@@ -101,7 +100,7 @@ func interactionLabel(value string, limit int) bool {
 }
 
 func validInteractionKind(kind InteractionActionKind) bool {
-	return kind == InteractionAnswer || kind == InteractionContinue || kind == InteractionCancel || kind == InteractionDetails
+	return kind == InteractionAnswer || kind == InteractionCancel || kind == InteractionDetails
 }
 
 func (card InteractionCard) Validate() error {

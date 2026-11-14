@@ -22,6 +22,8 @@
 
 协议上限为卡片16 KiB、最多8个操作、回调文字8 KiB；实际渠道更低时按其预算。`card-instance.v1` 通过 `interaction_card_instance_version`、`card_max_actions` 和 `interaction_free_text` 声明实例确认与呈现范围；未知版本或不支持整题时用完整文字。文本按纯文本/转义 Markdown 呈现，不接受调用方传入厂商卡片 JSON。操作 token 是调用方已有的私有不透明 handle；不得在 token 中放命令、凭据或用户正文。
 
+操作种类为 `answer`（提交选项或补充文字）、`cancel`（请求取消当前工作）和 `details`（请求查看当前状态）。按钮标签不定义操作语义；其他种类在发送或回调受理前拒绝。具体效果仍由调用方的当前业务权限决定。
+
 ## 回调持久受理
 
 回调进入现有受认证事件流，类型为 `interaction.action`，结构化内容在 `Event.interaction`；普通 `Message.text/elements/resources` 为空。每次原生回调用其独立 event ID 去重，不能用同一张卡片的 message ID 合并不同点击。actor 使用原生 `operator.open_id`，保留 provider、connector、chat、message、card、presentation revision 和应用证据摘要；厂商更新凭据不写入事件。
