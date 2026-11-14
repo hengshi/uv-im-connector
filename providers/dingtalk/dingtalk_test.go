@@ -272,7 +272,7 @@ func dingtalkInteractionCard() uvim.InteractionCard {
 		Facts:         []uvim.CardFact{{Label: "Task", Value: "T-1"}},
 		Question:      &uvim.CardQuestion{ID: "question-1", Prompt: "Which option?", Help: "Choose one action."},
 		Actions: []uvim.InteractionAction{{
-			ID: "continue", Label: "Continue", Kind: uvim.InteractionContinue, Token: "opaque-handle",
+			ID: "answer", Label: "Confirm", Kind: uvim.InteractionAnswer, Token: "opaque-handle",
 		}},
 	}
 }
@@ -313,7 +313,7 @@ func TestInteractionCardUsesPublishedTemplateOnlyForNativeGroup(t *testing.T) {
 			}
 			data := uvim.MapStringAny(body["cardData"])
 			params := uvim.MapStringAny(data["cardParamMap"])
-			if params["title"] != "Choose a task" || params["action_1_id"] != "continue" || uvim.StringValue(params["action_1_callback"]) == "" {
+			if params["title"] != "Choose a task" || params["action_1_id"] != "answer" || uvim.StringValue(params["action_1_callback"]) == "" {
 				t.Errorf("card params = %+v", params)
 			}
 			if delivery := uvim.MapStringAny(body["imGroupOpenDeliverModel"]); delivery["robotCode"] != "app" {
@@ -399,7 +399,7 @@ func TestStreamCardCallbackUsesNativeCardAndGroupScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	content, err := json.Marshal(map[string]any{"cardPrivateData": map[string]any{
-		"actionIds": []string{"continue"},
+		"actionIds": []string{"answer"},
 		"params":    map[string]string{dingtalkCardCallbackParam: encoded},
 	}})
 	if err != nil {

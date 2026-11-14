@@ -810,7 +810,7 @@ func (r *conversationMaterialRegistry) storeSearchCursor(authToken string, curso
 			return "", err
 		}
 	}
-	if !validConversationSearchCursorRecord(record, id) || conversationSearchCursorRecordMetadataBytes(record) > conversationSearchMetadataMax {
+	if !validConversationSearchCursorRecord(record, id) || conversationSearchCursorMetadataBytes(record.conversationSearchCursor)+len(record.PageTokenCipher) > conversationSearchMetadataMax {
 		return "", errors.New("conversation search cursor metadata exceeds bound")
 	}
 	r.mu.Lock()
@@ -884,11 +884,7 @@ func validConversationSearchCursorRecord(record conversationSearchCursorRecord, 
 	if record.Source == "received" {
 		return record.PageTokenCipher == "" && validConversationSearchCursor(cursor)
 	}
-	return record.PageTokenCipher != "" && validConversationSearchCursorShape(cursor)
-}
-
-func validConversationSearchCursorShape(cursor conversationSearchCursor) bool {
-	return validConversationSearchCursorCore(cursor) && cursor.Source != "received" && len(cursor.TokenHashes) > 0
+	return record.PageTokenCipher != "" && validConversationSearchCursorCore(cursor) && cursor.Source != "received" && len(cursor.TokenHashes) > 0
 }
 
 func validConversationSearchCursorCore(cursor conversationSearchCursor) bool {
@@ -913,10 +909,6 @@ func conversationSearchCursorFromRecord(authToken string, record conversationSea
 	}
 	cursor.PageToken = pageToken
 	return cursor, nil
-}
-
-func conversationSearchCursorRecordMetadataBytes(record conversationSearchCursorRecord) int {
-	return conversationSearchCursorMetadataBytes(record.conversationSearchCursor) + len(record.PageTokenCipher)
 }
 
 func (r *conversationMaterialRegistry) searchCursorCountLocked(connector string) int {

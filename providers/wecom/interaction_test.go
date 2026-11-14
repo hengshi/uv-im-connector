@@ -22,7 +22,7 @@ func wecomInteractionTestCard() uvim.InteractionCard {
 		Question:      &uvim.CardQuestion{ID: "scope", Prompt: "请选择部署范围", Help: "确认后将继续执行"},
 		Actions: []uvim.InteractionAction{
 			{ID: "staging", Label: "仅预发", Kind: uvim.InteractionAnswer, Token: strings.Repeat("a", 64)},
-			{ID: "continue", Label: "继续", Kind: uvim.InteractionContinue, Token: strings.Repeat("b", 64)},
+			{ID: "production", Label: "生产", Kind: uvim.InteractionAnswer, Token: strings.Repeat("b", 64)},
 		},
 	}
 }
@@ -65,7 +65,7 @@ func TestWeComSendInteractionUsesNativeTemplateCardWithoutMessageLocator(t *test
 				"sub_title_text": "任务 #42 正在等待确认\n环境: staging\n请选择部署范围\n确认后将继续执行",
 				"button_list": []any{
 					map[string]any{"text": "仅预发", "key": key},
-					map[string]any{"text": "继续", "key": mustWeComInteractionKey(t, card, card.Actions[1])},
+					map[string]any{"text": "生产", "key": mustWeComInteractionKey(t, card, card.Actions[1])},
 				},
 			},
 		}

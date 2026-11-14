@@ -95,6 +95,7 @@ func TestInteractionIdentityProfiles(t *testing.T) {
 		valid  bool
 	}{
 		{"verified card click", func(*uvim.Event) {}, true},
+		{"unsupported continue action", func(e *uvim.Event) { e.Interaction.Kind = uvim.InteractionActionKind("continue") }, false},
 		{"legacy profile cannot imply card", func(e *uvim.Event) { e.Interaction.SchemaVersion = uvim.InteractionSchemaV1 }, false},
 		{"callback id is not original message id", func(e *uvim.Event) { e.Interaction.MessageID = e.ID; e.Referrer.MessageID = e.ID }, false},
 		{"wrong native card", func(e *uvim.Event) { e.Interaction.NativeCardID = "other" }, false},

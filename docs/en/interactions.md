@@ -16,6 +16,8 @@ In addition to existing send/read permissions and `im.message.receive_v1`, subsc
 
 Limits are 16 KiB per card, eight actions, 8 KiB submitted text and at least 500 ms between updates of one message. The renderer escapes Markdown/plain text and does not accept arbitrary vendor card JSON. Action tokens must be private opaque handles, without commands, credentials or user text.
 
+Action kinds are `answer` (submit an option or text), `cancel` (request cancellation of the current work), and `details` (request its current status). A button label does not define its semantics. Other kinds are rejected before sending or accepting a callback. The caller still authorizes the actual business effect.
+
 ## Durable callback ingress
 
 Callbacks enter the existing authenticated event stream as `interaction.action`, with typed `Event.interaction` and empty ordinary message bodies. Each native callback event ID is deduplicated independently; distinct clicks on one card are not collapsed by message ID. The actor comes from `operator.open_id`; provider, connector, chat, message, card, presentation revision and app proof digest are preserved. Vendor update credentials are discarded.
