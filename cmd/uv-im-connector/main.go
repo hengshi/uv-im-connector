@@ -69,7 +69,25 @@ func run(addr, stateDir, providerList string) error {
 	}
 	resources := &uvim.ResourceStore{Dir: filepath.Join(stateDir, "resources")}
 	hub := server.NewHub(uvim.NewProviderRegistry(providers...), eventLog, resources)
-	hub.SetAuthToken(os.Getenv("UV_IM_AUTH_TOKEN"))
+	clientRegistryPath := strings.TrimSpace(os.Getenv("UV_IM_CLIENTS_FILE"))
+	if clientRegistryPath != "" {
+		if strings.TrimSpace(os.Getenv("UV_IM_AUTH_TOKEN")) != "" {
+			return errors.New("UV_IM_CLIENTS_FILE and UV_IM_AUTH_TOKEN cannot be used together")
+		}
+		clientRegistryPath, err = filepath.Abs(clientRegistryPath)
+		if err != nil {
+			return err
+		}
+		clients, err := server.LoadClientRegistry(clientRegistryPath)
+		if err != nil {
+			return fmt.Errorf("UV_IM_CLIENTS_FILE: %w", err)
+		}
+		if err := hub.EnableScopedClients(clients, filepath.Join(stateDir, "resource-scopes.json")); err != nil {
+			return err
+		}
+	} else {
+		hub.SetAuthToken(os.Getenv("UV_IM_AUTH_TOKEN"))
+	}
 	identityPath, err := filepath.Abs(filepath.Join(stateDir, "identity-links.json"))
 	if err != nil {
 		return err

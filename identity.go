@@ -31,6 +31,11 @@ type IdentityLink struct {
 	Proof      string           `json:"proof"`
 	VerifiedAt time.Time        `json:"verified_at"`
 	Revoked    bool             `json:"revoked,omitempty"`
+	// ClientID is empty for released single-client records. Scoped connector
+	// state records the authenticated caller that established the native target.
+	// It is durable server-side authorization evidence, never public protocol
+	// data. The state-store wrapper owns its on-disk representation.
+	ClientID string `json:"-"`
 }
 
 type IdentityLinkRequest struct {

@@ -41,6 +41,13 @@ func NewEventLog(path string) (*EventLog, error) {
 }
 
 func (l *EventLog) Append(ctx context.Context, event Event) (Event, bool, error) {
+	return l.AppendForAudience(ctx, event, "")
+}
+
+// AppendForAudience persists one normalized event and its private caller
+// audience. The public Event JSON is unchanged: client_id is an additive log
+// field which old Event readers ignore, and is never exposed by HTTP or WS.
+func (l *EventLog) AppendForAudience(ctx context.Context, event Event, audience string) (Event, bool, error) {
 	if l == nil {
 		return event, true, nil
 	}
@@ -61,6 +68,7 @@ func (l *EventLog) Append(ctx context.Context, event Event) (Event, bool, error)
 	if event.Time.IsZero() {
 		event.Time = time.Now().UTC()
 	}
+	event.Audience = audience
 	event.Sequence = l.nextSeq
 	l.nextSeq++
 	if l.Path == "" {
@@ -77,7 +85,12 @@ func (l *EventLog) Append(ctx context.Context, event Event) (Event, bool, error)
 		return event, false, err
 	}
 	defer file.Close()
-	raw, err := json.Marshal(event.Sanitized())
+	persisted := event.Sanitized()
+	persisted.Audience = audience
+	raw, err := json.Marshal(struct {
+		Event
+		Audience string `json:"client_id,omitempty"`
+	}{Event: persisted, Audience: audience})
 	if err != nil {
 		return event, false, err
 	}
@@ -93,6 +106,22 @@ func (l *EventLog) Append(ctx context.Context, event Event) (Event, bool, error)
 	default:
 		return event, true, nil
 	}
+}
+
+// ReadForAudience returns only events durably assigned to audience. Empty
+// legacy audience rows are deliberately not exposed to a scoped caller.
+func (l *EventLog) ReadForAudience(ctx context.Context, audience string, sequence int64) ([]Event, error) {
+	events, err := l.ReadAfter(ctx, sequence)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Event, 0, len(events))
+	for _, event := range events {
+		if event.Audience == audience {
+			out = append(out, event)
+		}
+	}
+	return out, nil
 }
 
 func (l *EventLog) ReadAfter(ctx context.Context, sequence int64) ([]Event, error) {
@@ -119,10 +148,15 @@ func (l *EventLog) ReadAfter(ctx context.Context, sequence int64) ([]Event, erro
 		if len(raw) == 0 && errors.Is(readErr, io.EOF) {
 			return out, nil
 		}
-		var event Event
-		if err := json.Unmarshal(raw, &event); err != nil {
+		var persisted struct {
+			Event
+			Audience string `json:"client_id,omitempty"`
+		}
+		if err := json.Unmarshal(raw, &persisted); err != nil {
 			return nil, err
 		}
+		event := persisted.Event
+		event.Audience = persisted.Audience
 		if event.Sequence > sequence {
 			out = append(out, event)
 		}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"syscall"
@@ -108,6 +109,36 @@ func TestEventLogDedupesAfterSuccessfulAppend(t *testing.T) {
 	}
 	if _, fresh, err := log.Append(nil, event); err != nil || fresh {
 		t.Fatalf("second append fresh=%v err=%v", fresh, err)
+	}
+}
+
+func TestEventLogPersistsPrivateAudienceWithoutProtocolLeak(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	log, err := NewEventLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, fresh, err := log.AppendForAudience(context.Background(), Event{ID: "a", Provider: "memory", Connector: "main", Channel: Channel{ID: "a"}, Message: Message{ID: "a"}}, "client-a"); err != nil || !fresh {
+		t.Fatalf("append a fresh=%v err=%v", fresh, err)
+	}
+	if _, fresh, err := log.AppendForAudience(context.Background(), Event{ID: "b", Provider: "memory", Connector: "main", Channel: Channel{ID: "b"}, Message: Message{ID: "b"}}, "client-b"); err != nil || !fresh {
+		t.Fatalf("append b fresh=%v err=%v", fresh, err)
+	}
+	visible, err := log.ReadForAudience(context.Background(), "client-a", 0)
+	if err != nil || len(visible) != 1 || visible[0].ID != "a" || visible[0].Audience != "client-a" {
+		t.Fatalf("scoped read = %+v, %v", visible, err)
+	}
+	public, err := json.Marshal(visible[0].Sanitized())
+	if err != nil || strings.Contains(string(public), "client-a") {
+		t.Fatalf("public event leaked audience: %s, %v", public, err)
+	}
+	reopened, err := NewEventLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible, err = reopened.ReadForAudience(context.Background(), "client-b", 0)
+	if err != nil || len(visible) != 1 || visible[0].ID != "b" {
+		t.Fatalf("reopened scoped read = %+v, %v", visible, err)
 	}
 }
 

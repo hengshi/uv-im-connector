@@ -46,6 +46,10 @@ resp, err := c.ResolveInternalURL(ctx, event.Message.Resources[0].InternalURL)
 
 调用方应该在启动长耗时任务前，把允许的文件复制到调用方自己的存储。Connector 的 resource store 是基础设施状态，不是调用方应用的 artifact store。
 
+## 共享调用方所有权
+
+配置 `UV_IM_CLIENTS_FILE` 后，每个已存入的入站资源都会按源 event route 持久地归属一个调用方，每次上传也归属其已认证调用方。`GET /v1/internal/<id>`、`POST /v1/resource.download` 和携带该 `ResourceRef` 的出站发送都要求同一 owner。因此 `internal://` 字符串不是可转交的 bearer capability。一个资源可以再次出现在原 owner 的多个 event 中，但永不重新分配给其他调用方；旧的未分配历史资源在此模式下不可访问。
+
 ## 显式下载 Provider 资源
 
 可信调用方可以请求 provider adapter 把 provider-private resource 解析为内部资源：
@@ -55,6 +59,8 @@ POST /v1/resource.download
 ```
 
 请求使用 `ResourceDownloadRequest`，返回 sanitized `ResourceRef`。
+
+共享调用方模式只允许请求方解析自己已拥有、且已存为内部资源的 resource；该 endpoint 不会把其他调用方的 provider-private reference 变成资源授权。
 
 ## 上传本地字节
 

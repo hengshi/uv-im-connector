@@ -146,8 +146,11 @@ The standalone binary reads these top-level settings:
 | `UV_IM_STATE_DIR` | `.uv-im-connector` | Event log and resource storage directory. |
 | `UV_IM_PROVIDERS` | auto-detected | Comma-separated provider list. |
 | `UV_IM_AUTH_TOKEN` | empty | Optional bearer token for all public HTTP/WS endpoints except `/health`. |
+| `UV_IM_CLIENTS_FILE` | empty | Absolute path to the startup-only shared-caller manifest. Mutually exclusive with `UV_IM_AUTH_TOKEN`. |
 
 Production deployments should set `UV_IM_AUTH_TOKEN` and keep the listener on a private interface or behind an authenticated reverse proxy. When `UV_IM_AUTH_TOKEN` is empty, public HTTP/WS endpoints are unauthenticated.
+
+For one connector shared by independent caller applications, use `UV_IM_CLIENTS_FILE` instead of the global token. Each caller gets its own bearer token; the bearer maps to its manifest `id` and no client-ID header or query parameter is accepted. The manifest must be a private regular file (mode `0600` or stricter) readable by the connector process. It gives that ID exact `provider` + `connector` + inbound `conversation_id` routes and optional typed proactive targets. Its events, identity links, uploaded/inbound resources, metadata and send/update authority are isolated from every other caller. See [Configuration](docs/en/configuration.md#independent-caller-isolation) and [Application Integration](docs/en/guide/application-integration.md#shared-connector-callers).
 
 Supported standalone provider IDs:
 
@@ -250,6 +253,8 @@ When `UV_IM_AUTH_TOKEN` is configured, pass it as:
 ```text
 Authorization: Bearer <token>
 ```
+
+The shared-caller mode uses the same header, but only per-caller manifest tokens; it rejects the legacy `access_token` query fallback. A caller sees only its routes and resources. Its `sequence` cursor remains a cursor into the service-wide log, so gaps caused by other callers are normal.
 
 Provider webhook ingress is intentionally separate from public API auth. Webhook-capable providers verify their own provider-level secret and reject webhook requests when the secret is not configured.
 
@@ -394,6 +399,8 @@ Provider-private download URLs, keys, secrets, encrypted payload fields, and loo
 ```text
 GET /v1/internal/<id>
 ```
+
+With `UV_IM_CLIENTS_FILE`, an internal resource and `POST /v1/resource.download` are available only to the caller that first received or uploaded that resource. Passing an `internal_url` to another caller never grants access or outbound attachment authority.
 
 The Go client also exposes `ResolveInternalURL`.
 
