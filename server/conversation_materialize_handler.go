@@ -107,7 +107,7 @@ func (h *Hub) handleConversationMaterialize(w http.ResponseWriter, req *http.Req
 		writeJSON(w, http.StatusOK, unavailableConversationMaterialize("trigger_unavailable"))
 		return
 	}
-	completed, err := h.materialResources.complete(h.authToken, record.Handle, downloaded)
+	completed, err := h.materialResources.complete(record.Handle, downloaded)
 	if err != nil {
 		writeJSON(w, http.StatusOK, unavailableConversationMaterialize("handle_not_recoverable"))
 		return
@@ -122,7 +122,6 @@ func trimConversationMaterializeRequest(input *uvim.ConversationMaterializeReque
 	input.TriggerMessageID = strings.TrimSpace(input.TriggerMessageID)
 	input.ExpectedEventDigest = strings.TrimSpace(input.ExpectedEventDigest)
 	input.AudienceDigest = strings.TrimSpace(input.AudienceDigest)
-	input.SourceEpoch = strings.TrimSpace(input.SourceEpoch)
 	input.MaterializeHandle = strings.TrimSpace(input.MaterializeHandle)
 }
 

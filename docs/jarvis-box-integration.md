@@ -194,9 +194,9 @@ When a search row has media, a trusted caller may use the additive
 `conversation_materialize_version=v1` capability. The row contains an opaque
 `materialize_handle`, per-resource `source_epoch`, readable descriptor and
 provenance. `POST /v1/conversation.materialize` repeats the same trigger/audience
-proof and accepts no source-message override, URL, key, path or native scope.
-The handle already binds its source; `source_epoch` can be omitted, while an
-explicit value must match. The connector caches complete, verified files only.
+proof with that opaque handle and accepts no source-message override, URL, key,
+path, native scope or `source_epoch`. The handle already binds its source; the
+epoch remains descriptor provenance. The connector caches complete, verified files only.
 Interrupted reads can retry after scope revalidation instead of becoming a
 permanent unknown attempt. Replays of completed handles preserve the original
 bytes and source, and different handles do not share a private-resource cache.

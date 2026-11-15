@@ -1868,7 +1868,7 @@ func TestHubConversationSearchBindsTriggerCursorAndAudience(t *testing.T) {
 		t.Fatalf("unknown-field status=%d calls=%d", unknownResponse.StatusCode, provider.conversationSearchCalls)
 	}
 	result, err = c.ConversationSearch(t.Context(), request)
-	if err != nil || result.Status != "available" || result.EventDigest != digest || result.Provider != "lark" || result.ConversationID != "oc-group" || len(result.Items) != 1 || result.Items[0].MessageID != "om-match" || result.NextCursor == "" || !result.HasMore || result.PageCount != 1 || result.CandidateCount != 2 || result.MatchCount != 1 || result.ReturnedCount != 1 || provider.conversationSearchCalls != 1 {
+	if err != nil || result.Status != "available" || result.EventDigest != digest || result.Provider != "lark" || result.ConversationID != "oc-group" || len(result.Items) != 1 || result.Items[0].MessageID != "om-match" || result.NextCursor == "" || !result.HasMore || result.PageCount != 1 || result.CandidateCount != 2 || provider.conversationSearchCalls != 1 {
 		t.Fatalf("first search result=%+v calls=%d err=%v", result, provider.conversationSearchCalls, err)
 	}
 	encoded, err := json.Marshal(result)
@@ -1939,7 +1939,7 @@ func TestHubConversationSearchRetriesReadsAndCachesCompletedResource(t *testing.
 	if strings.Contains(string(encoded), "private-resource-key") || strings.Contains(string(encoded), "internal://") {
 		t.Fatalf("search leaked private resource: %s", encoded)
 	}
-	request := uvim.ConversationMaterializeRequest{Provider: search.Provider, Connector: search.Connector, TriggerEventID: search.TriggerEventID, TriggerMessageID: search.TriggerMessageID, ExpectedEventDigest: search.ExpectedEventDigest, AudienceDigest: search.AudienceDigest, SourceEpoch: resource.SourceEpoch, MaterializeHandle: resource.MaterializeHandle}
+	request := uvim.ConversationMaterializeRequest{Provider: search.Provider, Connector: search.Connector, TriggerEventID: search.TriggerEventID, TriggerMessageID: search.TriggerMessageID, ExpectedEventDigest: search.ExpectedEventDigest, AudienceDigest: search.AudienceDigest, MaterializeHandle: resource.MaterializeHandle}
 	provider.conversationMaterializeErr = errors.New("interrupted read")
 	failed, err := c.ConversationMaterialize(t.Context(), request)
 	if err != nil || failed.State == "ready" || provider.conversationMaterializeCalls != 1 {
@@ -1955,16 +1955,9 @@ func TestHubConversationSearchRetriesReadsAndCachesCompletedResource(t *testing.
 	if err != nil || again.State != "ready" || again.Resource.InternalURL != materialized.Resource.InternalURL || provider.conversationMaterializeCalls != 2 {
 		t.Fatalf("second materialize=%+v calls=%d err=%v", again, provider.conversationMaterializeCalls, err)
 	}
-	wrongEpoch := request
-	wrongEpoch.SourceEpoch = "wrong"
-	blocked, err := c.ConversationMaterialize(t.Context(), wrongEpoch)
-	if err != nil || blocked.State != "unavailable" || provider.conversationMaterializeCalls != 2 {
-		t.Fatalf("wrong epoch=%+v calls=%d err=%v", blocked, provider.conversationMaterializeCalls, err)
-	}
-	request.SourceEpoch = ""
 	withoutEpoch, err := c.ConversationMaterialize(t.Context(), request)
 	if err != nil || withoutEpoch.State != "ready" || provider.conversationMaterializeCalls != 2 {
-		t.Fatalf("opaque handle alone=%+v calls=%d err=%v", withoutEpoch, provider.conversationMaterializeCalls, err)
+		t.Fatalf("opaque handle=%+v calls=%d err=%v", withoutEpoch, provider.conversationMaterializeCalls, err)
 	}
 }
 
@@ -1980,7 +1973,7 @@ func TestConversationResourceHandleSurvivesRestartWithoutPrivateReferenceLeak(t 
 		t.Fatal(err)
 	}
 	descriptor := result.Items[0].Resources[0]
-	request := uvim.ConversationMaterializeRequest{Provider: input.Provider, Connector: input.Connector, TriggerEventID: input.TriggerEventID, TriggerMessageID: input.TriggerMessageID, ExpectedEventDigest: input.ExpectedEventDigest, AudienceDigest: input.AudienceDigest, SourceEpoch: descriptor.SourceEpoch, MaterializeHandle: descriptor.MaterializeHandle}
+	request := uvim.ConversationMaterializeRequest{Provider: input.Provider, Connector: input.Connector, TriggerEventID: input.TriggerEventID, TriggerMessageID: input.TriggerMessageID, ExpectedEventDigest: input.ExpectedEventDigest, AudienceDigest: input.AudienceDigest, MaterializeHandle: descriptor.MaterializeHandle}
 	record, private, err := registry.resolve("token", request)
 	if err != nil || record.Resource.InternalURL != "" || private.Key != "restart-private-key" {
 		t.Fatalf("resolve record=%+v private=%+v err=%v", record, private.Sanitized(), err)
@@ -2006,7 +1999,7 @@ func TestConversationResourceHandleSurvivesRestartWithoutPrivateReferenceLeak(t 
 	}
 	restarted.path = filepath.Join(blockedParent, "records.json")
 	ready := uvim.ResourceRef{ID: "complete", InternalURL: "internal://complete", SHA256: strings.Repeat("a", 64), SizeBytes: 4}
-	if _, err := restarted.complete("token", request.MaterializeHandle, ready); err == nil {
+	if _, err := restarted.complete(request.MaterializeHandle, ready); err == nil {
 		t.Fatal("completion unexpectedly persisted")
 	}
 	restarted.path = path
@@ -2014,7 +2007,7 @@ func TestConversationResourceHandleSurvivesRestartWithoutPrivateReferenceLeak(t 
 	if err != nil || stillUnread.Resource.InternalURL != "" {
 		t.Fatalf("failed persistence exposed completed bytes: %+v %v", stillUnread, err)
 	}
-	if _, err := restarted.complete("token", request.MaterializeHandle, ready); err != nil {
+	if _, err := restarted.complete(request.MaterializeHandle, ready); err != nil {
 		t.Fatal(err)
 	}
 	committed, _, err := newConversationMaterialRegistry(log).resolve("token", request)
@@ -2079,7 +2072,7 @@ func TestHubReceivedContextIsLazyGenerationBoundAndMaterializesOnce(t *testing.T
 	c.Token = "token"
 	search := uvim.ConversationSearchRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt-trigger", TriggerMessageID: "om-trigger", ExpectedEventDigest: digest, AudienceDigest: "audience", Source: "received", Limit: 1}
 	result, err := c.ConversationSearch(t.Context(), search)
-	if err != nil || result.Source != "received" || result.EventLogGeneration == "" || result.TriggerEntryDigest != digest || result.IndexLowerBoundSequence == 0 || result.PageCount != 1 || result.CandidateCount != 1 || result.MatchCount != 1 || result.ReturnedCount != 1 || result.EffectiveTo != nil || len(result.Items) != 1 || len(result.Items[0].Resources) != 1 {
+	if err != nil || result.Source != "received" || result.EventLogGeneration == "" || result.TriggerEntryDigest != digest || result.IndexLowerBoundSequence == 0 || result.PageCount != 1 || result.CandidateCount != 1 || result.EffectiveTo != nil || len(result.Items) != 1 || len(result.Items[0].Resources) != 1 {
 		t.Fatalf("received search=%+v err=%v", result, err)
 	}
 	resource := result.Items[0].Resources[0]
@@ -2093,7 +2086,7 @@ func TestHubReceivedContextIsLazyGenerationBoundAndMaterializesOnce(t *testing.T
 	if strings.Contains(string(encoded), "received-private-key") || strings.Contains(string(encoded), "internal://") {
 		t.Fatalf("received result leaked private resource: %s", encoded)
 	}
-	request := uvim.ConversationMaterializeRequest{Provider: search.Provider, Connector: search.Connector, TriggerEventID: search.TriggerEventID, TriggerMessageID: search.TriggerMessageID, ExpectedEventDigest: search.ExpectedEventDigest, AudienceDigest: search.AudienceDigest, SourceEpoch: resource.SourceEpoch, MaterializeHandle: resource.MaterializeHandle}
+	request := uvim.ConversationMaterializeRequest{Provider: search.Provider, Connector: search.Connector, TriggerEventID: search.TriggerEventID, TriggerMessageID: search.TriggerMessageID, ExpectedEventDigest: search.ExpectedEventDigest, AudienceDigest: search.AudienceDigest, MaterializeHandle: resource.MaterializeHandle}
 	materialized, err := c.ConversationMaterialize(t.Context(), request)
 	if err != nil || materialized.State != "ready" || materialized.Resource.InternalURL == "" || provider.downloadCalls != 1 {
 		t.Fatalf("received materialize=%+v downloads=%d err=%v", materialized, provider.downloadCalls, err)
@@ -2154,11 +2147,11 @@ func TestHubReceivedConversationSearchUsesSequenceNotClockAndStopsAtFiftyCandida
 	limited := base
 	limited.Filter = &uvim.ConversationSearchFilter{Keywords: []string{"needle"}}
 	result, err := c.ConversationSearch(t.Context(), limited)
-	if err != nil || result.Status != "scan_limited" || result.Reason != "search_scan_limited" || result.PageCount != conversationSearchMaxPages || result.CandidateCount != conversationSearchMaxPages*conversationSearchMaxLimit || result.MatchCount != 0 || result.ReturnedCount != 0 || !result.HasMore || result.NextCursor == "" || result.EffectiveTo != nil {
+	if err != nil || result.Status != "scan_limited" || result.Reason != "search_scan_limited" || result.PageCount != conversationSearchMaxPages || result.CandidateCount != conversationSearchMaxPages*conversationSearchMaxLimit || !result.HasMore || result.NextCursor == "" || result.EffectiveTo != nil {
 		t.Fatalf("bounded received search=%+v err=%v", result, err)
 	}
 	result, err = c.ConversationSearch(t.Context(), base)
-	if err != nil || result.Status != "available" || result.PageCount != 1 || result.CandidateCount != 10 || result.MatchCount != 10 || result.ReturnedCount != 10 || result.EffectiveTo != nil || len(result.Items) != 10 {
+	if err != nil || result.Status != "available" || result.PageCount != 1 || result.CandidateCount != 10 || result.EffectiveTo != nil || len(result.Items) != 10 {
 		t.Fatalf("sequence received search=%+v err=%v", result, err)
 	}
 	for _, item := range result.Items {
@@ -2351,7 +2344,7 @@ func TestHubReceivedMaterialHandlesKeepProvenanceAndCompletedBytesSeparate(t *te
 	}
 	materialize := func(descriptor uvim.ContextResource) uvim.ConversationMaterializeResult {
 		t.Helper()
-		out, callErr := c.ConversationMaterialize(t.Context(), uvim.ConversationMaterializeRequest{Provider: search.Provider, Connector: search.Connector, TriggerEventID: search.TriggerEventID, TriggerMessageID: search.TriggerMessageID, ExpectedEventDigest: search.ExpectedEventDigest, AudienceDigest: search.AudienceDigest, SourceEpoch: descriptor.SourceEpoch, MaterializeHandle: descriptor.MaterializeHandle})
+		out, callErr := c.ConversationMaterialize(t.Context(), uvim.ConversationMaterializeRequest{Provider: search.Provider, Connector: search.Connector, TriggerEventID: search.TriggerEventID, TriggerMessageID: search.TriggerMessageID, ExpectedEventDigest: search.ExpectedEventDigest, AudienceDigest: search.AudienceDigest, MaterializeHandle: descriptor.MaterializeHandle})
 		if callErr != nil {
 			t.Fatal(callErr)
 		}
@@ -2422,7 +2415,7 @@ func TestHubReceivedConflictingLazyIDsKeepPrivateBytesSeparate(t *testing.T) {
 	}
 	materialize := func(descriptor uvim.ContextResource) uvim.ConversationMaterializeResult {
 		t.Helper()
-		out, callErr := c.ConversationMaterialize(t.Context(), uvim.ConversationMaterializeRequest{Provider: search.Provider, Connector: search.Connector, TriggerEventID: search.TriggerEventID, TriggerMessageID: search.TriggerMessageID, ExpectedEventDigest: search.ExpectedEventDigest, AudienceDigest: search.AudienceDigest, SourceEpoch: descriptor.SourceEpoch, MaterializeHandle: descriptor.MaterializeHandle})
+		out, callErr := c.ConversationMaterialize(t.Context(), uvim.ConversationMaterializeRequest{Provider: search.Provider, Connector: search.Connector, TriggerEventID: search.TriggerEventID, TriggerMessageID: search.TriggerMessageID, ExpectedEventDigest: search.ExpectedEventDigest, AudienceDigest: search.AudienceDigest, MaterializeHandle: descriptor.MaterializeHandle})
 		if callErr != nil {
 			t.Fatal(callErr)
 		}
@@ -2483,7 +2476,7 @@ func TestHubConversationSearchStopsAtFivePagesAndRejectsContinuationCycles(t *te
 	request.Limit = 1
 	request.Filter = &uvim.ConversationSearchFilter{Keywords: []string{"needle"}}
 	result, err := c.ConversationSearch(t.Context(), request)
-	if err != nil || result.Status != "scan_limited" || result.Reason != "search_scan_limited" || !result.HasMore || result.NextCursor == "" || result.PageCount != conversationSearchMaxPages || result.CandidateCount != conversationSearchMaxPages || result.MatchCount != 0 || provider.conversationSearchCalls != conversationSearchMaxPages {
+	if err != nil || result.Status != "scan_limited" || result.Reason != "search_scan_limited" || !result.HasMore || result.NextCursor == "" || result.PageCount != conversationSearchMaxPages || result.CandidateCount != conversationSearchMaxPages || provider.conversationSearchCalls != conversationSearchMaxPages {
 		t.Fatalf("five-page result=%+v calls=%d err=%v", result, provider.conversationSearchCalls, err)
 	}
 	if strings.Contains(result.NextCursor, "native-page") {

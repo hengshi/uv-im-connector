@@ -15,8 +15,6 @@ var ErrConversationResourceUnavailable = errors.New("conversation resource unava
 // ConversationMaterializeRequest is a Hub-private request. The identity fields
 // must be copied from the retained search trigger; callers never choose a
 // conversation, thread, source message, provider URL, or provider key.
-// SourceEpoch may be omitted: the opaque handle already binds its retained
-// source. If an older caller supplies it, it must match that record.
 type ConversationMaterializeRequest struct {
 	Provider            string `json:"provider"`
 	Connector           string `json:"connector"`
@@ -24,7 +22,6 @@ type ConversationMaterializeRequest struct {
 	TriggerMessageID    string `json:"trigger_message_id"`
 	ExpectedEventDigest string `json:"expected_event_digest"`
 	AudienceDigest      string `json:"audience_digest"`
-	SourceEpoch         string `json:"source_epoch,omitempty"`
 	MaterializeHandle   string `json:"materialize_handle"`
 }
 

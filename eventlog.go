@@ -294,7 +294,7 @@ func (l *EventLog) ConversationContextAdvance(ctx context.Context, cursor Conver
 		return ConversationContextDelta{}, errConversationContextUnavailable
 	}
 	if !validConversationContextCursor(cursor) || cursor.Generation != generation || cursor.FileIdentity != identity || info.Size() < cursor.EOFOffset || !conversationContextCursorEOFValid(cursor) {
-		next, events, err := conversationContextTailLocked(ctx, file, info, l.Path, generation, identity)
+		next, events, err := conversationContextTailLocked(ctx, file, info, generation, identity)
 		if err != nil {
 			return ConversationContextDelta{}, err
 		}
@@ -307,7 +307,7 @@ func (l *EventLog) ConversationContextAdvance(ctx context.Context, cursor Conver
 	// just because the cursor's file identity remains valid: a projection can
 	// rebuild its retained tail without treating every missed body as metadata.
 	if info.Size()-cursor.EOFOffset > conversationWindowLogBytes {
-		next, events, tailErr := conversationContextTailLocked(ctx, file, info, l.Path, generation, identity)
+		next, events, tailErr := conversationContextTailLocked(ctx, file, info, generation, identity)
 		if tailErr != nil {
 			return ConversationContextDelta{}, tailErr
 		}
@@ -318,7 +318,7 @@ func (l *EventLog) ConversationContextAdvance(ctx context.Context, cursor Conver
 		return ConversationContextDelta{}, err
 	}
 	if overrun {
-		next, events, tailErr := conversationContextTailLocked(ctx, file, info, l.Path, generation, identity)
+		next, events, tailErr := conversationContextTailLocked(ctx, file, info, generation, identity)
 		if tailErr != nil {
 			return ConversationContextDelta{}, tailErr
 		}
@@ -383,7 +383,7 @@ func (l *EventLog) ConversationContextSelected(ctx context.Context, cursor Conve
 	return selected, nil
 }
 
-func conversationContextTailLocked(ctx context.Context, file *os.File, info os.FileInfo, path, generation, identity string) (ConversationContextCursor, []Event, error) {
+func conversationContextTailLocked(ctx context.Context, file *os.File, info os.FileInfo, generation, identity string) (ConversationContextCursor, []Event, error) {
 	offset := max(int64(0), info.Size()-conversationWindowLogBytes)
 	// Select a bounded raw tail first.  JSON decoding message bodies before
 	// trimming would turn a 64 MiB EventLog window into unbounded projection

@@ -91,7 +91,6 @@ type receivedContextQuery struct {
 	LowerBound         int64
 	CandidateCount     int
 	PageCount          int
-	MatchCount         int
 	ScannedOldest      *time.Time
 	ScannedNewest      *time.Time
 	Items              []uvim.ContextMessage
@@ -241,7 +240,7 @@ func (r *receivedContextIndex) commit(ctx context.Context, pendingID, authToken 
 	return r.persistLocked()
 }
 
-func (r *receivedContextIndex) observe(ctx context.Context, written uvim.Event) {
+func (r *receivedContextIndex) observe(ctx context.Context) {
 	if r == nil {
 		return
 	}
@@ -346,9 +345,9 @@ func (r *receivedContextIndex) query(ctx context.Context, authToken string, trig
 		last := page[len(page)-1]
 		hasMore := receivedContextOrderHasEligible(order, position, r.state.Entries, trigger, before, beforeSequence)
 		if len(matches) > 0 {
-			result.MatchCount, result.Items = len(matches), make([]uvim.ContextMessage, 0, len(matches))
+			result.Items = make([]uvim.ContextMessage, 0, len(matches))
 			for _, match := range matches {
-				result.Items = append(result.Items, r.receivedContextMessage(authToken, match.entry, match.event))
+				result.Items = append(result.Items, receivedContextStoredMessage(authToken, match.entry, match.event))
 			}
 			sort.SliceStable(result.Items, func(i, j int) bool {
 				if result.Items[i].CreatedAt.Equal(result.Items[j].CreatedAt) {
@@ -392,7 +391,7 @@ func receivedContextMessage(event uvim.Event) uvim.ContextMessage {
 	return uvim.ContextMessage{MessageID: event.Message.ID, Sequence: event.Sequence, SenderID: event.User.ID, SenderIDType: event.User.Kind, SenderType: event.User.Kind, CreatedAt: createdAt, Text: event.Message.Text}
 }
 
-func (r *receivedContextIndex) receivedContextMessage(authToken string, entry receivedContextEntry, event uvim.Event) uvim.ContextMessage {
+func receivedContextStoredMessage(authToken string, entry receivedContextEntry, event uvim.Event) uvim.ContextMessage {
 	message := receivedContextMessage(event)
 	for _, stored := range entry.Resources {
 		descriptor := stored.Descriptor

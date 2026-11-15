@@ -124,12 +124,7 @@ func (p *Provider) lookupQuotedMessage(ctx context.Context, token, id, chatID st
 	if err != nil {
 		return quotedMessageItem{}, nil, fmt.Errorf("quoted_message_lookup_failed")
 	}
-	var response struct {
-		Code int `json:"code"`
-		Data struct {
-			Items []quotedMessageItem `json:"items"`
-		} `json:"data"`
-	}
+	var response nativeMessageResponse
 	if json.Unmarshal(raw, &response) != nil {
 		return quotedMessageItem{}, nil, fmt.Errorf("quoted_message_invalid_response")
 	}

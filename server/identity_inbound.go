@@ -95,7 +95,7 @@ func (h *Hub) handleInboundIdentity(w http.ResponseWriter, req *http.Request) {
 		// have been proven from another private room; its target is not a filter
 		// on the complete current identity set. Current-event delivery scope is
 		// proved separately above and never inferred from a preferred link.
-		result.Links = append(result.Links, uvim.IdentityInboundLink{Identity: link.Identity, Link: link.IdentityLinkRef, Target: link.Target})
+		result.Links = append(result.Links, uvim.IdentityInboundLink{Identity: link.Identity, Link: link.IdentityLinkRef})
 	}
 	h.identityLinks.mu.Unlock()
 	if len(result.Links) == 0 {

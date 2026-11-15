@@ -219,7 +219,7 @@ func TestConversationMaterializeUsesOpaqueTypedRoute(t *testing.T) {
 		if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
 			t.Error(err)
 		}
-		if input != (uvim.ConversationMaterializeRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om", ExpectedEventDigest: "event-sha", AudienceDigest: "cap-sha", SourceEpoch: "epoch", MaterializeHandle: "opaque"}) {
+		if input != (uvim.ConversationMaterializeRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om", ExpectedEventDigest: "event-sha", AudienceDigest: "cap-sha", MaterializeHandle: "opaque"}) {
 			t.Errorf("input=%+v", input)
 		}
 		_ = json.NewEncoder(w).Encode(uvim.ConversationMaterializeResult{Version: uvim.ConversationMaterializeVersionV1, State: "ready", Resource: uvim.ResourceRef{ID: "r1", InternalURL: "internal://r1"}})
@@ -227,7 +227,7 @@ func TestConversationMaterializeUsesOpaqueTypedRoute(t *testing.T) {
 	defer api.Close()
 	c := New(api.URL)
 	c.Token = "token"
-	result, err := c.ConversationMaterialize(t.Context(), uvim.ConversationMaterializeRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om", ExpectedEventDigest: "event-sha", AudienceDigest: "cap-sha", SourceEpoch: "epoch", MaterializeHandle: "opaque"})
+	result, err := c.ConversationMaterialize(t.Context(), uvim.ConversationMaterializeRequest{Provider: "lark", Connector: "main", TriggerEventID: "evt", TriggerMessageID: "om", ExpectedEventDigest: "event-sha", AudienceDigest: "cap-sha", MaterializeHandle: "opaque"})
 	if err != nil || result.Version != uvim.ConversationMaterializeVersionV1 || result.State != "ready" || result.Resource.InternalURL != "internal://r1" {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}

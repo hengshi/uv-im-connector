@@ -179,7 +179,7 @@ func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
 		if err := h.receivedContext.commit(ctx, pendingReceived, h.authToken, written); err != nil {
 			slog.Warn("received context resource was not committed", "provider", written.Provider, "connector", written.Connector)
 		}
-		h.receivedContext.observe(ctx, written)
+		h.receivedContext.observe(ctx)
 	}
 	h.mu.Lock()
 	for ch, subscriberAudience := range h.subscribers {
@@ -291,7 +291,7 @@ func (h *Hub) handleMeta(w http.ResponseWriter, req *http.Request) {
 		if h.authToken == "" {
 			clearInteractionCapabilities(&health.Capabilities)
 		}
-		if !h.nativeConversationWindowAvailable(provider) && h.receivedConversationWindowAvailable(provider) {
+		if !nativeConversationWindowAvailable(provider) && h.receivedConversationWindowAvailable(provider) {
 			capabilities.ConversationWindowVersion = uvim.ConversationWindowVersionV1
 			health.Capabilities.ConversationWindowVersion = uvim.ConversationWindowVersionV1
 		}
@@ -333,7 +333,7 @@ func clearInteractionCapabilities(capabilities *uvim.Capabilities) {
 // capability and its reader implementation. A broken native invocation never
 // falls through to received context; the latter is selected only when this is
 // absent before the request begins.
-func (h *Hub) nativeConversationWindowAvailable(provider uvim.Provider) bool {
+func nativeConversationWindowAvailable(provider uvim.Provider) bool {
 	if provider == nil || provider.Capabilities().ConversationWindowVersion != uvim.ConversationWindowVersionV1 {
 		return false
 	}
@@ -601,7 +601,7 @@ func (h *Hub) handleConversationWindow(w http.ResponseWriter, req *http.Request)
 		writeJSON(w, http.StatusOK, unavailableConversationWindow(input, "unsupported"))
 		return
 	}
-	nativeAvailable := h.nativeConversationWindowAvailable(provider)
+	nativeAvailable := nativeConversationWindowAvailable(provider)
 	receivedAvailable := !nativeAvailable && h.receivedConversationWindowAvailable(provider)
 	if !nativeAvailable && !receivedAvailable {
 		writeJSON(w, http.StatusOK, unavailableConversationWindow(input, "unsupported"))
@@ -619,7 +619,7 @@ func (h *Hub) handleConversationWindow(w http.ResponseWriter, req *http.Request)
 		return
 	}
 	if !nativeAvailable {
-		writeJSON(w, http.StatusOK, h.receivedConversationWindow(ctx, input, trigger))
+		writeJSON(w, http.StatusOK, h.receivedConversationWindow(ctx, trigger))
 		return
 	}
 	reader := provider.(uvim.ConversationWindowReader)
@@ -637,7 +637,7 @@ func (h *Hub) handleConversationWindow(w http.ResponseWriter, req *http.Request)
 // provider download. It retains safe media descriptors while clearing every
 // presentation handle/epoch and Hub-private ResourceRef from this automatic,
 // no-user-flags context path.
-func (h *Hub) receivedConversationWindow(ctx context.Context, input uvim.ConversationWindowRequest, trigger uvim.Event) uvim.ConversationWindowResult {
+func (h *Hub) receivedConversationWindow(ctx context.Context, trigger uvim.Event) uvim.ConversationWindowResult {
 	result := uvim.ConversationWindowResult{
 		Version: uvim.ConversationWindowVersionV1, Source: "received", Status: "unavailable",
 		ConversationID: trigger.Channel.ID, ThreadID: trigger.Referrer.ThreadID,

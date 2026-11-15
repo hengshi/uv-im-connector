@@ -88,7 +88,7 @@ func (r *conversationMaterialRegistry) present(authToken string, input uvim.Conv
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.loadLocked(authToken); err != nil {
+	if err := r.loadLocked(); err != nil {
 		return err
 	}
 	now := time.Now().UTC()
@@ -165,7 +165,7 @@ func (r *conversationMaterialRegistry) resolve(authToken string, input uvim.Conv
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.loadLocked(authToken); err != nil {
+	if err := r.loadLocked(); err != nil {
 		return conversationMaterialRecord{}, uvim.ResourceRef{}, err
 	}
 	if r.purgeLocked(time.Now().UTC()) {
@@ -185,10 +185,10 @@ func (r *conversationMaterialRegistry) resolve(authToken string, input uvim.Conv
 }
 
 // complete preserves the first verified complete value if readers race.
-func (r *conversationMaterialRegistry) complete(authToken, handle string, resource uvim.ResourceRef) (conversationMaterialRecord, error) {
+func (r *conversationMaterialRegistry) complete(handle string, resource uvim.ResourceRef) (conversationMaterialRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.loadLocked(authToken); err != nil {
+	if err := r.loadLocked(); err != nil {
 		return conversationMaterialRecord{}, err
 	}
 	record, ok := r.state.Records[handle]
@@ -209,7 +209,7 @@ func (r *conversationMaterialRegistry) complete(authToken, handle string, resour
 	return record, nil
 }
 
-func (r *conversationMaterialRegistry) loadLocked(authToken string) error {
+func (r *conversationMaterialRegistry) loadLocked() error {
 	if r.loaded {
 		return nil
 	}
@@ -339,7 +339,7 @@ func sameConversationMaterialIdentity(record conversationMaterialRecord, input u
 	return record.Provider == input.Provider && record.Connector == input.Connector &&
 		record.TriggerEventID == input.TriggerEventID && record.TriggerMessageID == input.TriggerMessageID &&
 		record.EventDigest == input.ExpectedEventDigest && record.AudienceDigest == input.AudienceDigest &&
-		(input.SourceEpoch == "" || record.SourceEpoch == input.SourceEpoch) && record.Handle == input.MaterializeHandle
+		record.Handle == input.MaterializeHandle
 }
 
 func conversationMaterialScopeHash(scope uvim.ConversationSearchScope, trigger uvim.Event) string {

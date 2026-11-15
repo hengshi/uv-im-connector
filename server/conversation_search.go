@@ -204,12 +204,10 @@ func (h *Hub) handleConversationSearch(w http.ResponseWriter, req *http.Request)
 			observeConversationSearchCandidate(&result, candidate.Message.CreatedAt)
 		}
 		matches := filterConversationSearchCandidates(page.Candidates, filter)
-		result.MatchCount += len(matches)
 		if len(matches) > 0 {
 			for _, candidate := range matches {
 				result.Items = append(result.Items, candidate.Message)
 			}
-			result.ReturnedCount = len(result.Items)
 			if !page.HasMore {
 				result.Status = "available"
 				writeJSON(w, http.StatusOK, h.finalizeConversationSearch(ctx, input, trigger, digest, result))
@@ -421,9 +419,9 @@ func (h *Hub) handleReceivedConversationSearch(w http.ResponseWriter, ctx contex
 	result := newConversationSearchResult(input, trigger, digest, filter)
 	result.Source = "received"
 	result.EventLogGeneration, result.TriggerEntryDigest, result.IndexLowerBoundSequence = query.Generation, query.TriggerDigest, query.LowerBound
-	result.PageCount, result.CandidateCount, result.MatchCount = query.PageCount, query.CandidateCount, query.MatchCount
+	result.PageCount, result.CandidateCount = query.PageCount, query.CandidateCount
 	result.ScannedOldest, result.ScannedNewest = query.ScannedOldest, query.ScannedNewest
-	result.Items, result.ReturnedCount, result.HasMore = query.Items, len(query.Items), query.HasMore
+	result.Items, result.HasMore = query.Items, query.HasMore
 	if query.Reason == "received_unavailable" || query.Reason == "index_rebuild_limited" || query.Reason == "index_capacity_limited" {
 		result.Status, result.Reason = "unavailable", query.Reason
 		writeJSON(w, http.StatusOK, result)
@@ -815,7 +813,7 @@ func (r *conversationMaterialRegistry) storeSearchCursor(authToken string, curso
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.loadLocked(authToken); err != nil {
+	if err := r.loadLocked(); err != nil {
 		return "", err
 	}
 	r.purgeLocked(record.IssuedAt)
@@ -835,7 +833,7 @@ func (r *conversationMaterialRegistry) loadSearchCursor(authToken, id string) (c
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.loadLocked(authToken); err != nil {
+	if err := r.loadLocked(); err != nil {
 		return conversationSearchCursor{}, false, err
 	}
 	changed := r.purgeLocked(time.Now().UTC())

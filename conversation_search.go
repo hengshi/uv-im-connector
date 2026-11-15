@@ -83,8 +83,6 @@ type ConversationSearchResult struct {
 	ScannedNewest    *time.Time       `json:"scanned_newest,omitempty"`
 	PageCount        int              `json:"page_count,omitempty"`
 	CandidateCount   int              `json:"candidate_count,omitempty"`
-	MatchCount       int              `json:"match_count,omitempty"`
-	ReturnedCount    int              `json:"returned_count,omitempty"`
 	BoundaryOmitted  int              `json:"boundary_omitted,omitempty"`
 	Items            []ContextMessage `json:"items,omitempty"`
 	HasMore          bool             `json:"has_more,omitempty"`

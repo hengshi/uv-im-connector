@@ -105,12 +105,7 @@ func (p *Provider) nativeWindowMessage(ctx context.Context, token, id string) (q
 	if err != nil {
 		return quotedMessageItem{}, 0, err
 	}
-	var response struct {
-		Code int `json:"code"`
-		Data struct {
-			Items []quotedMessageItem `json:"items"`
-		} `json:"data"`
-	}
+	var response nativeMessageResponse
 	if json.Unmarshal(raw, &response) != nil {
 		return quotedMessageItem{}, 0, errors.New("invalid native message response")
 	}
@@ -144,6 +139,13 @@ type nativeConversationPage struct {
 	Items     []quotedMessageItem
 	HasMore   bool
 	PageToken string
+}
+
+type nativeMessageResponse struct {
+	Code int `json:"code"`
+	Data struct {
+		Items []quotedMessageItem `json:"items"`
+	} `json:"data"`
 }
 
 // nativeConversationList is the single native page target/decoder used by the

@@ -76,7 +76,6 @@ type IdentityNativeActor struct {
 type IdentityInboundLink struct {
 	Identity UserIdentity    `json:"identity"`
 	Link     IdentityLinkRef `json:"link"`
-	Target   OutboundTarget  `json:"target"`
 }
 
 // IdentityInboundResolveResult is service-private. Links is the complete
