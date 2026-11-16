@@ -955,44 +955,73 @@ func TestScopedClientRouteChangeKeepsHistoricAudienceAndReplyAuthority(t *testin
 	}
 }
 
-func TestScopedClientUpdateRequiresOwnedReceiptAndReplyProof(t *testing.T) {
+// Real Lark adapter, with native HTTP transport stubbed; no vendor authentication claim.
+func TestScopedClientUpdateRequiresOwnedReceiptAndReplyProofWithLarkStub(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	base := memory.NewConnector("memory", "main")
-	updater := &updateTestProvider{updateMetadataProvider: &updateMetadataProvider{Provider: base, edit: true}}
+	calls := make(chan string, 32)
+	native := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Method + " " + r.URL.Path
+		if r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
+			fmt.Fprint(w, `{"code":0,"tenant_access_token":"token","expire":3600}`)
+			return
+		}
+		calls <- key
+		switch key {
+		case "POST /open-apis/im/v1/messages":
+			fmt.Fprint(w, `{"code":0,"data":{"message_id":"sent-a"}}`)
+		case "POST /open-apis/im/v1/messages/message-b/reply":
+			fmt.Fprint(w, `{"code":0,"data":{"message_id":"sent-b"}}`)
+		case "GET /open-apis/im/v1/messages/sent-a":
+			fmt.Fprint(w, `{"code":0,"data":{"items":[{"message_id":"sent-a","chat_id":"c","msg_type":"text","sender":{"sender_type":"app","id_type":"app_id","id":"app"}}]}}`)
+		case "PUT /open-apis/im/v1/messages/sent-a":
+			fmt.Fprint(w, `{"code":0,"data":{"message_id":"sent-a"}}`)
+		default:
+			t.Errorf("unexpected native request: %s", key)
+			http.Error(w, "unexpected native request", http.StatusBadRequest)
+		}
+	}))
+	defer native.Close()
+	provider, err := lark.New(lark.Config{AppID: "app", AppSecret: "secret", ConnectorID: "main", BaseURL: native.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
 	logPath := filepath.Join(dir, "events.jsonl")
 	scopePath := filepath.Join(dir, "resource-scopes.json")
 	resources := &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")}
-	first := NewHub(uvim.NewProviderRegistry(updater), mustEventLog(t, logPath), resources)
+	target := &uvim.OutboundTarget{Kind: uvim.TargetConversation, ID: "c"}
+	first := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, logPath), resources)
 	firstRegistry := mustClientRegistry(t, dir, []map[string]any{
-		{"id": "a", "token": "token-a", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "c"}}},
-		{"id": "b", "token": "token-b", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "b"}}},
+		{"id": "a", "token": "token-a", "routes": []map[string]any{{"provider": "lark", "connector": "main", "conversation_id": "c", "proactive_targets": []uvim.OutboundTarget{*target}}}},
+		{"id": "b", "token": "token-b", "routes": []map[string]any{{"provider": "lark", "connector": "main", "conversation_id": "b"}}},
 	})
 	if err := first.EnableScopedClients(firstRegistry, scopePath); err != nil {
 		t.Fatal(err)
 	}
-	eventA := uvim.Event{ID: "event-a", Type: uvim.EventMessageCreate, Provider: "memory", Connector: "main", Time: time.Now().UTC(), Channel: uvim.Channel{ID: "c"}, Message: uvim.Message{ID: "message-a"}, Referrer: uvim.Referrer{MessageID: "message-a", ChannelID: "c", Target: &uvim.OutboundTarget{Kind: uvim.TargetConversation, ID: "c"}}}
+	eventA := uvim.Event{ID: "event-a", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Time: time.Now().UTC(), Channel: uvim.Channel{ID: "c"}, Message: uvim.Message{ID: "message-a"}, Referrer: uvim.Referrer{MessageID: "message-a", ChannelID: "c", Target: target}}
 	if err := first.Emit(ctx, eventA); err != nil {
 		t.Fatal(err)
 	}
 	firstAPI := httptest.NewServer(first.Handler())
+	defer firstAPI.Close()
 	a := client.New(firstAPI.URL)
 	a.Token = "token-a"
-	firstSend, err := a.Send(ctx, uvim.OutboundMessage{Provider: "memory", Connector: "main", Referrer: eventA.Referrer, Text: "A original"})
-	if err != nil {
-		t.Fatalf("A original send: %v", err)
+	firstSend, err := a.Send(ctx, uvim.OutboundMessage{Provider: "lark", Connector: "main", Target: target, Text: "A proactive original"})
+	if err != nil || firstSend.MessageID != "sent-a" {
+		t.Fatalf("A original send: %+v %v", firstSend, err)
 	}
 	firstAPI.Close()
 
-	second := NewHub(uvim.NewProviderRegistry(updater, memory.NewConnector("memory", "secondary")), mustEventLog(t, logPath), resources)
+	second := NewHub(uvim.NewProviderRegistry(provider, memory.NewConnector("memory", "secondary")), mustEventLog(t, logPath), resources)
 	secondRegistry := mustClientRegistry(t, dir, []map[string]any{
 		{"id": "a", "token": "token-a", "routes": []map[string]any{{"provider": "memory", "connector": "secondary", "conversation_id": "q"}}},
-		{"id": "b", "token": "token-b", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "c"}}},
+		{"id": "b", "token": "token-b", "routes": []map[string]any{{"provider": "lark", "connector": "main", "conversation_id": "c"}}},
 	})
 	if err := second.EnableScopedClients(secondRegistry, scopePath); err != nil {
 		t.Fatal(err)
 	}
-	eventB := uvim.Event{ID: "event-b", Type: uvim.EventMessageCreate, Provider: "memory", Connector: "main", Time: time.Now().UTC(), Channel: uvim.Channel{ID: "c"}, Message: uvim.Message{ID: "message-b"}, Referrer: uvim.Referrer{MessageID: "message-b", ChannelID: "c", Target: &uvim.OutboundTarget{Kind: uvim.TargetConversation, ID: "c"}}}
+	eventB := eventA
+	eventB.ID, eventB.Message.ID, eventB.Referrer.MessageID = "event-b", "message-b", "message-b"
 	if err := second.Emit(ctx, eventB); err != nil {
 		t.Fatal(err)
 	}
@@ -1000,21 +1029,101 @@ func TestScopedClientUpdateRequiresOwnedReceiptAndReplyProof(t *testing.T) {
 	defer api.Close()
 	a, b := client.New(api.URL), client.New(api.URL)
 	a.Token, b.Token = "token-a", "token-b"
-	secondSend, err := b.Send(ctx, uvim.OutboundMessage{Provider: "memory", Connector: "main", Referrer: eventB.Referrer, Text: "B new"})
+	secondSend, err := b.Send(ctx, uvim.OutboundMessage{Provider: "lark", Connector: "main", Referrer: eventB.Referrer, Text: "B new"})
+	if err != nil || secondSend.MessageID != "sent-b" {
+		t.Fatalf("B new send: %+v %v", secondSend, err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("native sends = %d", len(calls))
+	}
+	<-calls
+	<-calls
+	for _, tc := range []struct {
+		name   string
+		caller *client.Client
+		id     string
+		ref    uvim.Referrer
+		target *uvim.OutboundTarget
+		status int
+		calls  []string
+	}{
+		{"owner proactive after route move", a, firstSend.MessageID, uvim.Referrer{}, target, 200, []string{"GET /open-apis/im/v1/messages/sent-a", "PUT /open-apis/im/v1/messages/sent-a"}},
+		{"owner historic reply", a, firstSend.MessageID, eventA.Referrer, nil, 200, []string{"GET /open-apis/im/v1/messages/sent-a", "PUT /open-apis/im/v1/messages/sent-a"}},
+		{"new route owner cannot edit old receipt", b, firstSend.MessageID, eventB.Referrer, nil, 403, nil},
+		{"old owner cannot edit new receipt", a, secondSend.MessageID, eventA.Referrer, nil, 403, nil},
+		{"unknown receipt", a, "unknown", eventA.Referrer, nil, 403, nil},
+		{"foreign reply proof with own receipt", a, firstSend.MessageID, eventB.Referrer, nil, 403, nil},
+		{"wrong chat", a, firstSend.MessageID, uvim.Referrer{}, &uvim.OutboundTarget{Kind: uvim.TargetConversation, ID: "wrong-chat"}, 502, []string{"GET /open-apis/im/v1/messages/sent-a"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.caller.Update(ctx, uvim.MessageUpdate{OutboundMessage: uvim.OutboundMessage{Provider: "lark", Connector: "main", Referrer: tc.ref, Target: tc.target, Text: "replacement"}, MessageID: tc.id})
+			if tc.status == 200 {
+				if err != nil || got.MessageID != tc.id {
+					t.Errorf("update = %+v, %v", got, err)
+				}
+			} else {
+				var httpErr *client.HTTPError
+				if !errors.As(err, &httpErr) || httpErr.StatusCode != tc.status {
+					t.Errorf("want HTTP %d, got %v", tc.status, err)
+				}
+			}
+			var gotCalls []string
+			for len(calls) > 0 {
+				gotCalls = append(gotCalls, <-calls)
+			}
+			if !reflect.DeepEqual(gotCalls, tc.calls) {
+				t.Errorf("native requests = %v, want %v", gotCalls, tc.calls)
+			}
+		})
+	}
+}
+
+func TestScopedReceiptsSurviveGrowthAndRestart(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resource-scopes.json")
+	scopes, err := openResourceScopes(path)
 	if err != nil {
-		t.Fatalf("B new send: %v", err)
+		t.Fatal(err)
 	}
-	if _, err := a.Update(ctx, uvim.MessageUpdate{OutboundMessage: uvim.OutboundMessage{Provider: "memory", Connector: "main", Referrer: eventA.Referrer, Text: "A replacement"}, MessageID: firstSend.MessageID}); err != nil {
-		t.Fatalf("A lost the ability to update its retained receipt: %v", err)
+	// Valid IDs with JSON escaping exceed 8 MiB in the old combined key/value
+	// encoding, without thousands of fsyncs. Include the duplicate final ID.
+	ids := make([]string, 180)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%04d-%s", i, strings.Repeat("<", 4090))
 	}
-	if _, err := a.Update(ctx, uvim.MessageUpdate{OutboundMessage: uvim.OutboundMessage{Provider: "memory", Connector: "main", Referrer: eventA.Referrer, Text: "forbidden"}, MessageID: secondSend.MessageID}); err == nil {
-		t.Fatal("client A updated client B's newly sent receipt")
+	result := uvim.SendResult{MessageID: ids[len(ids)-1], MessageIDs: ids}
+	if err := scopes.claimOutboundReceipts("a", "memory", "main", result); err != nil {
+		t.Fatalf("valid receipt growth: %v", err)
 	}
-	if _, err := a.Update(ctx, uvim.MessageUpdate{OutboundMessage: uvim.OutboundMessage{Provider: "memory", Connector: "main", Referrer: eventA.Referrer, Text: "unknown"}, MessageID: "unknown-receipt"}); err == nil {
-		t.Fatal("client A updated an unknown receipt")
+	provider := &updateTestProvider{updateMetadataProvider: &updateMetadataProvider{Provider: memory.NewConnector("memory", "main"), edit: true}}
+	hub := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, ""), &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	target := &uvim.OutboundTarget{Kind: uvim.TargetConversation, ID: "a"}
+	registry := mustClientRegistry(t, dir, []map[string]any{
+		{"id": "a", "token": "token-a", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "a", "proactive_targets": []uvim.OutboundTarget{*target}}}},
+	})
+	if err := hub.EnableScopedClients(registry, path); err != nil {
+		t.Fatal(err)
 	}
-	if len(updater.updates) != 1 {
-		t.Fatalf("updates = %+v", updater.updates)
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	a := client.New(api.URL)
+	a.Token = "token-a"
+	msg := uvim.OutboundMessage{Provider: "memory", Connector: "main", Target: target, Text: "after growth"}
+	sent, err := a.Send(ctx, msg)
+	if err != nil {
+		t.Fatalf("normal send after restart: %v", err)
+	}
+	for _, id := range []string{ids[0], ids[len(ids)-1], sent.MessageID} {
+		if _, err := a.Update(ctx, uvim.MessageUpdate{OutboundMessage: msg, MessageID: id}); err != nil {
+			t.Fatalf("retained receipt update: %v", err)
+		}
+	}
+	if err := hub.resourceScopes.claimOutboundReceipts("b", "memory", "main", result); err == nil {
+		t.Fatal("receipt ownership was transferred")
+	}
+	if err := hub.resourceScopes.claimOutboundReceipts("a", "memory", "main", result); err != nil {
+		t.Fatalf("same-owner receipt replay: %v", err)
 	}
 }
 
@@ -1148,6 +1257,66 @@ func TestResourceScopesRefuseStateThatWouldFailToReopen(t *testing.T) {
 	}
 	if _, err := openResourceScopes(path); err != nil {
 		t.Fatalf("refused scope state made existing store unreadable: %v", err)
+	}
+}
+
+func TestOutboundReceiptMigrationPreservesAuthority(t *testing.T) {
+	for _, obstruction := range []string{"none", "interrupted", "conflict", "corrupt"} {
+		t.Run(obstruction, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "resource-scopes.json")
+			scopes, err := openResourceScopes(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Explicit historical version-1 shape, not positive lifecycle setup.
+			legacy := []byte(`{"version":1,"values":{"res":{"client_id":"a"}},"receipts":{"memory/main\u0000old":{"client_id":"a","provider":"memory","connector":"main","message_id":"old"}}}`)
+			if err := os.WriteFile(path, legacy, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			key := outboundReceiptKey("memory", "main", "old")
+			receiptPath := scopes.receiptPath(key)
+			switch obstruction {
+			case "interrupted", "conflict":
+				owner := "a"
+				if obstruction == "conflict" {
+					owner = "b"
+				}
+				if err := scopes.claimOutboundReceipts(owner, "memory", "main", uvim.SendResult{MessageID: "old"}); err != nil {
+					t.Fatal(err)
+				}
+			case "corrupt":
+				if err := os.WriteFile(receiptPath, []byte("{"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if obstruction == "conflict" || obstruction == "corrupt" {
+				if _, err := openResourceScopes(path); err == nil {
+					t.Fatal("migration accepted conflicting or corrupt attribution")
+				}
+				if raw, err := os.ReadFile(path); err != nil || !bytes.Equal(raw, legacy) {
+					t.Fatalf("failed migration changed legacy authority: %q %v", raw, err)
+				}
+				// Repair only the deliberately invalid migration fixture, then retry.
+				if err := os.Remove(receiptPath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			migrated, err := openResourceScopes(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !migrated.owns("res", "a") || !migrated.ownsOutboundReceipt("a", "memory", "main", "old") || migrated.ownsOutboundReceipt("b", "memory", "main", "old") {
+				t.Fatal("migration changed resource or receipt ownership")
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil || bytes.Contains(raw, []byte(`"receipts"`)) {
+				t.Fatalf("legacy receipt map was not retired: %q %v", raw, err)
+			}
+			reopened, err := openResourceScopes(path)
+			if err != nil || !reopened.ownsOutboundReceipt("a", "memory", "main", "old") {
+				t.Fatalf("migrated authority lost on restart: %v", err)
+			}
+		})
 	}
 }
 

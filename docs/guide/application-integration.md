@@ -26,7 +26,7 @@ GET /v1/events/ws?after=<last-sequence>
 
 在 `UV_IM_CLIENTS_FILE` 模式中，一个 bearer token 唯一标识一个已配置调用方；不要在请求中附加 client ID。调用方只能看到 manifest 精确声明的入站 `provider` + `connector` + `conversation_id` route，以及自己可用的 provider/connector metadata。事件日志和 WebSocket 都在共享日志分配 sequence 后按调用方过滤，因此 cursor 跳过其他调用方的 sequence 属于正常情况，不能当作丢失。
 
-回复时保留完整入站 `referrer`。connector 会在发送回复或更新前证明它属于已认证调用方。route 调整只影响之后的入站：不会把历史 reply authority 转给新调用方，也不会从原调用方移除它；过期或其他调用方的 referrer 仍会被拒绝。更新还必须携带该调用方此前成功发送所返回的精确 native message receipt；未知或其他调用方的 receipt 会被拒绝。没有 referrer 的主动发送必须同时具有当前已配置的 provider route 和显式、带类型的 `target`：它要么列在该调用方的 `proactive_targets` manifest 中，要么来自该调用方当前有效的已验证身份关联。私聊 conversation ID 不是 user target。
+回复时保留完整入站 `referrer`。connector 会在发送回复或更新前证明它属于已认证调用方。route 调整只影响之后的入站：不会把历史 reply authority 转给新调用方，也不会从原调用方移除它；过期或其他调用方的 referrer 仍会被拒绝。更新必须携带该调用方此前成功发送所返回的精确 native message receipt；未知或其他调用方的 receipt 会被拒绝。这份归属在重启和 route 调整后仍有效，包括没有入站 referrer 的主动消息。编辑前 provider 仍会核验原始目的地；携带的 referrer 和身份关联也必须对该调用方有效。没有 referrer 的主动发送必须同时具有当前已配置的 provider route 和显式、带类型的 `target`：它要么列在该调用方的 `proactive_targets` manifest 中，要么来自该调用方当前有效的已验证身份关联。私聊 conversation ID 不是 user target。
 
 上传只能使用调用方自己的 token，并且只能发送原样返回的完整 `ResourceRef`。内部 URL 和入站资源由 client 持有；把它复制给另一调用方不会获得读取、`resource.download` 或出站附件权限。client/route 修改必须重启后才生效，且绝不会移交历史 event、reply proof 或身份关联；删除 token 后这些持久化状态对所有人都不可访问。
 

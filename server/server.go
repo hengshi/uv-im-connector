@@ -407,13 +407,18 @@ func (h *Hub) handleMessageUpdate(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	caller := clientPrincipal(req)
-	if err := h.authorizeScopedOutbound(req.Context(), caller, msg.OutboundMessage); err != nil {
-		writeError(w, http.StatusForbidden, "scoped_delivery_not_authorized")
-		return
-	}
 	if h.scoped() && !h.resourceScopes.ownsOutboundReceipt(caller, msg.Provider, msg.Connector, msg.MessageID) {
 		writeError(w, http.StatusForbidden, "scoped_delivery_not_authorized")
 		return
+	}
+	// An owned receipt authorizes editing the existing message even after its
+	// ingress route moves. Supplied reply proof must still belong to this caller;
+	// the native updater binds the exact message to its original destination.
+	if hasReplyProof(msg.Referrer) {
+		if err := h.authorizeScopedOutbound(req.Context(), caller, msg.OutboundMessage); err != nil {
+			writeError(w, http.StatusForbidden, "scoped_delivery_not_authorized")
+			return
+		}
 	}
 	if err := h.validateIdentityLink(req.Context(), caller, msg.OutboundMessage); err != nil {
 		writeProviderError(w, uvim.NewProviderSendFailure(uvim.SendFailure{Category: uvim.SendFailureInvalidRequest, DeliveryState: uvim.DeliveryNotAttempted}, err.Error(), err))
