@@ -98,7 +98,7 @@ Go 嵌入调用方使用 `NewUserIdentityMapper`，在启动前调用 `Hub.SetUs
 
 ## 经双端核验的动态关联
 
-外部业务系统可以在自身完成账号核验后，通过既有受认证 HTTP 接口登记关联。`GET /v1/meta` 的 `identity_links: true` 表示当前实例支持此能力；不按连接器版本或平台名称判断。服务未配置 `UV_IM_AUTH_TOKEN` 时不开放关联接口。
+外部业务系统可以在自身完成账号核验后，通过既有受认证 HTTP 接口登记关联。`GET /v1/meta` 的 `identity_links: true` 表示当前实例支持此能力；不按连接器版本或平台名称判断。已发布的单调用方模式通过 `UV_IM_AUTH_TOKEN` 认证；`UV_IM_CLIENTS_FILE` 模式使用调用方各自的 bearer token。
 
 | POST 接口 | 输入 | 结果 |
 | --- | --- | --- |
@@ -111,6 +111,8 @@ Go 嵌入调用方使用 `NewUserIdentityMapper`，在启动前调用 `Hub.SetUs
 普通直接会话沿用实际 `referrer.target`，保留 `kind` 和 `id_type`；只有短效回复能力时拒绝长期通知关联。Matrix 通过 homeserver 核对房间当前恰有机器人和该用户两位成员，并在每次关联发送前重验；查询失败或成员变化时拒绝发送。其他渠道仍受原生权限、可见范围及主动消息时间窗口约束。
 
 正式数据只保存在 state-dir 的 `identity-links.json`，使用独占写锁、版本化快照和原子持久化。损坏或未知格式阻断启动，不覆盖原数据。原子替换后的目录同步失败会使当前进程停止关联操作，重启后从磁盘重新确定结果。静态 `UV_IM_USER_IDENTITIES_FILE` 的启动只读语义保持，不被动态接口反写。
+
+共享调用方模式会把动态关联同时持久化到已认证调用方和 provider/connector 命名空间。其他调用方不能解析、替换、撤销或借此发送。源 event 必须在入站时归属该调用方；修改 route 只影响未来入站，不会把 link 或已保留的 reply proof 移交给新 route owner。
 
 关联结果含 `id` 和 `revision`。发送时在 `message.create` 或 `message.update` 附带 `identity_link: {"id":"…","revision":"…"}` 及精确原生 `target`。连接器在发送前验证关联仍有效且目标未变；撤销、换绑、旧版本引用或地址不符均以 `invalid-request / not-attempted` 拒绝，不改投其他人。已经开始的外部请求不能撤回。未携带关联引用的普通消息保持既有契约；应用必须尊重 `revoked`，不能绕过撤销回退到猜测地址。
 

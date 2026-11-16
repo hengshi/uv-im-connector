@@ -712,6 +712,742 @@ func TestHubAuthProtectsAPIs(t *testing.T) {
 	}
 }
 
+func TestScopedClientsIsolateHistoryDeliveryResourcesAndIdentity(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	provider := memory.NewConnector("memory", "main")
+	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
+	hub := NewHub(uvim.NewProviderRegistry(provider, memory.NewConnector("memory", "unrouted")), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	registry := mustClientRegistry(t, dir, []map[string]any{
+		{"id": "slot-a", "token": "token-a", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "direct-a", "proactive_targets": []map[string]string{{"kind": "user", "id": "native-a"}}}}},
+		{"id": "slot-b", "token": "token-b", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "group-b", "proactive_targets": []map[string]string{{"kind": "group", "id": "group-b"}}}}},
+	})
+	if err := hub.EnableScopedClients(registry, filepath.Join(dir, "resource-scopes.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.EnableIdentityLinks(filepath.Join(dir, "identity-links.json")); err != nil {
+		t.Fatal(err)
+	}
+	defer hub.CloseIdentityLinks()
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	a, b := client.New(api.URL), client.New(api.URL)
+	a.Token, b.Token = "token-a", "token-b"
+	meta, err := a.ServiceMeta(ctx)
+	if err != nil || len(meta.Providers) != 1 || meta.Providers[0].Connector != "main" {
+		t.Fatalf("client A scoped metadata = %+v, %v", meta.Providers, err)
+	}
+
+	eventA := uvim.Event{ID: "evt-a", Type: uvim.EventMessageCreate, Provider: "memory", Connector: "main", Time: time.Now().UTC(), Channel: uvim.Channel{ID: "direct-a", Type: uvim.ChannelDirect}, User: uvim.User{ID: "native-a"}, Message: uvim.Message{ID: "message-a", Text: "A"}, Referrer: uvim.Referrer{MessageID: "message-a", ChannelID: "direct-a", Target: &uvim.OutboundTarget{Kind: uvim.TargetUser, ID: "native-a"}}}
+	eventB := uvim.Event{ID: "evt-b", Type: uvim.EventMessageCreate, Provider: "memory", Connector: "main", Time: time.Now().UTC(), Channel: uvim.Channel{ID: "group-b", Type: uvim.ChannelGroup}, User: uvim.User{ID: "native-b"}, Message: uvim.Message{ID: "message-b", Text: "B"}, Referrer: uvim.Referrer{MessageID: "message-b", ChannelID: "group-b", Target: &uvim.OutboundTarget{Kind: uvim.TargetGroup, ID: "group-b"}}}
+	if err := hub.Emit(ctx, eventA); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.Emit(ctx, eventB); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.Emit(ctx, uvim.Event{ID: "unassigned", Type: uvim.EventMessageCreate, Provider: "memory", Connector: "main", Time: time.Now().UTC(), Channel: uvim.Channel{ID: "unknown"}, Message: uvim.Message{ID: "unassigned"}}); err == nil {
+		t.Fatal("unrouted shared event was persisted")
+	}
+	historyA, err := a.Events(ctx, 0)
+	if err != nil || len(historyA) != 1 || historyA[0].ID != "evt-a" || historyA[0].Audience != "" {
+		t.Fatalf("client A history = %+v, %v", historyA, err)
+	}
+	historyB, err := b.Events(ctx, 0)
+	if err != nil || len(historyB) != 1 || historyB[0].ID != "evt-b" {
+		t.Fatalf("client B history = %+v, %v", historyB, err)
+	}
+	if _, err := a.Send(ctx, uvim.OutboundMessage{Provider: "memory", Connector: "main", Referrer: eventB.Referrer, Text: "forbidden"}); err == nil {
+		t.Fatal("client A sent client B reply proof")
+	}
+	if _, err := a.Send(ctx, uvim.OutboundMessage{Provider: "memory", Connector: "main", Referrer: eventA.Referrer, Text: "reply"}); err != nil {
+		t.Fatalf("client A reply: %v", err)
+	}
+	if _, err := a.Send(ctx, uvim.OutboundMessage{Provider: "memory", Connector: "main", Target: &uvim.OutboundTarget{Kind: uvim.TargetUser, ID: "direct-a"}, Text: "guessed direct target"}); err == nil {
+		t.Fatal("direct conversation ID was accepted as a user target")
+	}
+	if _, err := a.Send(ctx, uvim.OutboundMessage{Provider: "memory", Connector: "main", Target: &uvim.OutboundTarget{Kind: uvim.TargetUser, ID: "native-a"}, Text: "proactive"}); err != nil {
+		t.Fatalf("configured proactive target: %v", err)
+	}
+	if len(provider.Sent()) != 2 {
+		t.Fatalf("unexpected provider sends: %+v", provider.Sent())
+	}
+	shared, err := hub.resources.Save(ctx, strings.NewReader("one owned resource"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "shared.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"evt-resource-1", "evt-resource-2"} {
+		if err := hub.Emit(ctx, uvim.Event{ID: id, Type: uvim.EventMessageCreate, Provider: "memory", Connector: "main", Time: time.Now().UTC(), Channel: eventA.Channel, Message: uvim.Message{ID: id, Resources: []uvim.ResourceRef{shared}}}); err != nil {
+			t.Fatalf("same-client resource reference %q: %v", id, err)
+		}
+	}
+	if response, err := a.ResolveInternalURL(ctx, shared.InternalURL); err != nil {
+		t.Fatalf("owner opened inbound resource: %v", err)
+	} else {
+		response.Body.Close()
+	}
+	if _, err := b.ResolveInternalURL(ctx, shared.InternalURL); err == nil {
+		t.Fatal("client B opened client A inbound resource")
+	}
+
+	ref, err := a.Upload(ctx, uvim.ResourceRef{Kind: uvim.ElementFile, Name: "a.txt"}, []byte("client-a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response, err := a.ResolveInternalURL(ctx, ref.InternalURL); err != nil {
+		t.Fatalf("owner opened resource: %v", err)
+	} else {
+		response.Body.Close()
+	}
+	if _, err := a.DownloadProviderResource(ctx, uvim.ResourceDownloadRequest{Resource: ref}); err != nil {
+		t.Fatalf("owner resolved resource: %v", err)
+	}
+	if _, err := b.ResolveInternalURL(ctx, ref.InternalURL); err == nil {
+		t.Fatal("client B opened client A resource")
+	}
+	if _, err := b.DownloadProviderResource(ctx, uvim.ResourceDownloadRequest{Resource: ref}); err == nil {
+		t.Fatal("client B resolved client A resource")
+	}
+	if _, err := b.Send(ctx, uvim.OutboundMessage{Provider: "memory", Connector: "main", Target: &uvim.OutboundTarget{Kind: uvim.TargetGroup, ID: "group-b"}, Resources: []uvim.ResourceRef{ref}}); err == nil {
+		t.Fatal("client B sent client A resource")
+	}
+
+	identity := uvim.UserIdentity{Type: "gitlab.userid", Scope: "gitlab.example", ID: "42"}
+	linked, err := a.LinkIdentity(ctx, uvim.IdentityLinkRequest{Identity: identity, Event: uvim.IdentityEventRef{Provider: "memory", Connector: "main", EventID: "evt-a"}, Proof: "proof"})
+	if err != nil || !linked.Found || linked.Link == nil {
+		t.Fatalf("client A link: %+v %v", linked, err)
+	}
+	if linked.Link.ClientID != "" {
+		t.Fatalf("identity response leaked internal client ID: %+v", linked.Link)
+	}
+	resolved, err := b.ResolveIdentity(ctx, uvim.IdentityResolveRequest{Identity: identity, Provider: "memory", Connector: "main"})
+	if err != nil || resolved.Found || resolved.Link != nil {
+		t.Fatalf("client B resolved A link: %+v %v", resolved, err)
+	}
+	if _, err := b.Send(ctx, uvim.OutboundMessage{Provider: "memory", Connector: "main", Target: &linked.Link.Target, IdentityLink: &linked.Link.IdentityLinkRef, Text: "foreign link"}); err == nil {
+		t.Fatal("client B sent through A identity link")
+	}
+}
+
+func TestScopedClientRegistryRejectsAmbiguousRoutesAndGlobalBearer(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := LoadClientRegistry(filepath.Join(dir, "missing.json")); err == nil {
+		t.Fatal("missing registry accepted")
+	}
+	path := filepath.Join(dir, "clients.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"clients":[{"id":"a","token":"same","routes":[{"provider":"memory","connector":"main","conversation_id":"c"}]},{"id":"b","token":"same","routes":[{"provider":"memory","connector":"main","conversation_id":"c"}]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadClientRegistry(path); err == nil {
+		t.Fatal("ambiguous registry accepted")
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadClientRegistry(path); err == nil {
+		t.Fatal("world-readable client registry accepted")
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry := mustClientRegistry(t, dir, []map[string]any{
+		{"id": "client", "token": "scoped-token", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "c"}}},
+	})
+	hub := NewHub(uvim.NewProviderRegistry(memory.NewConnector("memory", "main")), mustEventLog(t, ""), &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	hub.SetAuthToken("legacy-token")
+	if err := hub.EnableScopedClients(registry, filepath.Join(dir, "resource-scopes.json")); err == nil {
+		t.Fatal("scoped clients accepted a global bearer token")
+	}
+}
+
+func TestScopedClientWebSocketReconnectSkipsOtherAudience(t *testing.T) {
+	dir := t.TempDir()
+	hub := NewHub(uvim.NewProviderRegistry(memory.NewConnector("memory", "main")), mustEventLog(t, filepath.Join(dir, "events.jsonl")), &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	registry := mustClientRegistry(t, dir, []map[string]any{
+		{"id": "a", "token": "token-a", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "a"}}},
+		{"id": "b", "token": "token-b", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "b"}}},
+	})
+	if err := hub.EnableScopedClients(registry, filepath.Join(dir, "resource-scopes.json")); err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	emit := func(id, conversation string) {
+		t.Helper()
+		if err := hub.Emit(context.Background(), uvim.Event{ID: id, Type: uvim.EventMessageCreate, Provider: "memory", Connector: "main", Time: time.Now().UTC(), Channel: uvim.Channel{ID: conversation}, Message: uvim.Message{ID: id}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emit("a1", "a")
+	emit("b1", "b")
+	header := http.Header{"Authorization": []string{"Bearer token-a"}}
+	url := "ws" + strings.TrimPrefix(api.URL, "http") + "/v1/events/ws?after=0"
+	conn, _, err := websocket.DefaultDialer.Dial(url, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var first uvim.Event
+	if err := conn.ReadJSON(&first); err != nil || first.ID != "a1" {
+		t.Fatalf("first scoped websocket event = %+v, %v", first, err)
+	}
+	emit("b2", "b")
+	emit("a2", "a")
+	var next uvim.Event
+	if err := conn.ReadJSON(&next); err != nil || next.ID != "a2" || next.Sequence <= first.Sequence+1 {
+		t.Fatalf("reconnect event = %+v, first=%+v err=%v", next, first, err)
+	}
+	clientA := client.New(api.URL)
+	clientA.Token = "token-a"
+	history, err := clientA.Events(context.Background(), first.Sequence)
+	if err != nil || len(history) != 1 || history[0].ID != "a2" {
+		t.Fatalf("scoped reconnect history = %+v, %v", history, err)
+	}
+}
+
+func TestScopedClientRouteChangeKeepsHistoricAudienceAndReplyAuthority(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "events.jsonl")
+	resources := &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")}
+	first := NewHub(uvim.NewProviderRegistry(memory.NewConnector("memory", "main")), mustEventLog(t, logPath), resources)
+	firstRegistry := mustClientRegistry(t, dir, []map[string]any{
+		{"id": "a", "token": "token-a", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "a"}}},
+		{"id": "b", "token": "token-b", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "b"}}},
+	})
+	if err := first.EnableScopedClients(firstRegistry, filepath.Join(dir, "resource-scopes.json")); err != nil {
+		t.Fatal(err)
+	}
+	event := uvim.Event{ID: "old-a", Type: uvim.EventMessageCreate, Provider: "memory", Connector: "main", Time: time.Now().UTC(), Channel: uvim.Channel{ID: "a", Type: uvim.ChannelDirect}, Message: uvim.Message{ID: "message-a"}, Referrer: uvim.Referrer{MessageID: "message-a", ChannelID: "a", Target: &uvim.OutboundTarget{Kind: uvim.TargetUser, ID: "native-a"}}}
+	if err := first.Emit(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reloaded operator configuration assigns future ingress to B. Historic
+	// audience remains A; B cannot replay or answer it.
+	// Client A no longer has any current route on main. Its historic main
+	// referrer remains a durable reply authority, while new main ingress now
+	// belongs to B. A distinct connector keeps A configured in shared mode.
+	second := NewHub(uvim.NewProviderRegistry(memory.NewConnector("memory", "main"), memory.NewConnector("memory", "secondary")), mustEventLog(t, logPath), resources)
+	secondRegistry := mustClientRegistry(t, dir, []map[string]any{
+		{"id": "a", "token": "token-a", "routes": []map[string]any{{"provider": "memory", "connector": "secondary", "conversation_id": "new-a"}}},
+		{"id": "b", "token": "token-b", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "a"}}},
+	})
+	if err := second.EnableScopedClients(secondRegistry, filepath.Join(dir, "resource-scopes.json")); err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(second.Handler())
+	defer api.Close()
+	a, b := client.New(api.URL), client.New(api.URL)
+	a.Token, b.Token = "token-a", "token-b"
+	if events, err := a.Events(ctx, 0); err != nil || len(events) != 1 || events[0].ID != event.ID {
+		t.Fatalf("client A lost its historic audience: %+v, %v", events, err)
+	}
+	if _, err := a.Send(ctx, uvim.OutboundMessage{Provider: "memory", Connector: "main", Referrer: event.Referrer, Text: "historic reply"}); err != nil {
+		t.Fatalf("client A lost its historic reply proof: %v", err)
+	}
+	if events, err := b.Events(ctx, 0); err != nil || len(events) != 0 {
+		t.Fatalf("client B received reassigned history: %+v, %v", events, err)
+	}
+	if _, err := b.Send(ctx, uvim.OutboundMessage{Provider: "memory", Connector: "main", Referrer: event.Referrer, Text: "stale"}); err == nil {
+		t.Fatal("client B sent through client A reply proof")
+	}
+}
+
+// Real Lark adapter, with native HTTP transport stubbed; no vendor authentication claim.
+func TestScopedClientUpdateRequiresOwnedReceiptAndReplyProofWithLarkStub(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	calls := make(chan string, 32)
+	native := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Method + " " + r.URL.Path
+		if r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
+			fmt.Fprint(w, `{"code":0,"tenant_access_token":"token","expire":3600}`)
+			return
+		}
+		calls <- key
+		switch key {
+		case "POST /open-apis/im/v1/messages":
+			fmt.Fprint(w, `{"code":0,"data":{"message_id":"sent-a"}}`)
+		case "POST /open-apis/im/v1/messages/message-b/reply":
+			fmt.Fprint(w, `{"code":0,"data":{"message_id":"sent-b"}}`)
+		case "GET /open-apis/im/v1/messages/sent-a":
+			fmt.Fprint(w, `{"code":0,"data":{"items":[{"message_id":"sent-a","chat_id":"c","msg_type":"text","sender":{"sender_type":"app","id_type":"app_id","id":"app"}}]}}`)
+		case "PUT /open-apis/im/v1/messages/sent-a":
+			fmt.Fprint(w, `{"code":0,"data":{"message_id":"sent-a"}}`)
+		default:
+			t.Errorf("unexpected native request: %s", key)
+			http.Error(w, "unexpected native request", http.StatusBadRequest)
+		}
+	}))
+	defer native.Close()
+	provider, err := lark.New(lark.Config{AppID: "app", AppSecret: "secret", ConnectorID: "main", BaseURL: native.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(dir, "events.jsonl")
+	scopePath := filepath.Join(dir, "resource-scopes.json")
+	resources := &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")}
+	target := &uvim.OutboundTarget{Kind: uvim.TargetConversation, ID: "c"}
+	first := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, logPath), resources)
+	firstRegistry := mustClientRegistry(t, dir, []map[string]any{
+		{"id": "a", "token": "token-a", "routes": []map[string]any{{"provider": "lark", "connector": "main", "conversation_id": "c", "proactive_targets": []uvim.OutboundTarget{*target}}}},
+		{"id": "b", "token": "token-b", "routes": []map[string]any{{"provider": "lark", "connector": "main", "conversation_id": "b"}}},
+	})
+	if err := first.EnableScopedClients(firstRegistry, scopePath); err != nil {
+		t.Fatal(err)
+	}
+	eventA := uvim.Event{ID: "event-a", Type: uvim.EventMessageCreate, Provider: "lark", Connector: "main", Time: time.Now().UTC(), Channel: uvim.Channel{ID: "c"}, Message: uvim.Message{ID: "message-a"}, Referrer: uvim.Referrer{MessageID: "message-a", ChannelID: "c", Target: target}}
+	if err := first.Emit(ctx, eventA); err != nil {
+		t.Fatal(err)
+	}
+	firstAPI := httptest.NewServer(first.Handler())
+	defer firstAPI.Close()
+	a := client.New(firstAPI.URL)
+	a.Token = "token-a"
+	firstSend, err := a.Send(ctx, uvim.OutboundMessage{Provider: "lark", Connector: "main", Target: target, Text: "A proactive original"})
+	if err != nil || firstSend.MessageID != "sent-a" {
+		t.Fatalf("A original send: %+v %v", firstSend, err)
+	}
+	firstAPI.Close()
+
+	second := NewHub(uvim.NewProviderRegistry(provider, memory.NewConnector("memory", "secondary")), mustEventLog(t, logPath), resources)
+	secondRegistry := mustClientRegistry(t, dir, []map[string]any{
+		{"id": "a", "token": "token-a", "routes": []map[string]any{{"provider": "memory", "connector": "secondary", "conversation_id": "q"}}},
+		{"id": "b", "token": "token-b", "routes": []map[string]any{{"provider": "lark", "connector": "main", "conversation_id": "c"}}},
+	})
+	if err := second.EnableScopedClients(secondRegistry, scopePath); err != nil {
+		t.Fatal(err)
+	}
+	eventB := eventA
+	eventB.ID, eventB.Message.ID, eventB.Referrer.MessageID = "event-b", "message-b", "message-b"
+	if err := second.Emit(ctx, eventB); err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(second.Handler())
+	defer api.Close()
+	a, b := client.New(api.URL), client.New(api.URL)
+	a.Token, b.Token = "token-a", "token-b"
+	secondSend, err := b.Send(ctx, uvim.OutboundMessage{Provider: "lark", Connector: "main", Referrer: eventB.Referrer, Text: "B new"})
+	if err != nil || secondSend.MessageID != "sent-b" {
+		t.Fatalf("B new send: %+v %v", secondSend, err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("native sends = %d", len(calls))
+	}
+	<-calls
+	<-calls
+	for _, tc := range []struct {
+		name   string
+		caller *client.Client
+		id     string
+		ref    uvim.Referrer
+		target *uvim.OutboundTarget
+		status int
+		calls  []string
+	}{
+		{"owner proactive after route move", a, firstSend.MessageID, uvim.Referrer{}, target, 200, []string{"GET /open-apis/im/v1/messages/sent-a", "PUT /open-apis/im/v1/messages/sent-a"}},
+		{"owner historic reply", a, firstSend.MessageID, eventA.Referrer, nil, 200, []string{"GET /open-apis/im/v1/messages/sent-a", "PUT /open-apis/im/v1/messages/sent-a"}},
+		{"new route owner cannot edit old receipt", b, firstSend.MessageID, eventB.Referrer, nil, 403, nil},
+		{"old owner cannot edit new receipt", a, secondSend.MessageID, eventA.Referrer, nil, 403, nil},
+		{"unknown receipt", a, "unknown", eventA.Referrer, nil, 403, nil},
+		{"foreign reply proof with own receipt", a, firstSend.MessageID, eventB.Referrer, nil, 403, nil},
+		{"wrong chat", a, firstSend.MessageID, uvim.Referrer{}, &uvim.OutboundTarget{Kind: uvim.TargetConversation, ID: "wrong-chat"}, 502, []string{"GET /open-apis/im/v1/messages/sent-a"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.caller.Update(ctx, uvim.MessageUpdate{OutboundMessage: uvim.OutboundMessage{Provider: "lark", Connector: "main", Referrer: tc.ref, Target: tc.target, Text: "replacement"}, MessageID: tc.id})
+			if tc.status == 200 {
+				if err != nil || got.MessageID != tc.id {
+					t.Errorf("update = %+v, %v", got, err)
+				}
+			} else {
+				var httpErr *client.HTTPError
+				if !errors.As(err, &httpErr) || httpErr.StatusCode != tc.status {
+					t.Errorf("want HTTP %d, got %v", tc.status, err)
+				}
+			}
+			var gotCalls []string
+			for len(calls) > 0 {
+				gotCalls = append(gotCalls, <-calls)
+			}
+			if !reflect.DeepEqual(gotCalls, tc.calls) {
+				t.Errorf("native requests = %v, want %v", gotCalls, tc.calls)
+			}
+		})
+	}
+}
+
+func TestScopedReceiptsSurviveGrowthAndRestart(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resource-scopes.json")
+	scopes, err := openResourceScopes(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Valid IDs with JSON escaping exceed 8 MiB in the old combined key/value
+	// encoding, without thousands of fsyncs. Include the duplicate final ID.
+	ids := make([]string, 180)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%04d-%s", i, strings.Repeat("<", 4090))
+	}
+	result := uvim.SendResult{MessageID: ids[len(ids)-1], MessageIDs: ids}
+	if err := scopes.claimOutboundReceipts("a", "memory", "main", result); err != nil {
+		t.Fatalf("valid receipt growth: %v", err)
+	}
+	provider := &updateTestProvider{updateMetadataProvider: &updateMetadataProvider{Provider: memory.NewConnector("memory", "main"), edit: true}}
+	hub := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, ""), &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	target := &uvim.OutboundTarget{Kind: uvim.TargetConversation, ID: "a"}
+	registry := mustClientRegistry(t, dir, []map[string]any{
+		{"id": "a", "token": "token-a", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "a", "proactive_targets": []uvim.OutboundTarget{*target}}}},
+	})
+	if err := hub.EnableScopedClients(registry, path); err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	a := client.New(api.URL)
+	a.Token = "token-a"
+	msg := uvim.OutboundMessage{Provider: "memory", Connector: "main", Target: target, Text: "after growth"}
+	sent, err := a.Send(ctx, msg)
+	if err != nil {
+		t.Fatalf("normal send after restart: %v", err)
+	}
+	for _, id := range []string{ids[0], ids[len(ids)-1], sent.MessageID} {
+		if _, err := a.Update(ctx, uvim.MessageUpdate{OutboundMessage: msg, MessageID: id}); err != nil {
+			t.Fatalf("retained receipt update: %v", err)
+		}
+	}
+	if err := hub.resourceScopes.claimOutboundReceipts("b", "memory", "main", result); err == nil {
+		t.Fatal("receipt ownership was transferred")
+	}
+	if err := hub.resourceScopes.claimOutboundReceipts("a", "memory", "main", result); err != nil {
+		t.Fatalf("same-owner receipt replay: %v", err)
+	}
+}
+
+func TestScopedSendReportsUnknownDeliveryWhenReceiptPersistenceFails(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	provider := memory.NewConnector("memory", "main")
+	hub := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, filepath.Join(dir, "events.jsonl")), &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	registry := mustClientRegistry(t, dir, []map[string]any{
+		{"id": "a", "token": "token-a", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "a"}}},
+	})
+	if err := hub.EnableScopedClients(registry, filepath.Join(dir, "resource-scopes.json")); err != nil {
+		t.Fatal(err)
+	}
+	event := uvim.Event{ID: "event-a", Type: uvim.EventMessageCreate, Provider: "memory", Connector: "main", Time: time.Now().UTC(), Channel: uvim.Channel{ID: "a"}, Message: uvim.Message{ID: "message-a"}, Referrer: uvim.Referrer{MessageID: "message-a", ChannelID: "a", Target: &uvim.OutboundTarget{Kind: uvim.TargetConversation, ID: "a"}}}
+	if err := hub.Emit(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	// This simulates a durability failure after native Send. The public HTTP
+	// boundary must say delivery is unknown rather than invite a safe retry.
+	hub.resourceScopes.err = errors.New("simulated durable sync failure")
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	a := client.New(api.URL)
+	a.Token = "token-a"
+	_, err := a.Send(ctx, uvim.OutboundMessage{Provider: "memory", Connector: "main", Referrer: event.Referrer, Text: "delivered once"})
+	failure, ok := client.ProviderSendFailure(err)
+	if !ok || failure.Category != uvim.SendFailureUnknown || failure.DeliveryState != uvim.DeliveryUnknown || failure.Retryable || len(provider.Sent()) != 1 {
+		t.Fatalf("receipt failure=%+v ok=%v sent=%+v err=%v", failure, ok, provider.Sent(), err)
+	}
+}
+
+func TestScopedClientReplyBindsCanonicalTargetAndLegacyAddressing(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	provider := &targetAwareProvider{Provider: memory.NewConnector("memory", "main")}
+	hub := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, filepath.Join(dir, "events.jsonl")), &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	registry := mustClientRegistry(t, dir, []map[string]any{
+		{"id": "a", "token": "token-a", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "native-channel"}}},
+	})
+	if err := hub.EnableScopedClients(registry, filepath.Join(dir, "resource-scopes.json")); err != nil {
+		t.Fatal(err)
+	}
+	event := uvim.Event{
+		ID: "owned-event", Type: uvim.EventMessageCreate, Provider: "memory", Connector: "main", Time: time.Now().UTC(),
+		Channel:  uvim.Channel{ID: "native-channel", Type: uvim.ChannelGroup},
+		Message:  uvim.Message{ID: "native-message"},
+		Referrer: uvim.Referrer{MessageID: "native-message", ChannelID: "native-channel"},
+	}
+	if err := hub.Emit(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	a := client.New(api.URL)
+	a.Token = "token-a"
+
+	if _, err := a.Send(ctx, uvim.OutboundMessage{Provider: "memory", Connector: "main", Referrer: event.Referrer, Text: "native reply"}); err != nil {
+		t.Fatalf("exact native reply: %v", err)
+	}
+	if len(provider.targets) != 1 || provider.targets[0] != (uvim.OutboundTarget{ID: "native-channel", Kind: uvim.TargetConversation}) {
+		t.Fatalf("native reply target = %+v", provider.targets)
+	}
+
+	for _, message := range []uvim.OutboundMessage{
+		{Provider: "memory", Connector: "main", Referrer: event.Referrer, Target: &uvim.OutboundTarget{ID: "attacker-user", Kind: uvim.TargetUser}, Text: "target override"},
+		{Provider: "memory", Connector: "main", Referrer: event.Referrer, ChannelID: "attacker-channel", Text: "channel override"},
+		{Provider: "memory", Connector: "main", Referrer: event.Referrer, ChannelID: "native-channel", ChannelType: uvim.ChannelDirect, Text: "channel type override"},
+	} {
+		if _, err := a.Send(ctx, message); err == nil {
+			t.Fatalf("caller-selected reply address was accepted: %+v", message)
+		}
+	}
+	if len(provider.targets) != 1 {
+		t.Fatalf("caller-selected reply reached provider: %+v", provider.targets)
+	}
+	if _, err := a.Send(ctx, uvim.OutboundMessage{Provider: "memory", Connector: "main", Referrer: event.Referrer, ChannelID: "native-channel", ChannelType: uvim.ChannelGroup, Text: "canonical duplicate"}); err != nil {
+		t.Fatalf("canonical legacy reply: %v", err)
+	}
+	if len(provider.targets) != 2 || provider.targets[1] != (uvim.OutboundTarget{ID: "native-channel", Kind: uvim.TargetGroup}) {
+		t.Fatalf("canonical legacy reply target = %+v", provider.targets)
+	}
+}
+
+func TestScopedClientRejectsCollidingInboundResourceBeforeDownload(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	provider := &downloadProvider{id: "memory", connector: "main", payload: "A bytes"}
+	resources := &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")}
+	hub := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, filepath.Join(dir, "events.jsonl")), resources)
+	registry := mustClientRegistry(t, dir, []map[string]any{
+		{"id": "a", "token": "token-a", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "a"}}},
+		{"id": "b", "token": "token-b", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "b"}}},
+	})
+	if err := hub.EnableScopedClients(registry, filepath.Join(dir, "resource-scopes.json")); err != nil {
+		t.Fatal(err)
+	}
+	event := func(id, conversation string) uvim.Event {
+		return uvim.Event{ID: id, Type: uvim.EventMessageCreate, Provider: "memory", Connector: "main", Time: time.Now().UTC(), Channel: uvim.Channel{ID: conversation}, Message: uvim.Message{ID: id, Resources: []uvim.ResourceRef{{ID: "shared-native-id", Kind: uvim.ElementFile, Name: "attachment.txt"}}}}
+	}
+	if err := hub.Emit(ctx, event("a-event", "a")); err != nil {
+		t.Fatal(err)
+	}
+	provider.payload = "B overwrite"
+	if err := hub.Emit(ctx, event("b-event", "b")); err == nil {
+		t.Fatal("colliding inbound resource was accepted")
+	}
+	file, _, err := resources.Open("internal://shared-native-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	got, err := io.ReadAll(file)
+	if err != nil || string(got) != "A bytes" || provider.downloads != 1 {
+		t.Fatalf("colliding ingress mutated owner resource: bytes=%q downloads=%d err=%v", got, provider.downloads, err)
+	}
+}
+
+func TestResourceScopesRefuseStateThatWouldFailToReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resource-scopes.json")
+	scopes, err := openResourceScopes(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := make(map[string]resourceScope, 2100)
+	for i := 0; i < 2100; i++ {
+		values[fmt.Sprintf("%04d-%s", i, strings.Repeat("x", 4090))] = resourceScope{ClientID: "a"}
+	}
+	if err := scopes.save(values); err == nil {
+		t.Fatal("scope writer accepted state its reader rejects")
+	}
+	if _, err := openResourceScopes(path); err != nil {
+		t.Fatalf("refused scope state made existing store unreadable: %v", err)
+	}
+}
+
+func TestOutboundReceiptMigrationPreservesAuthority(t *testing.T) {
+	for _, obstruction := range []string{"none", "interrupted", "conflict", "corrupt"} {
+		t.Run(obstruction, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "resource-scopes.json")
+			scopes, err := openResourceScopes(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Explicit historical version-1 shape, not positive lifecycle setup.
+			legacy := []byte(`{"version":1,"values":{"res":{"client_id":"a"}},"receipts":{"memory/main\u0000old":{"client_id":"a","provider":"memory","connector":"main","message_id":"old"}}}`)
+			if err := os.WriteFile(path, legacy, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			key := outboundReceiptKey("memory", "main", "old")
+			receiptPath := scopes.receiptPath(key)
+			switch obstruction {
+			case "interrupted", "conflict":
+				owner := "a"
+				if obstruction == "conflict" {
+					owner = "b"
+				}
+				if err := scopes.claimOutboundReceipts(owner, "memory", "main", uvim.SendResult{MessageID: "old"}); err != nil {
+					t.Fatal(err)
+				}
+			case "corrupt":
+				if err := os.WriteFile(receiptPath, []byte("{"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if obstruction == "conflict" || obstruction == "corrupt" {
+				if _, err := openResourceScopes(path); err == nil {
+					t.Fatal("migration accepted conflicting or corrupt attribution")
+				}
+				if raw, err := os.ReadFile(path); err != nil || !bytes.Equal(raw, legacy) {
+					t.Fatalf("failed migration changed legacy authority: %q %v", raw, err)
+				}
+				// Repair only the deliberately invalid migration fixture, then retry.
+				if err := os.Remove(receiptPath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			migrated, err := openResourceScopes(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !migrated.owns("res", "a") || !migrated.ownsOutboundReceipt("a", "memory", "main", "old") || migrated.ownsOutboundReceipt("b", "memory", "main", "old") {
+				t.Fatal("migration changed resource or receipt ownership")
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil || bytes.Contains(raw, []byte(`"receipts"`)) {
+				t.Fatalf("legacy receipt map was not retired: %q %v", raw, err)
+			}
+			reopened, err := openResourceScopes(path)
+			if err != nil || !reopened.ownsOutboundReceipt("a", "memory", "main", "old") {
+				t.Fatalf("migrated authority lost on restart: %v", err)
+			}
+		})
+	}
+}
+
+func TestScopedResourceAudienceSurvivesRestart(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	registry := mustClientRegistry(t, dir, []map[string]any{
+		{"id": "a", "token": "token-a", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "a"}}},
+		{"id": "b", "token": "token-b", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "b"}}},
+	})
+	resourceDir := filepath.Join(dir, "resources")
+	scopePath := filepath.Join(dir, "resource-scopes.json")
+	first := NewHub(uvim.NewProviderRegistry(memory.NewConnector("memory", "main")), mustEventLog(t, filepath.Join(dir, "events.jsonl")), &uvim.ResourceStore{Dir: resourceDir})
+	if err := first.EnableScopedClients(registry, scopePath); err != nil {
+		t.Fatal(err)
+	}
+	firstAPI := httptest.NewServer(first.Handler())
+	a := client.New(firstAPI.URL)
+	a.Token = "token-a"
+	ref, err := a.Upload(ctx, uvim.ResourceRef{Kind: uvim.ElementFile, Name: "owned.txt"}, []byte("a-owned"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAPI.Close()
+
+	second := NewHub(uvim.NewProviderRegistry(memory.NewConnector("memory", "main")), mustEventLog(t, filepath.Join(dir, "events.jsonl")), &uvim.ResourceStore{Dir: resourceDir})
+	if err := second.EnableScopedClients(registry, scopePath); err != nil {
+		t.Fatal(err)
+	}
+	secondAPI := httptest.NewServer(second.Handler())
+	defer secondAPI.Close()
+	afterRestartA, afterRestartB := client.New(secondAPI.URL), client.New(secondAPI.URL)
+	afterRestartA.Token, afterRestartB.Token = "token-a", "token-b"
+	if response, err := afterRestartA.ResolveInternalURL(ctx, ref.InternalURL); err != nil {
+		t.Fatalf("resource owner lost durable access: %v", err)
+	} else {
+		response.Body.Close()
+	}
+	if _, err := afterRestartB.ResolveInternalURL(ctx, ref.InternalURL); err == nil {
+		t.Fatal("client B opened client A resource after restart")
+	}
+}
+
+func TestScopedClientsNamespaceDynamicIdentityLinks(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	hub := NewHub(uvim.NewProviderRegistry(memory.NewConnector("memory", "main")), mustEventLog(t, filepath.Join(dir, "events.jsonl")), &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	registry := mustClientRegistry(t, dir, []map[string]any{
+		{"id": "a", "token": "token-a", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "a"}}},
+		{"id": "b", "token": "token-b", "routes": []map[string]any{{"provider": "memory", "connector": "main", "conversation_id": "b"}}},
+	})
+	if err := hub.EnableScopedClients(registry, filepath.Join(dir, "resource-scopes.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.EnableIdentityLinks(filepath.Join(dir, "identity-links.json")); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []uvim.Event{
+		{ID: "event-a", Type: uvim.EventMessageCreate, Provider: "memory", Connector: "main", Time: time.Now().UTC(), Channel: uvim.Channel{ID: "a", Type: uvim.ChannelDirect}, User: uvim.User{ID: "native-a"}, Message: uvim.Message{ID: "message-a"}, Referrer: uvim.Referrer{MessageID: "message-a", ChannelID: "a", Target: &uvim.OutboundTarget{Kind: uvim.TargetUser, ID: "native-a"}}},
+		{ID: "event-b", Type: uvim.EventMessageCreate, Provider: "memory", Connector: "main", Time: time.Now().UTC(), Channel: uvim.Channel{ID: "b", Type: uvim.ChannelDirect}, User: uvim.User{ID: "native-b"}, Message: uvim.Message{ID: "message-b"}, Referrer: uvim.Referrer{MessageID: "message-b", ChannelID: "b", Target: &uvim.OutboundTarget{Kind: uvim.TargetUser, ID: "native-b"}}},
+	} {
+		if err := hub.Emit(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	api := httptest.NewServer(hub.Handler())
+	defer api.Close()
+	a, b := client.New(api.URL), client.New(api.URL)
+	a.Token, b.Token = "token-a", "token-b"
+	identity := uvim.UserIdentity{Type: "account.id", Scope: "external.example", ID: "same-external-id"}
+	linkA, err := a.LinkIdentity(ctx, uvim.IdentityLinkRequest{Identity: identity, Event: uvim.IdentityEventRef{Provider: "memory", Connector: "main", EventID: "event-a"}, Proof: "a-proof"})
+	if err != nil || !linkA.Found || linkA.Link == nil {
+		t.Fatalf("client A link: %+v, %v", linkA, err)
+	}
+	linkB, err := b.LinkIdentity(ctx, uvim.IdentityLinkRequest{Identity: identity, Event: uvim.IdentityEventRef{Provider: "memory", Connector: "main", EventID: "event-b"}, Proof: "b-proof"})
+	if err != nil || !linkB.Found || linkB.Link == nil || linkB.Link.ID == linkA.Link.ID {
+		t.Fatalf("client B namespaced link: %+v, %v", linkB, err)
+	}
+	resolvedA, err := a.ResolveIdentity(ctx, uvim.IdentityResolveRequest{Identity: identity, Provider: "memory", Connector: "main"})
+	if err != nil || resolvedA.Link == nil || resolvedA.Link.ID != linkA.Link.ID {
+		t.Fatalf("client A resolution: %+v, %v", resolvedA, err)
+	}
+	resolvedB, err := b.ResolveIdentity(ctx, uvim.IdentityResolveRequest{Identity: identity, Provider: "memory", Connector: "main"})
+	if err != nil || resolvedB.Link == nil || resolvedB.Link.ID != linkB.Link.ID {
+		t.Fatalf("client B resolution: %+v, %v", resolvedB, err)
+	}
+	if err := hub.CloseIdentityLinks(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A restart reads the audience from the durable identity store. The public
+	// response still cannot disclose the Hub-side client ID.
+	restarted := NewHub(uvim.NewProviderRegistry(memory.NewConnector("memory", "main")), mustEventLog(t, filepath.Join(dir, "events.jsonl")), &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
+	if err := restarted.EnableScopedClients(registry, filepath.Join(dir, "resource-scopes.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.EnableIdentityLinks(filepath.Join(dir, "identity-links.json")); err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.CloseIdentityLinks()
+	restartedAPI := httptest.NewServer(restarted.Handler())
+	defer restartedAPI.Close()
+	afterRestartA, afterRestartB := client.New(restartedAPI.URL), client.New(restartedAPI.URL)
+	afterRestartA.Token, afterRestartB.Token = "token-a", "token-b"
+	persistedA, err := afterRestartA.ResolveIdentity(ctx, uvim.IdentityResolveRequest{Identity: identity, Provider: "memory", Connector: "main"})
+	if err != nil || persistedA.Link == nil || persistedA.Link.ID != linkA.Link.ID || persistedA.Link.ClientID != "" {
+		t.Fatalf("client A persisted scoped link: %+v, %v", persistedA, err)
+	}
+	persistedB, err := afterRestartB.ResolveIdentity(ctx, uvim.IdentityResolveRequest{Identity: identity, Provider: "memory", Connector: "main"})
+	if err != nil || persistedB.Link == nil || persistedB.Link.ID != linkB.Link.ID || persistedB.Link.ClientID != "" {
+		t.Fatalf("client B persisted scoped link: %+v, %v", persistedB, err)
+	}
+}
+
+func mustClientRegistry(t *testing.T, dir string, clients []map[string]any) *ClientRegistry {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{"version": 1, "clients": clients})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "clients.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := LoadClientRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
 func TestHubMetaIncludesServiceAndProtocolVersion(t *testing.T) {
 	provider := memory.NewConnector("memory", "main")
 	hub := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, ""), &uvim.ResourceStore{Dir: t.TempDir()})
@@ -1074,7 +1810,7 @@ func TestHubClosesSubscriberOnOverflow(t *testing.T) {
 	hub := NewHub(uvim.NewProviderRegistry(memory.New("test")), mustEventLog(t, ""), &uvim.ResourceStore{Dir: t.TempDir()})
 	ch := make(chan uvim.Event, 1)
 	hub.mu.Lock()
-	hub.subscribers[ch] = struct{}{}
+	hub.subscribers[ch] = ""
 	hub.mu.Unlock()
 	if err := hub.Emit(context.Background(), uvim.Event{ID: "evt-1", Type: uvim.EventMessageCreate, Provider: "test", Message: uvim.Message{ID: "m1"}}); err != nil {
 		t.Fatal(err)
@@ -1131,6 +1867,21 @@ type downloadProvider struct {
 	id        string
 	connector string
 	sendErr   error
+	payload   string
+	downloads int
+}
+
+type targetAwareProvider struct {
+	*memory.Provider
+	targets []uvim.OutboundTarget
+}
+
+func (p *targetAwareProvider) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+	result, err := p.Provider.Send(ctx, msg)
+	if err == nil {
+		p.targets = append(p.targets, msg.ResolvedTarget())
+	}
+	return result, err
 }
 
 func (p *downloadProvider) ID() string          { return p.id }
@@ -1159,7 +1910,8 @@ func (p *downloadProvider) Send(context.Context, uvim.OutboundMessage) (uvim.Sen
 func (p *downloadProvider) Download(ctx context.Context, req uvim.ResourceDownloadRequest) (uvim.ResourceRef, error) {
 	store := &uvim.ResourceStore{Dir: req.Dir}
 	ref := req.Resource
-	return store.Save(ctx, strings.NewReader("downloaded"), ref)
+	p.downloads++
+	return store.Save(ctx, strings.NewReader(uvim.FirstNonEmpty(p.payload, "downloaded")), ref)
 }
 func (p *downloadProvider) Health(context.Context) uvim.Health {
 	return uvim.Health{Provider: p.id, Connector: p.connector, State: "ok", CheckedAt: time.Now().UTC(), Capabilities: p.Capabilities()}

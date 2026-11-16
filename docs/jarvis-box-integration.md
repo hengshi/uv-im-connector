@@ -32,6 +32,12 @@ jarvis-box owns:
 7. jarvis-box sends final replies through `POST /v1/message.create`.
 8. On failure, jarvis-box persists the normalized `failure`, applies its own bounded retry policy, and keeps delivery state separate from agent Run state.
 
+## Several independent Box instances
+
+Use `UV_IM_CLIENTS_FILE` on a shared connector and give every long-lived Box principal its own manifest client ID, bearer token, and exact native inbound route. A Box keeps its existing connector URL and supplies only that bearer token; it must not send a client ID/header or use the legacy query-token fallback. Its event replay, WebSocket feed, `/v1/meta` provider list, identity links, uploads, inbound resources, reply proof, sends and updates are scoped by the connector.
+
+For a reply, jarvis-box persists and returns the complete inbound `Referrer`; it does not synthesize one from `channel.id`. For a proactive notification, its configured client must name the exact typed native target in `proactive_targets` or use its own verified identity link. Direct conversation IDs and another Box's `internal://` resources are not portable targets. Config changes require a connector restart and never transfer historical work to a different Box principal.
+
 ### Quoted Lark messages
 
 When no `UV_LARK_BOT_OPEN_ID` or `UV_LARK_BOT_UNION_ID` is configured,
@@ -83,6 +89,7 @@ jarvis-box does not host, spawn, or auto-update `uv-im-connector`. A connector b
 - Every provider send failure reaches jarvis-box through the same normalized failure contract.
 - Safe retryable rejection/not-attempted failures are retried without parsing text; ambiguous delivery is not replayed automatically.
 - A failed final reply reuses the persisted provider-ready result and does not rerun the agent.
+- With two scoped Box principals, each receives only its own direct/group route over HTTP replay and WebSocket, cannot reply to the other's referrer, and cannot read or attach the other's resources or identity link.
 
 ## Non-Goals
 

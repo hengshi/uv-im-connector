@@ -8,6 +8,7 @@ The standalone binary reads `UV_IM_*` variables.
 | `UV_IM_STATE_DIR` | Event log and resource directory. Defaults to `.uv-im-connector`. |
 | `UV_IM_PROVIDERS` | Comma-separated provider list. Supported values: `memory`, `wecom`, `lark`, `dingtalk`, `discord`, `kook`, `line`, `mail`, `matrix`, `onebot`, `qq`, `qqguild`, `slack`, `telegram`, `wechat-official`, `whatsapp`, `zulip`. |
 | `UV_IM_AUTH_TOKEN` | Optional bearer token required by all HTTP/WS endpoints except `/health`. |
+| `UV_IM_CLIENTS_FILE` | Optional absolute path to the startup-only shared-caller manifest. It cannot be used with `UV_IM_AUTH_TOKEN`. |
 | `UV_IM_USER_IDENTITIES_FILE` | Optional JSON file of [verified account bindings](./identities.md#verified-account-bindings), selected by exact provider, connector and native user_id. Adds identity metadata only; validated and read at startup. |
 | `UV_WECOM_CONNECTOR_ID` | WeCom connector ID. Defaults to `wecom`. |
 | `UV_WECOM_BOT_ID` | WeCom bot ID. |
@@ -39,6 +40,38 @@ The standalone binary reads `UV_IM_*` variables.
 | `UV_MAIL_WEBHOOK_SECRET` | Mail inbound webhook secret. |
 
 Provider credentials are exclusive deployment identity. Production, E2E, development, and temporary debug workers must not share the same provider credential set.
+
+## Independent caller isolation
+
+The released single-caller deployment uses an optional `UV_IM_AUTH_TOKEN`. To serve several independent applications from one connector process, set `UV_IM_CLIENTS_FILE` and leave `UV_IM_AUTH_TOKEN` unset. Both settings together fail startup. The manifest is an operator-owned private regular JSON file, mode `0600` or stricter, read and validated once at startup; edit it and restart to change a client, token, or route.
+
+```json
+{
+  "version": 1,
+  "clients": [
+    {
+      "id": "box-slot-a",
+      "token": "replace-with-a-private-bearer",
+      "routes": [
+        {
+          "provider": "lark",
+          "connector": "work",
+          "conversation_id": "oc_direct_or_group_a",
+          "proactive_targets": [
+            {"kind": "user", "id": "ou_native_a"}
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+Each client ID, token, and `provider` + `connector` + `conversation_id` route must be unique. There are no wildcards. A caller authenticates only with `Authorization: Bearer <token>`; its ID is never an HTTP field, and the legacy `access_token` query parameter is not accepted in this mode. Do not infer a proactive user from a direct conversation ID: list the exact typed native target under `proactive_targets`, or create a same-client verified identity link.
+
+The token gates only that manifest client. `/v1/meta`, HTTP event replay, WebSocket delivery, replies, updates, resources, and dynamic identity links are all scoped to it. Event sequences stay global, so a reconnect cursor can skip sequence numbers belonging to other clients. Old unscoped event/resource/link records are deliberately unavailable in shared mode. Changing a route never transfers historic events, reply authority, or identity links to another client; removing a client token removes API access, while its durable state remains unavailable to other callers.
+
+Outbound receipt ownership is retained without automatic expiry in `UV_IM_STATE_DIR/resource-scopes.json.receipts/`, separately from the bounded resource index. Back up and restore the whole state directory; do not delete receipts to reclaim space while their messages remain editable. Startup migrates receipts embedded in an older `resource-scopes.json` before serving requests. It removes the old receipt map only after every entry is durable; interrupted migrations can resume, while conflicts or unreadable legacy records fail startup. Disk or I/O failure after native delivery still returns non-retryable `delivery_state=unknown`; callers must not resend that message.
 
 WeCom bot credentials and self-built application credentials have separate roles. Messaging alone does not require an application. Enterprise lookup is optional, and failures preserve the base event. See [WeCom setup and directory identities](./guide/wecom.md) for exact value locations, trusted IPs, environment injection, CLI identifier relationships and verification.
 

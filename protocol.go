@@ -66,6 +66,11 @@ type Event struct {
 	Message   Message   `json:"message,omitempty"`
 	Referrer  Referrer  `json:"referrer,omitempty"`
 	Addressed bool      `json:"addressed,omitempty"`
+
+	// Audience is connector-private routing evidence. It is intentionally never
+	// returned by the public protocol, but the event log retains it when the
+	// service is configured for scoped callers.
+	Audience string `json:"-"`
 }
 
 func (e Event) DedupeKey() string {

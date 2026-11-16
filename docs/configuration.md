@@ -8,6 +8,7 @@
 | `UV_IM_STATE_DIR` | 事件日志和资源目录，默认 `.uv-im-connector`。 |
 | `UV_IM_PROVIDERS` | 逗号分隔的 provider 列表。支持值：`memory`、`wecom`、`lark`、`dingtalk`、`discord`、`kook`、`line`、`mail`、`matrix`、`onebot`、`qq`、`qqguild`、`slack`、`telegram`、`wechat-official`、`whatsapp`、`zulip`。 |
 | `UV_IM_AUTH_TOKEN` | 可选 bearer token。配置后，除 `/health` 外所有公共 HTTP/WS endpoint 都需要该 token。 |
+| `UV_IM_CLIENTS_FILE` | 可选的共享调用方 manifest 绝对路径；只在启动时读取，不能与 `UV_IM_AUTH_TOKEN` 同时配置。 |
 | `UV_IM_USER_IDENTITIES_FILE` | 可选的[已确认账户绑定](./identities.md#经确认的账户绑定) JSON 文件；按 provider、connector、原生 user_id 精确选择，只添加身份元数据。启动时校验和读取。 |
 | `UV_WECOM_CONNECTOR_ID` | WeCom connector ID，默认 `wecom`。 |
 | `UV_WECOM_BOT_ID` | WeCom bot ID。 |
@@ -39,6 +40,38 @@
 | `UV_MAIL_WEBHOOK_SECRET` | Mail inbound webhook secret。 |
 
 Provider credentials 是独占 deployment identity。Production、E2E、development 和临时 debug worker 不应共用同一套 provider credentials。
+
+## 独立调用方隔离
+
+已发布的单调用方部署可使用一个 `UV_IM_AUTH_TOKEN`。一个 connector 进程要服务多个相互独立的应用时，配置 `UV_IM_CLIENTS_FILE` 并保持 `UV_IM_AUTH_TOKEN` 为空；两者同时设置会启动失败。manifest 是 operator 持有的私有普通 JSON 文件，权限必须为 `0600` 或更严格，只在启动时校验和读取；修改 client、token 或 route 后必须重启。
+
+```json
+{
+  "version": 1,
+  "clients": [
+    {
+      "id": "box-slot-a",
+      "token": "replace-with-a-private-bearer",
+      "routes": [
+        {
+          "provider": "lark",
+          "connector": "work",
+          "conversation_id": "oc_direct_or_group_a",
+          "proactive_targets": [
+            {"kind": "user", "id": "ou_native_a"}
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+每个 client ID、token 和 `provider` + `connector` + `conversation_id` route 都必须唯一，不支持 wildcard。调用方只使用 `Authorization: Bearer <token>`；client ID 不属于 HTTP 字段，共享模式也不接受旧的 `access_token` query 参数。不能从私聊 conversation ID 猜测主动 user 地址；应在 `proactive_targets` 明确写出带类型的原生 target，或建立同一 client 的已验证身份关联。
+
+token 只授权该 manifest client。`/v1/meta`、HTTP 历史、WebSocket、回复、更新、资源和动态身份关联都会按它隔离。事件 sequence 仍是服务全局序号，因此重连 cursor 跳过其他 client 的序号是正常现象。旧的未分配 event/resource/link 在共享模式不可访问。route 改动不会把历史 event、reply 权限或身份关联移交给其他 client；移除 client token 会撤销 API 访问，而其持久化状态仍不会暴露给其他调用方。
+
+出站回执归属保存在 `UV_IM_STATE_DIR/resource-scopes.json.receipts/`，与有容量限制的资源索引分开，且不会自动过期。备份和恢复须覆盖整个状态目录；消息仍可编辑时，不能靠删除回执释放空间。启动时会先迁移旧 `resource-scopes.json` 中的回执，再开放服务；只有每条记录都持久化后才移除旧回执 map。迁移中断可继续，归属冲突或旧记录不可读则启动失败。原生发送完成后如遇磁盘或 I/O 故障，仍返回不可重试的 `delivery_state=unknown`，调用方不能重发该消息。
 
 企微 BotID/Secret 与自建应用凭据属于两套身份。仅收发消息时无需配置自建应用；企业账号查询是可选能力，查询失败仍发布基础事件。完整的取值位置、可信 IP、环境注入、CLI 标识关系和验证步骤见[企微接入与通讯录](./guide/wecom.md)。
 

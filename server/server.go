@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -24,11 +25,13 @@ type Hub struct {
 	eventLog       *uvim.EventLog
 	resources      *uvim.ResourceStore
 	authToken      string
+	clients        *ClientRegistry
+	resourceScopes *resourceScopes
 	identityMapper *uvim.UserIdentityMapper
 	identityLinks  *identityLinks
 
 	mu          sync.Mutex
-	subscribers map[chan uvim.Event]struct{}
+	subscribers map[chan uvim.Event]string
 	upgrader    websocket.Upgrader
 }
 
@@ -46,7 +49,7 @@ func NewHub(registry *uvim.ProviderRegistry, eventLog *uvim.EventLog, resources 
 		registry:    registry,
 		eventLog:    eventLog,
 		resources:   resources,
-		subscribers: map[chan uvim.Event]struct{}{},
+		subscribers: map[chan uvim.Event]string{},
 		upgrader:    websocket.Upgrader{},
 	}
 	hub.upgrader.CheckOrigin = hub.checkOrigin
@@ -59,6 +62,38 @@ func (h *Hub) SetAuthToken(token string) {
 	}
 }
 
+// EnableScopedClients switches this Hub to explicit multi-caller mode. The
+// legacy shared bearer token is deliberately unavailable in this mode: a
+// global credential would bypass the durable audience boundary.
+func (h *Hub) EnableScopedClients(clients *ClientRegistry, resourceScopePath string) error {
+	if h == nil || clients == nil || h.clients != nil || h.authToken != "" {
+		return errors.New("scoped clients require a new hub without a global auth token")
+	}
+	for _, client := range clients.clients {
+		for _, route := range client.Routes {
+			provider := h.registry.Get(route.Provider, route.Connector)
+			if provider == nil {
+				return fmt.Errorf("scoped route provider %q connector %q is not configured", route.Provider, route.Connector)
+			}
+			for _, target := range route.ProactiveTargets {
+				if err := uvim.ValidateOutboundTarget(uvim.OutboundMessage{Provider: route.Provider, Connector: route.Connector, Target: &target}, provider.Capabilities()); err != nil {
+					return fmt.Errorf("scoped proactive target %q/%q: %w", route.Provider, route.Connector, err)
+				}
+			}
+		}
+	}
+	scopes, err := openResourceScopes(resourceScopePath)
+	if err != nil {
+		return err
+	}
+	h.clients, h.resourceScopes = clients, scopes
+	return nil
+}
+
+func (h *Hub) scoped() bool { return h != nil && h.clients != nil }
+
+func (h *Hub) authenticated() bool { return h != nil && (h.authToken != "" || h.clients != nil) }
+
 // SetUserIdentityMapper configures optional account associations before serving.
 func (h *Hub) SetUserIdentityMapper(mapper *uvim.UserIdentityMapper) {
 	h.identityMapper = mapper
@@ -69,8 +104,33 @@ func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
 	if event.Time.IsZero() {
 		event.Time = time.Now().UTC()
 	}
+	if event.ID == "" {
+		event.ID = uvim.NewID("evt")
+	}
+	audience := ""
+	if h.scoped() {
+		audience = h.clients.Owner(event)
+		if audience == "" {
+			// In shared mode every provider event needs an exact operator-owned
+			// route. Do not retain an unassigned event in the global log where a
+			// future mode change could expose it.
+			return errors.New("event route is outside scoped caller configuration")
+		}
+		// Native download adapters persist to the shared ResourceStore using the
+		// supplied resource ID. Reserve every inbound ID before calling them: a
+		// later caller must be rejected before it can truncate an existing owner's
+		// file through ResourceStore.Save.
+		if err := h.reserveScopedEventResources(&event, audience); err != nil {
+			return err
+		}
+	}
 	event = h.resolveEventResources(ctx, event)
-	written, fresh, err := h.eventLog.Append(ctx, event)
+	if h.scoped() && audience != "" {
+		if err := h.scopeEventResources(event, audience); err != nil {
+			return err
+		}
+	}
+	written, fresh, err := h.eventLog.AppendForAudience(ctx, event, audience)
 	if err != nil {
 		return err
 	}
@@ -78,7 +138,10 @@ func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
 		return nil
 	}
 	h.mu.Lock()
-	for ch := range h.subscribers {
+	for ch, subscriberAudience := range h.subscribers {
+		if h.scoped() && subscriberAudience != audience {
+			continue
+		}
 		select {
 		case ch <- written.Sanitized():
 		default:
@@ -166,7 +229,11 @@ func (h *Hub) handleMeta(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	var providers []uvim.ProviderMeta
+	caller := clientPrincipal(req)
 	for _, provider := range h.registry.List() {
+		if h.scoped() && !h.clients.AllowsProvider(caller, provider.ID(), provider.ConnectorID()) {
+			continue
+		}
 		providers = append(providers, uvim.ProviderMeta{
 			Provider:     provider.ID(),
 			Connector:    provider.ConnectorID(),
@@ -175,7 +242,7 @@ func (h *Hub) handleMeta(w http.ResponseWriter, req *http.Request) {
 		})
 	}
 	meta := uvim.NewServiceMeta(providers)
-	meta.IdentityLinks = h.identityLinks != nil && h.authToken != ""
+	meta.IdentityLinks = h.identityLinks != nil && h.authenticated()
 	writeJSON(w, http.StatusOK, meta)
 }
 
@@ -185,7 +252,7 @@ func (h *Hub) handleEvents(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	after, _ := strconv.ParseInt(req.URL.Query().Get("after"), 10, 64)
-	events, err := h.eventLog.ReadAfter(req.Context(), after)
+	events, err := h.readEvents(req.Context(), clientPrincipal(req), after)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -208,15 +275,16 @@ func (h *Hub) handleEventsWS(w http.ResponseWriter, req *http.Request) {
 	defer conn.Close()
 	after, _ := strconv.ParseInt(req.URL.Query().Get("after"), 10, 64)
 	ch := make(chan uvim.Event, 32)
+	caller := clientPrincipal(req)
 	h.mu.Lock()
-	h.subscribers[ch] = struct{}{}
+	h.subscribers[ch] = caller
 	h.mu.Unlock()
 	defer func() {
 		h.mu.Lock()
 		delete(h.subscribers, ch)
 		h.mu.Unlock()
 	}()
-	backlog, err := h.eventLog.ReadAfter(req.Context(), after)
+	backlog, err := h.readEvents(req.Context(), caller, after)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		_ = conn.WriteJSON(map[string]any{"error": err.Error()})
 		return
@@ -272,7 +340,16 @@ func (h *Hub) handleMessageCreate(w http.ResponseWriter, req *http.Request) {
 		writeProviderError(w, err)
 		return
 	}
-	if err := h.validateIdentityLink(req.Context(), msg); err != nil {
+	if err := uvim.ValidateOutboundResources(msg, provider.Capabilities()); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_resource")
+		return
+	}
+	caller := clientPrincipal(req)
+	if err := h.authorizeScopedOutbound(req.Context(), caller, msg); err != nil {
+		writeError(w, http.StatusForbidden, "scoped_delivery_not_authorized")
+		return
+	}
+	if err := h.validateIdentityLink(req.Context(), caller, msg); err != nil {
 		writeProviderError(w, uvim.NewProviderSendFailure(uvim.SendFailure{Category: uvim.SendFailureInvalidRequest, DeliveryState: uvim.DeliveryNotAttempted}, err.Error(), err))
 		return
 	}
@@ -284,6 +361,14 @@ func (h *Hub) handleMessageCreate(w http.ResponseWriter, req *http.Request) {
 		}
 		slog.Error("provider send failed", "provider", provider.ID(), "connector", provider.ConnectorID(), "reason", reason)
 		writeProviderError(w, err)
+		return
+	}
+	if err := h.persistScopedOutboundReceipt(caller, provider, result); err != nil {
+		// The native effect has completed but cannot be durably attributed. It is
+		// deliberately reported as unknown so a caller does not safely retry and
+		// create a duplicate delivery.
+		slog.Error("outbound receipt persistence failed after provider send", "provider", provider.ID(), "connector", provider.ConnectorID(), "reason", err.Error())
+		writeProviderError(w, uvim.NewProviderSendFailure(uvim.SendFailure{Category: uvim.SendFailureUnknown, Retryable: false, DeliveryState: uvim.DeliveryUnknown}, "outbound delivery is unknown; do not retry", err))
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -321,7 +406,21 @@ func (h *Hub) handleMessageUpdate(w http.ResponseWriter, req *http.Request) {
 		}
 		return
 	}
-	if err := h.validateIdentityLink(req.Context(), msg.OutboundMessage); err != nil {
+	caller := clientPrincipal(req)
+	if h.scoped() && !h.resourceScopes.ownsOutboundReceipt(caller, msg.Provider, msg.Connector, msg.MessageID) {
+		writeError(w, http.StatusForbidden, "scoped_delivery_not_authorized")
+		return
+	}
+	// An owned receipt authorizes editing the existing message even after its
+	// ingress route moves. Supplied reply proof must still belong to this caller;
+	// the native updater binds the exact message to its original destination.
+	if hasReplyProof(msg.Referrer) {
+		if err := h.authorizeScopedOutbound(req.Context(), caller, msg.OutboundMessage); err != nil {
+			writeError(w, http.StatusForbidden, "scoped_delivery_not_authorized")
+			return
+		}
+	}
+	if err := h.validateIdentityLink(req.Context(), caller, msg.OutboundMessage); err != nil {
 		writeProviderError(w, uvim.NewProviderSendFailure(uvim.SendFailure{Category: uvim.SendFailureInvalidRequest, DeliveryState: uvim.DeliveryNotAttempted}, err.Error(), err))
 		return
 	}
@@ -354,7 +453,17 @@ func (h *Hub) handleUploadCreate(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	ref, err := h.resources.Save(req.Context(), bytes.NewReader(raw), uvim.ResourceRef{Kind: input.Kind, Name: input.Name, MIME: input.MIME})
+	refInput := uvim.ResourceRef{Kind: input.Kind, Name: input.Name, MIME: input.MIME}
+	if h.scoped() {
+		// Reserve the Hub-generated storage ID before bytes are written, so a
+		// bounded scope index cannot fail after an irreversible resource write.
+		refInput.ID = uvim.NewID("res")
+		if err := h.resourceScopes.claim(refInput.ID, resourceScope{ClientID: clientPrincipal(req)}); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "resource_scope_unavailable")
+			return
+		}
+	}
+	ref, err := h.resources.Save(req.Context(), bytes.NewReader(raw), refInput)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -370,6 +479,21 @@ func (h *Hub) handleResourceDownload(w http.ResponseWriter, req *http.Request) {
 	var input uvim.ResourceDownloadRequest
 	if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if h.scoped() {
+		id := resourceID(input.Resource)
+		if id == "" || !h.resourceScopes.owns(id, clientPrincipal(req)) {
+			writeError(w, http.StatusNotFound, "resource_not_found")
+			return
+		}
+		file, ref, err := h.resources.Open("internal://" + id)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "resource_not_found")
+			return
+		}
+		_ = file.Close()
+		writeJSON(w, http.StatusOK, ref.Sanitized())
 		return
 	}
 	provider := h.registry.Get(input.Resource.Provider, input.Resource.Connector)
@@ -412,6 +536,10 @@ func (h *Hub) handleInternal(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	id := strings.TrimPrefix(req.URL.Path, "/v1/internal/")
+	if h.scoped() && !h.resourceScopes.owns(id, clientPrincipal(req)) {
+		writeError(w, http.StatusNotFound, "resource_not_found")
+		return
+	}
 	file, ref, err := h.resources.Open("internal://" + id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "resource_not_found")
@@ -482,6 +610,244 @@ func (h *Hub) resolveEventResources(ctx context.Context, event uvim.Event) uvim.
 	return event.Sanitized()
 }
 
+func (h *Hub) readEvents(ctx context.Context, caller string, after int64) ([]uvim.Event, error) {
+	if !h.scoped() {
+		return h.eventLog.ReadAfter(ctx, after)
+	}
+	events, err := h.eventLog.ReadForAudience(ctx, caller, after)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]uvim.Event, 0, len(events))
+	for _, event := range events {
+		// A route move affects only future ingress. Historic facts remain with
+		// their durably stamped audience and cannot become visible to the client
+		// that now owns the route.
+		if h.clients.OwnsEvent(caller, event) {
+			out = append(out, event)
+		}
+	}
+	return out, nil
+}
+
+func (h *Hub) scopeEventResources(event uvim.Event, clientID string) error {
+	if h.resourceScopes == nil {
+		return errors.New("resource scope state is unavailable")
+	}
+	scope := resourceScope{ClientID: clientID, Provider: event.Provider, Connector: event.Connector, ConversationID: event.Channel.ID, EventID: event.ID}
+	return h.resourceScopes.claimResources(eventResourceIDs(event), scope)
+}
+
+func (h *Hub) reserveScopedEventResources(event *uvim.Event, clientID string) error {
+	if event == nil {
+		return errors.New("event is required")
+	}
+	provider := h.registry.Get(event.Provider, event.Connector)
+	if provider != nil && provider.Capabilities().DownloadResource {
+		for i := range event.Message.Resources {
+			ref := &event.Message.Resources[i]
+			// All native adapters retain ResourceRef.ID when they save to req.Dir.
+			// If an adapter receives no native ID, assign the shared-store ID here so
+			// the claim still happens before Download can create its file.
+			if ref.InternalURL == "" && ref.Error == "" && resourceID(*ref) == "" {
+				ref.ID = uvim.NewID("res")
+			}
+		}
+	}
+	return h.scopeEventResources(*event, clientID)
+}
+
+func eventResourceIDs(event uvim.Event) []string {
+	seen := map[string]struct{}{}
+	add := func(ref uvim.ResourceRef) {
+		if id := resourceID(ref); id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+	for _, ref := range event.Message.Resources {
+		add(ref)
+	}
+	var walk func([]uvim.Element)
+	walk = func(elements []uvim.Element) {
+		for _, element := range elements {
+			if element.Resource != nil {
+				add(*element.Resource)
+			}
+			walk(element.Children)
+		}
+	}
+	walk(event.Message.Elements)
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	return out
+}
+
+func resourceID(ref uvim.ResourceRef) string {
+	if id := strings.TrimPrefix(strings.TrimSpace(ref.InternalURL), "internal://"); id != "" {
+		return id
+	}
+	return strings.TrimSpace(ref.ID)
+}
+
+func (h *Hub) authorizeScopedOutbound(ctx context.Context, clientID string, msg uvim.OutboundMessage) error {
+	if !h.scoped() {
+		return nil
+	}
+	if clientID == "" {
+		return errors.New("provider connector is outside caller scope")
+	}
+	if hasReplyProof(msg.Referrer) {
+		event, err := h.replyEventForCaller(ctx, clientID, msg)
+		if err != nil {
+			return err
+		}
+		if err := validateScopedReplyAddress(event, msg); err != nil {
+			return err
+		}
+		return h.authorizeScopedResources(clientID, msg)
+	}
+	// New/proactive delivery needs a currently configured provider route. An
+	// exact durable referrer above is different: it remains reply authority even
+	// after the operator moves all future ingress for that connector elsewhere.
+	if !h.clients.AllowsProvider(clientID, msg.Provider, msg.Connector) {
+		return errors.New("provider connector is outside caller scope")
+	}
+	// Shared mode does not reinterpret the legacy channel fields as native
+	// addresses. A proactive target is either explicitly operator-authorized or
+	// a same-client verified identity link, and must keep its typed kind/id_type.
+	if msg.Target == nil {
+		return errors.New("scoped proactive delivery requires an explicit target")
+	}
+	target := normalizedTarget(*msg.Target)
+	if !h.clients.AllowsProactive(clientID, msg.Provider, msg.Connector, target) && !h.identityLinkBelongsTo(clientID, msg) {
+		return errors.New("proactive target is outside caller scope")
+	}
+	return h.authorizeScopedResources(clientID, msg)
+}
+
+func validateScopedReplyAddress(event uvim.Event, msg uvim.OutboundMessage) error {
+	canonical := replyProofForEvent(event)
+	// A reply proof is authority only for the durable native addressing carried
+	// by its source event. An absent canonical typed target cannot authorize a
+	// caller-selected one; doing so would turn a reply into an unscoped proactive
+	// effect because ResolvedTarget gives msg.Target precedence.
+	if msg.Target != nil && (canonical.Target == nil || normalizedTarget(*msg.Target) != normalizedTarget(*canonical.Target)) {
+		return errors.New("reply target does not match the source event")
+	}
+	// Legacy fields can still describe the exact native channel for adapters
+	// that need them, but they must not override the retained event. channel_type
+	// is an outer addressing hint, so bind it to the normalized event channel.
+	if channelID := strings.TrimSpace(msg.ChannelID); channelID != "" && channelID != canonical.ChannelID {
+		return errors.New("reply channel does not match the source event")
+	}
+	if channelType := strings.ToLower(strings.TrimSpace(msg.ChannelType)); channelType != "" && channelType != strings.ToLower(strings.TrimSpace(event.Channel.Type)) {
+		return errors.New("reply channel type does not match the source event")
+	}
+	return nil
+}
+
+func (h *Hub) persistScopedOutboundReceipt(clientID string, provider uvim.Provider, result uvim.SendResult) error {
+	if !h.scoped() {
+		return nil
+	}
+	if h.resourceScopes == nil {
+		return errors.New("resource scope state is unavailable")
+	}
+	return h.resourceScopes.claimOutboundReceipts(clientID, provider.ID(), provider.ConnectorID(), result)
+}
+
+func (h *Hub) authorizeScopedResources(clientID string, msg uvim.OutboundMessage) error {
+	if !h.scoped() {
+		return nil
+	}
+	for _, id := range outboundResourceIDs(msg) {
+		if !h.resourceScopes.owns(id, clientID) {
+			return errors.New("resource is outside caller scope")
+		}
+	}
+	return nil
+}
+
+func outboundResourceIDs(msg uvim.OutboundMessage) []string {
+	seen := map[string]struct{}{}
+	add := func(ref uvim.ResourceRef) {
+		if id := resourceID(ref); id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+	for _, ref := range msg.Resources {
+		add(ref)
+	}
+	var walk func([]uvim.Element)
+	walk = func(elements []uvim.Element) {
+		for _, element := range elements {
+			if element.Resource != nil {
+				add(*element.Resource)
+			}
+			walk(element.Children)
+		}
+	}
+	walk(msg.Elements)
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	return out
+}
+
+func hasReplyProof(ref uvim.Referrer) bool {
+	return strings.TrimSpace(ref.MessageID) != "" || strings.TrimSpace(ref.ReplyToken) != ""
+}
+
+func (h *Hub) replyEventForCaller(ctx context.Context, clientID string, msg uvim.OutboundMessage) (uvim.Event, error) {
+	events, err := h.eventLog.ReadForAudience(ctx, clientID, 0)
+	if err != nil {
+		return uvim.Event{}, err
+	}
+	var found uvim.Event
+	for _, event := range events {
+		if !h.clients.OwnsEvent(clientID, event) || uvim.ProviderKey(event.Provider, event.Connector) != uvim.ProviderKey(msg.Provider, msg.Connector) {
+			continue
+		}
+		if sameReplyProof(replyProofForEvent(event), msg.Referrer) {
+			if found.ID != "" {
+				return uvim.Event{}, errors.New("reply proof is ambiguous")
+			}
+			found = event
+		}
+	}
+	if found.ID == "" {
+		return uvim.Event{}, errors.New("reply proof is not owned by caller")
+	}
+	return found, nil
+}
+
+func replyProofForEvent(event uvim.Event) uvim.Referrer {
+	ref := event.Referrer
+	if ref.MessageID == "" {
+		ref.MessageID = event.Message.ID
+	}
+	if ref.ChannelID == "" {
+		ref.ChannelID = event.Channel.ID
+	}
+	return ref
+}
+
+func sameReplyProof(want, got uvim.Referrer) bool {
+	if want.MessageID != got.MessageID || want.ParentMessageID != got.ParentMessageID || want.RootMessageID != got.RootMessageID || want.ChannelID != got.ChannelID || want.ThreadID != got.ThreadID || want.ReplyToken != got.ReplyToken {
+		return false
+	}
+	if (want.ExpiresAt == nil) != (got.ExpiresAt == nil) || (want.ExpiresAt != nil && !want.ExpiresAt.Equal(*got.ExpiresAt)) {
+		return false
+	}
+	if (want.Target == nil) != (got.Target == nil) {
+		return false
+	}
+	return want.Target == nil || normalizedTarget(*want.Target) == normalizedTarget(*got.Target)
+}
+
 func elementsFromTextAndResources(text string, refs []uvim.ResourceRef) []uvim.Element {
 	var out []uvim.Element
 	if strings.TrimSpace(text) != "" {
@@ -495,7 +861,19 @@ func elementsFromTextAndResources(text string, refs []uvim.ResourceRef) []uvim.E
 
 func (h *Hub) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path == "/health" || strings.HasPrefix(req.URL.Path, "/v1/webhook/") || h.authOK(req) {
+		if req.URL.Path == "/health" || strings.HasPrefix(req.URL.Path, "/v1/webhook/") {
+			next.ServeHTTP(w, req)
+			return
+		}
+		if h.scoped() {
+			if clientID, ok := h.clients.Authenticate(req); ok {
+				next.ServeHTTP(w, withClientPrincipal(req, clientID))
+				return
+			}
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		if h.authOK(req) {
 			next.ServeHTTP(w, req)
 			return
 		}
@@ -518,6 +896,10 @@ func (h *Hub) authOK(req *http.Request) bool {
 }
 
 func (h *Hub) checkOrigin(req *http.Request) bool {
+	if h.scoped() {
+		_, ok := h.clients.Authenticate(req)
+		return ok
+	}
 	if h.authOK(req) {
 		return true
 	}

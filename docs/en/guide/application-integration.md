@@ -5,7 +5,7 @@ This page describes the integration contract for an application, bot, agent serv
 ## Startup
 
 1. Configure provider credentials in the connector service.
-2. Start `uv-im-connector` with a private listener and `UV_IM_AUTH_TOKEN`.
+2. Start `uv-im-connector` with a private listener and either `UV_IM_AUTH_TOKEN` for one caller or `UV_IM_CLIENTS_FILE` for independently scoped callers.
 3. Call `GET /v1/meta` to verify service/protocol compatibility and record provider IDs, connector IDs, capabilities, and health.
 4. Start the event consumer from the last processed sequence.
 
@@ -21,6 +21,14 @@ The startup check should at least verify:
 - required capabilities are true.
 
 Connector bugfixes within the same `protocol_version` can be deployed by upgrading only the connector service. Caller applications need their own release when the protocol is incompatible or when they consume a new client/API surface.
+
+## Shared connector callers
+
+In `UV_IM_CLIENTS_FILE` mode, one bearer token identifies one configured caller; do not add a client ID to requests. Each caller can see only the manifest's exact inbound `provider` + `connector` + `conversation_id` routes, and only the metadata for provider/connectors it can use. Its event log and WebSocket cursor are filtered after the shared log sequence is assigned, so sequence gaps from other callers are expected and must not be treated as loss.
+
+Keep the complete inbound `referrer` to reply. The connector proves that it belongs to the authenticated caller before a reply or update is sent. A route move changes future ingress only: it neither transfers historic reply authority to the new caller nor removes it from the original caller. A stale or another caller's referrer is rejected. Updates require the exact native message receipt returned by that caller's prior successful send; an unknown or another caller's receipt is rejected. This ownership survives restart and route changes, including proactive messages without an inbound referrer. The provider still verifies the original destination before editing; any supplied referrer and identity link must remain valid for that caller. A proactive send has no referrer and therefore requires a currently configured provider route plus an explicit typed `target` that is either listed in the caller's `proactive_targets` manifest entry or is the target of that caller's current verified identity link. A direct conversation ID is not a user target.
+
+Upload only through the caller's own token and send only the complete returned `ResourceRef`. Internal URLs and inbound resources are client-owned; copying one to another caller does not grant read, `resource.download`, or outbound-attachment authority. Client/route changes take effect only on restart. They never transfer historic events, reply proof, or identity links; removing a token makes its durable state inaccessible to everyone else.
 
 ## Inbound Flow
 

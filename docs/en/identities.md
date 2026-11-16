@@ -98,7 +98,7 @@ Embedded Go applications construct `NewUserIdentityMapper` and call `Hub.SetUser
 
 ## Verified dynamic links
 
-An authenticated business application may register a link after verifying the external account itself. Discover support through `GET /v1/meta` and `identity_links: true`, without a connector version or provider allowlist. Identity endpoints require a configured `UV_IM_AUTH_TOKEN`.
+An authenticated business application may register a link after verifying the external account itself. Discover support through `GET /v1/meta` and `identity_links: true`, without a connector version or provider allowlist. Identity endpoints require authentication: a configured `UV_IM_AUTH_TOKEN` in the released single-caller mode, or the caller's individual bearer token in `UV_IM_CLIENTS_FILE` mode.
 
 | POST endpoint | Input | Result |
 | --- | --- | --- |
@@ -111,6 +111,8 @@ Business identities require `type`, `scope`, and `id`. Prefer stable native IDs,
 Direct conversations preserve their native `referrer.target`, including `kind` and `id_type`. Reply-only channels cannot promise lasting proactive delivery. Matrix checks that the room currently contains exactly the bot and sender, and rechecks membership before each linked send. Native permissions, visibility and messaging windows still apply.
 
 The sole dynamic store is `identity-links.json` in state-dir, with a single-writer lock and atomic versioned snapshots. Corrupt or unsupported state fails startup without overwriting data. A directory-sync failure after rename stops identity operations until restart resolves the durable outcome. The startup-only `UV_IM_USER_IDENTITIES_FILE` is unchanged and is never rewritten.
+
+In shared-caller mode, a dynamic link is durably namespaced to the authenticated caller as well as its provider/connector. Other callers cannot resolve, replace, revoke, or send through it. Its source event must have been assigned to that caller at ingress. Changing routes affects future ingress only: it never transfers the link or its retained reply proof to the new route owner.
 
 Use the returned `id` and `revision` as `identity_link` on `message.create` or `message.update`, together with the exact native `target`. Stale, revoked or redirected references are rejected before sending as `invalid-request / not-attempted`. An already-started external request cannot be recalled. Ordinary messages without a link reference retain their contract; applications must honor `revoked` instead of bypassing it with guessed destinations.
 

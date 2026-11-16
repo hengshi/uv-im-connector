@@ -57,6 +57,12 @@ Optional WeCom enterprise lookup runs in the event-emission worker, with bounded
 
 `reply_stream` applies only to live passive reply-token routes. `edit_message` requires a genuine optional `MessageUpdater`. `text_max_bytes` bounds normalized UTF-8 text bytes per call; zero or absent means unknown. See [application integration](./guide/application-integration.md#complete-text-reply-streams-and-editing) for streaming, editing, long content, and compatibility.
 
+## Shared caller boundary
+
+The optional `UV_IM_CLIENTS_FILE` keeps one Hub, provider registry, event log, and resource store, but gives each authenticated bearer an immutable client principal. The manifest assigns exact `provider` + `connector` + `conversation_id` ingress routes. Hub emission stamps the durable log row with that private audience before it broadcasts, and HTTP/WS replay checks that durable audience. The audience is not an `Event` protocol field and is never serialized to callers.
+
+The same principal owns resource IDs and dynamic identity links. A send/update is authorized either by a unique exact referrer proof from an owned current event, or, for proactive delivery, by an explicit typed manifest target or that principal's verified identity link. Thus a direct conversation ID is not promoted to a user address. A route/client change is restart-only and never transfers historical event, reply, resource, or identity authority. The released global-token path remains the single-caller default; it cannot coexist with shared callers.
+
 ## Provider Capability Matrix
 
 This table covers the 16 external providers and excludes `memory`, which is used for tests and local development. `Conditional` means the adapter supports the operation when the platform condition in the last column is met.
@@ -136,7 +142,7 @@ ResourceRef
 | `POST /v1/webhook/{provider}/{connector}` | Provider webhook ingress. Webhook verification is owned by the provider adapter. |
 | `GET /v1/internal/<id>` | Resolve internal resource. |
 
-All endpoints except `/health` and provider webhook ingress require `Authorization: Bearer <UV_IM_AUTH_TOKEN>` when `UV_IM_AUTH_TOKEN` is configured. Provider webhook ingress must use provider-level webhook verification before emitting normalized events, and webhook-capable providers reject ingress when no provider webhook secret is configured.
+All endpoints except `/health` and provider webhook ingress require `Authorization: Bearer <UV_IM_AUTH_TOKEN>` when `UV_IM_AUTH_TOKEN` is configured. With `UV_IM_CLIENTS_FILE`, the same header carries an individual client token and query-token fallback is disabled. Provider webhook ingress must use provider-level webhook verification before emitting normalized events, and webhook-capable providers reject ingress when no provider webhook secret is configured.
 
 `/v1/meta` is the caller compatibility check entrypoint. Callers should decide whether to continue startup from `service`, `protocol_version`, and capabilities, not from provider names alone.
 

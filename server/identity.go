@@ -20,11 +20,19 @@ import (
 )
 
 type identityLinks struct {
-	mu    sync.Mutex
-	path  string
-	lock  *os.File
-	links map[string]uvim.IdentityLink
-	err   error // A failed directory sync after rename has an uncertain durable outcome.
+	mu      sync.Mutex
+	path    string
+	lock    *os.File
+	links   map[string]uvim.IdentityLink
+	version int
+	err     error // A failed directory sync after rename has an uncertain durable outcome.
+}
+
+// persistedIdentityLink keeps the scoped-client audience out of the public
+// IdentityLink JSON while retaining it in the Hub's durable state.
+type persistedIdentityLink struct {
+	uvim.IdentityLink
+	ClientID string `json:"client_id,omitempty"`
 }
 
 // EnableIdentityLinks opens the single-writer store belonging to this Hub.
@@ -44,7 +52,7 @@ func (h *Hub) EnableIdentityLinks(path string) error {
 		lock.Close()
 		return errors.New("identity link state is already owned by another process")
 	}
-	store := &identityLinks{path: path, lock: lock, links: map[string]uvim.IdentityLink{}}
+	store := &identityLinks{path: path, lock: lock, links: map[string]uvim.IdentityLink{}, version: 1}
 	file, err := os.Open(path)
 	if err == nil {
 		defer file.Close()
@@ -53,13 +61,13 @@ func (h *Hub) EnableIdentityLinks(path string) error {
 			return errors.New("identity link state is not a bounded regular file")
 		}
 		var state struct {
-			Version int                          `json:"version"`
-			Links   map[string]uvim.IdentityLink `json:"links"`
+			Version int                              `json:"version"`
+			Links   map[string]persistedIdentityLink `json:"links"`
 		}
 		decoder := json.NewDecoder(io.LimitReader(file, 8<<20))
 		decoder.DisallowUnknownFields()
 		err = decoder.Decode(&state)
-		if err == nil && state.Version != 1 {
+		if err == nil && state.Version != 1 && state.Version != 2 {
 			err = errors.New("unsupported identity link state version")
 		}
 		if err == nil {
@@ -69,8 +77,11 @@ func (h *Hub) EnableIdentityLinks(path string) error {
 			}
 		}
 		if err == nil {
-			for key, link := range state.Links {
-				if !validIdentity(link.Identity) || key != identityLinkKey(link.Identity, link.Provider, link.Connector) || link.ID != key || link.Revision == "" || link.UserID == "" || link.VerifiedAt.IsZero() || link.Target.ID == "" || link.Target.Kind == "" || link.Origin.Provider != link.Provider || link.Origin.Connector != link.Connector || link.Origin.EventID == "" || link.Proof == "" {
+			store.version = state.Version
+			for key, persisted := range state.Links {
+				link := persisted.IdentityLink
+				link.ClientID = persisted.ClientID
+				if !validIdentity(link.Identity) || key != identityLinkKeyForClient(link.ClientID, link.Identity, link.Provider, link.Connector) || link.ID != key || link.Revision == "" || link.UserID == "" || link.VerifiedAt.IsZero() || link.Target.ID == "" || link.Target.Kind == "" || link.Origin.Provider != link.Provider || link.Origin.Connector != link.Connector || link.Origin.EventID == "" || link.Proof == "" || (link.ClientID != "" && !safeConfigAtom(link.ClientID, 128)) {
 					err = errors.New("invalid persisted identity link")
 					break
 				}
@@ -79,13 +90,13 @@ func (h *Hub) EnableIdentityLinks(path string) error {
 					break
 				}
 				if !link.Revoked && link.Account != nil {
-					if other, found := store.find(*link.Account, link.Provider, link.Connector); found && !other.Revoked && other.ID != link.ID {
+					if other, found := store.find(*link.Account, link.Provider, link.Connector, link.ClientID); found && !other.Revoked && other.ID != link.ID {
 						err = errors.New("ambiguous persisted account alias")
 						break
 					}
 				}
 				if !link.Revoked {
-					if other, found := store.find(link.Identity, link.Provider, link.Connector); found && !other.Revoked && other.ID != link.ID {
+					if other, found := store.find(link.Identity, link.Provider, link.Connector, link.ClientID); found && !other.Revoked && other.ID != link.ID {
 						err = errors.New("ambiguous persisted business identity")
 						break
 					}
@@ -121,16 +132,28 @@ func identityLinkKey(identity uvim.UserIdentity, provider, connector string) str
 	return hex.EncodeToString(sum[:])
 }
 
+// identityLinkKeyForClient preserves released single-caller IDs. New scoped
+// links include their authenticated principal so the same external account can
+// be independently verified by two isolated caller applications.
+func identityLinkKeyForClient(clientID string, identity uvim.UserIdentity, provider, connector string) string {
+	if clientID == "" {
+		return identityLinkKey(identity, provider, connector)
+	}
+	data, _ := json.Marshal([]string{"scoped-v2", clientID, identity.Type, identity.Scope, identity.ID, provider, connector})
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
 func sameIdentity(a, b uvim.UserIdentity) bool {
 	return a.Type == b.Type && a.Scope == b.Scope && a.ID == b.ID
 }
 
 // A verified login is an alias of the stable native ID, never a display name.
-func (s *identityLinks) find(identity uvim.UserIdentity, provider, connector string) (uvim.IdentityLink, bool) {
+func (s *identityLinks) find(identity uvim.UserIdentity, provider, connector, clientID string) (uvim.IdentityLink, bool) {
 	var revoked uvim.IdentityLink
 	foundRevoked := false
 	for _, link := range s.links {
-		if link.Provider != provider || link.Connector != connector || (!sameIdentity(link.Identity, identity) && (link.Account == nil || !sameIdentity(*link.Account, identity))) {
+		if link.ClientID != clientID || link.Provider != provider || link.Connector != connector || (!sameIdentity(link.Identity, identity) && (link.Account == nil || !sameIdentity(*link.Account, identity))) {
 			continue
 		}
 		if !link.Revoked {
@@ -142,10 +165,21 @@ func (s *identityLinks) find(identity uvim.UserIdentity, provider, connector str
 }
 
 func (s *identityLinks) save(next map[string]uvim.IdentityLink) error {
+	version := s.version
+	for _, link := range next {
+		if link.ClientID != "" {
+			version = 2
+			break
+		}
+	}
+	persisted := make(map[string]persistedIdentityLink, len(next))
+	for id, link := range next {
+		persisted[id] = persistedIdentityLink{IdentityLink: link, ClientID: link.ClientID}
+	}
 	data, err := json.Marshal(struct {
-		Version int                          `json:"version"`
-		Links   map[string]uvim.IdentityLink `json:"links"`
-	}{1, next})
+		Version int                              `json:"version"`
+		Links   map[string]persistedIdentityLink `json:"links"`
+	}{version, persisted})
 	if err != nil {
 		return err
 	}
@@ -181,10 +215,11 @@ func (s *identityLinks) save(next map[string]uvim.IdentityLink) error {
 		return err
 	}
 	s.links = next
+	s.version = version
 	return nil
 }
 
-func (h *Hub) identityEvent(ctx context.Context, ref uvim.IdentityEventRef) (uvim.Event, uvim.OutboundTarget, error) {
+func (h *Hub) identityEvent(ctx context.Context, clientID string, ref uvim.IdentityEventRef) (uvim.Event, uvim.OutboundTarget, error) {
 	if ref.Provider == "" || ref.Connector == "" || ref.EventID == "" {
 		return uvim.Event{}, uvim.OutboundTarget{}, errors.New("native IM event reference is required")
 	}
@@ -199,6 +234,9 @@ func (h *Hub) identityEvent(ctx context.Context, ref uvim.IdentityEventRef) (uvi
 	for _, event := range events {
 		if event.ID != ref.EventID || event.Provider != ref.Provider || event.Connector != ref.Connector {
 			continue
+		}
+		if h.scoped() && !h.clients.OwnsEvent(clientID, event) {
+			return uvim.Event{}, uvim.OutboundTarget{}, errors.New("native IM event is outside caller scope")
 		}
 		if event.Type != uvim.EventMessageCreate || event.Message.ID == "" {
 			return uvim.Event{}, uvim.OutboundTarget{}, errors.New("personal IM message event is required")
@@ -234,12 +272,13 @@ func (h *Hub) handleIdentity(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
-	if h.authToken == "" || h.identityLinks == nil {
+	if !h.authenticated() || h.identityLinks == nil {
 		writeError(w, http.StatusNotImplemented, "identity_links_unavailable")
 		return
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, req.Body, 16384))
 	decoder.DisallowUnknownFields()
+	caller := clientPrincipal(req)
 	if req.URL.Path == "/v1/identity.resolve" {
 		var input uvim.IdentityResolveRequest
 		if decoder.Decode(&input) != nil || !validIdentity(input.Identity) || input.Provider == "" || input.Connector == "" {
@@ -256,13 +295,13 @@ func (h *Hub) handleIdentity(w http.ResponseWriter, req *http.Request) {
 				writeError(w, http.StatusBadRequest, "identity_event_connector_mismatch")
 				return
 			}
-			if _, _, err := h.identityEvent(req.Context(), *input.Event); err != nil {
+			if _, _, err := h.identityEvent(req.Context(), caller, *input.Event); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 		}
 		h.identityLinks.mu.Lock()
-		link, exists := h.identityLinks.find(input.Identity, input.Provider, input.Connector)
+		link, exists := h.identityLinks.find(input.Identity, input.Provider, input.Connector, caller)
 		storeErr := h.identityLinks.err
 		h.identityLinks.mu.Unlock()
 		if storeErr != nil {
@@ -286,7 +325,7 @@ func (h *Hub) handleIdentity(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_identity_link")
 		return
 	}
-	event, target, err := h.identityEvent(req.Context(), input.Event)
+	event, target, err := h.identityEvent(req.Context(), caller, input.Event)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -302,14 +341,14 @@ func (h *Hub) handleIdentity(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "identity_link_state_requires_restart")
 		return
 	}
-	key := identityLinkKey(input.Identity, event.Provider, event.Connector)
+	key := identityLinkKeyForClient(caller, input.Identity, event.Provider, event.Connector)
 	current, exists := store.links[key]
-	if other, found := store.find(input.Identity, event.Provider, event.Connector); found && !other.Revoked && other.ID != key {
+	if other, found := store.find(input.Identity, event.Provider, event.Connector, caller); found && !other.Revoked && other.ID != key {
 		writeError(w, http.StatusConflict, "identity_is_an_alias_of_another_link")
 		return
 	}
 	if input.Account != nil {
-		if alias, found := store.find(*input.Account, event.Provider, event.Connector); found && !alias.Revoked && alias.ID != key {
+		if alias, found := store.find(*input.Account, event.Provider, event.Connector, caller); found && !alias.Revoked && alias.ID != key {
 			writeError(w, http.StatusConflict, "account_already_linked_to_another_identity")
 			return
 		}
@@ -333,7 +372,7 @@ func (h *Hub) handleIdentity(w http.ResponseWriter, req *http.Request) {
 	}
 	link := uvim.IdentityLink{IdentityLinkRef: uvim.IdentityLinkRef{ID: key, Revision: uvim.NewID("link")},
 		Identity: input.Identity, Account: input.Account, Provider: event.Provider, Connector: event.Connector, UserID: event.User.ID,
-		Target: target, Origin: input.Event, Proof: input.Proof, VerifiedAt: time.Now().UTC()}
+		Target: target, Origin: input.Event, Proof: input.Proof, VerifiedAt: time.Now().UTC(), ClientID: caller}
 	if unlink {
 		if current.UserID != event.User.ID {
 			writeError(w, http.StatusForbidden, "identity_link_owner_mismatch")
@@ -354,11 +393,11 @@ func (h *Hub) handleIdentity(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, uvim.IdentityResolveResult{Found: !link.Revoked, Revoked: link.Revoked, Link: &link})
 }
 
-func (h *Hub) validateIdentityLink(ctx context.Context, msg uvim.OutboundMessage) error {
+func (h *Hub) validateIdentityLink(ctx context.Context, clientID string, msg uvim.OutboundMessage) error {
 	if msg.IdentityLink == nil {
 		return nil
 	}
-	if h.identityLinks == nil || h.authToken == "" {
+	if h.identityLinks == nil || !h.authenticated() {
 		return errors.New("identity_links_unavailable")
 	}
 	h.identityLinks.mu.Lock()
@@ -368,18 +407,29 @@ func (h *Hub) validateIdentityLink(ctx context.Context, msg uvim.OutboundMessage
 	if storeErr != nil {
 		return errors.New("identity_link_state_requires_restart")
 	}
-	if !exists || link.Revoked || link.IdentityLinkRef != *msg.IdentityLink || link.Provider != msg.Provider || link.Connector != msg.Connector || link.Target != msg.ResolvedTarget() {
+	if !exists || link.Revoked || (h.scoped() && link.ClientID != clientID) || link.IdentityLinkRef != *msg.IdentityLink || link.Provider != msg.Provider || link.Connector != msg.Connector || link.Target != msg.ResolvedTarget() {
 		return errors.New("identity_link_is_stale")
 	}
 	// Native room audience can change after linking. Reuse the same adapter
 	// proof before allowing another send, rather than trusting the old room ID.
 	if provider := h.registry.Get(link.Provider, link.Connector); provider != nil {
 		if _, ok := provider.(uvim.PrivateTargetResolver); ok {
-			_, target, err := h.identityEvent(ctx, link.Origin)
+			_, target, err := h.identityEvent(ctx, clientID, link.Origin)
 			if err != nil || target != link.Target {
 				return errors.New("identity_link_private_target_changed")
 			}
 		}
 	}
 	return nil
+}
+
+func (h *Hub) identityLinkBelongsTo(clientID string, msg uvim.OutboundMessage) bool {
+	if msg.IdentityLink == nil || h.identityLinks == nil {
+		return false
+	}
+	h.identityLinks.mu.Lock()
+	link, exists := h.identityLinks.links[msg.IdentityLink.ID]
+	err := h.identityLinks.err
+	h.identityLinks.mu.Unlock()
+	return err == nil && exists && !link.Revoked && link.ClientID == clientID && link.IdentityLinkRef == *msg.IdentityLink && link.Provider == msg.Provider && link.Connector == msg.Connector && normalizedTarget(link.Target) == normalizedTarget(msg.ResolvedTarget())
 }

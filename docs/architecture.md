@@ -57,6 +57,12 @@ WeCom 的可选企业身份查询在事件发送 worker 中完成；应用 token
 
 `reply_stream` 只适用于有效被动 reply token；`edit_message` 要求真实的可选 `MessageUpdater` 实现；`text_max_bytes` 是单次标准化 UTF-8 文本的字节预算，零值或缺失表示未知。流式更新、编辑和长内容的集成及兼容性见[应用接入](./guide/application-integration.md#完整文本流式回复和编辑)。
 
+## 共享调用方边界
+
+可选的 `UV_IM_CLIENTS_FILE` 保留一个 Hub、provider registry、event log 和 resource store，但把每个已认证 bearer 变成不可变 client principal。manifest 为入站配置精确的 `provider` + `connector` + `conversation_id` route。Hub 发出事件时，会在广播前把私有 audience 写入持久化日志；HTTP/WS 重放检查这个持久 audience。audience 不属于 `Event` 协议字段，永不序列化给调用方。
+
+同一 principal 持有 resource ID 和动态身份关联。发送/更新必须具备两种证明之一：从属于当前 client 的 event 得到唯一且完整的 referrer proof，或（主动发送）得到带类型的 manifest target 或该 principal 已验证身份关联。因而私聊 conversation ID 不会升级为 user 地址。route/client 的修改只在重启后生效，且绝不移交历史 event、reply、resource 或 identity 权限。已发布的 global-token 路径仍是单调用方默认值，不能与共享调用方并存。
+
 ## Provider 能力矩阵
 
 下表只列 16 个外部 provider，不包含用于测试和本地开发的 `memory`。`有条件` 表示 adapter 已支持该操作，但必须满足“限制”列的平台条件。
@@ -136,7 +142,7 @@ ResourceRef
 | `POST /v1/webhook/{provider}/{connector}` | Provider webhook ingress。Webhook verification 由 provider adapter 负责。 |
 | `GET /v1/internal/<id>` | 解析内部资源。 |
 
-配置 `UV_IM_AUTH_TOKEN` 后，除 `/health` 和 provider webhook ingress 外，所有 endpoint 都要求 `Authorization: Bearer <UV_IM_AUTH_TOKEN>`。Provider webhook ingress 必须在输出标准事件前使用 provider-level webhook verification；支持 webhook 的 provider 在没有配置 provider webhook secret 时会拒绝 ingress。
+配置 `UV_IM_AUTH_TOKEN` 后，除 `/health` 和 provider webhook ingress 外，所有 endpoint 都要求 `Authorization: Bearer <UV_IM_AUTH_TOKEN>`。使用 `UV_IM_CLIENTS_FILE` 时同一 header 携带各 client token，并禁用 query-token fallback。Provider webhook ingress 必须在输出标准事件前使用 provider-level webhook verification；支持 webhook 的 provider 在没有配置 provider webhook secret 时会拒绝 ingress。
 
 `/v1/meta` 是调用方的兼容性检查入口。调用方应基于 `service`、`protocol_version` 和 capabilities 判断是否继续启动；不要只根据 provider 名称推断能力。
 
