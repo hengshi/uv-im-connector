@@ -109,23 +109,23 @@ Stable `category` values are `invalid-request`, `authentication`, `permission`, 
 
 Callers should not call provider-native send APIs directly. Provider-specific send behavior belongs in provider adapters.
 
-## Candidate explicit native conversation search
+## Explicit native conversation search
 
-`conversation_search_version=v1` is a candidate, trusted-infrastructure-only
-surface for a future current-Run lookup. It is separate from the automatic
-conversation window. A caller would send the persisted trigger tuple and
+`conversation_search_version=v1` is an optional, trusted-infrastructure-only
+surface for a caller's current-Run context lookup. It is separate from the
+automatic conversation window. A caller sends the persisted trigger tuple and
 sanitized-trigger digest, plus the SHA-256 audience digest of its currently
 authorized Run capability. Agents and users never choose chat/thread scope,
 native page tokens, or the connector service Bearer.
 
-The connector would return only an opaque, short-lived Hub cursor. It is bound
-to the verified trigger, local filters, verified native scope, and current
-capability audience; a capability rotation invalidates it. Candidate output
-would report native provenance, immutable anchor, effective bounds, and bounded
-scan coverage so that `none`, partial scans, expiry, permission/rate limits, and
-unavailability are not represented as complete-history absence. This document
-does not claim that the associated caller CLI or TaskService handoff has
-shipped.
+The connector returns only an opaque, short-lived Hub cursor. It is bound to
+the verified trigger, local filters, verified native scope, and current
+capability audience; a capability rotation invalidates it. Results report native
+provenance, immutable anchor, effective bounds, and bounded scan coverage so
+that `none`, partial scans, expiry, permission/rate limits, and unavailability
+are not represented as complete-history absence. Connector API support does not
+establish that a particular caller CLI or Task/Run handoff has shipped; the
+caller still owns ACL and current-Run authorization before invoking it.
 
 ## Complete text, reply streams, and editing
 

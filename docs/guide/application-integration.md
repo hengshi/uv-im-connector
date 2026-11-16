@@ -109,6 +109,12 @@ Server 主动发送没有入站 `referrer`，必须显式传 `target`，并先�
 
 调用方不应该直接调用 provider-native send API。Provider 特有发送逻辑属于 provider adapter。
 
+## 显式原生会话搜索
+
+`conversation_search_version=v1` 是面向可信基础设施的可选能力，供调用方在当前 Run 中受限查询上下文；它与自动近期会话窗口分离。调用方必须提交已持久化的触发事件元组和脱敏触发事件摘要，以及当前已获授权 Run capability 的 SHA-256 audience 摘要。Agent 和用户不能选择 chat/thread 范围、原生 page token 或 connector 的 Bearer。
+
+Connector 只返回不透明、短效的 Hub cursor。它绑定已核验的触发、局部过滤器、已核验的原生范围和当前 capability audience；capability 轮换后旧 cursor 失效。结果会报告原生来源、不可变锚点、实际生效的边界和有界扫描覆盖，因此 `none`、部分扫描、过期、权限/限流和不可用都不会被表述成完整历史为空。Connector API 已支持该能力，不代表某个调用方 CLI 或 Task/Run 交接已经发布；调用方在调用前仍负责 ACL 和当前 Run 授权。
+
 ## 完整文本、流式回复和编辑
 
 `capabilities.text_max_bytes` 是单次发送或编辑的标准化 UTF-8 文本字节上限，包含调用方添加的可见前缀和格式。WeCom 根据[被动流式回复](https://developer.work.weixin.qq.com/document/path/101031)的 `stream.content` 和[长连接主动发送](https://developer.work.weixin.qq.com/document/path/101463)的 `markdown.content` 声明 20480 字节，并在上传或发送前校验；超限返回 `category=payload-too-large`、`delivery_state=not-attempted` 和包含精确上限的安全说明。`0` 或字段缺失表示未知上限。Lark 的原生限制针对实际序列化请求体，无法准确声明为固定的原始 UTF-8 文本预算，因此其 `text_max_bytes` 保持未知，由原生 API 校验请求体。Connector 不自动截断或分页；调用方按完整逻辑内容分页，并在无法合法继续分页时使用受支持的文件资源。
