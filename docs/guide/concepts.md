@@ -62,6 +62,10 @@ Channel 是 provider 原生会话目标，归一化为：
 
 调用方默认应该把 `addressed=false` 的群消息视为 ambient/non-actionable。只有应用明确要处理群内所有消息时，才把它路由进 workflow。
 
+`bot_mention_prefix` 是可选的、更窄的三态来源证据。`true` 仅表示 adapter 能证明**去除 mention 之前**的第一段原生 mention 是当前 connector 的 bot。`false` 是显式保护：第一段原生 mention 属于其他账号，或 rich-text 扁平化已经丢失 token 顺序，调用方不得把展示名文本重新解释为字面 `@bot` 调用。字段缺失表示 adapter 没有归一化的首位原生 mention 证据；普通文本仍可按调用方自己的字面 `@name` 规则处理。它不等同于 `addressed`，不能从私聊准入、`addressed` 或显示名推断。
+
+飞书纯文本在替换 mention 时保留其他正文及首尾空白，包括空格和换行。移除本机器人的原生 token 时，仍会同时移除紧随其后的至多一个 ASCII 空格。
+
 ## Referrer
 
 `Referrer` 携带 provider 原生回复或 thread 上下文：

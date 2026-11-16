@@ -103,6 +103,9 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	defer func() {
 		err = uvim.NewProviderSendOperationError("mail send", err)
 	}()
+	if err := uvim.ValidateOutboundInteraction(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, err
+	}
 	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("mail send: %w", err)
 	}

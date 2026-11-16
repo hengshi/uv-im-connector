@@ -9,6 +9,8 @@ stringData:
   UV_WECOM_BOT_SECRET: ""
   UV_LARK_APP_ID: ""
   UV_LARK_APP_SECRET: ""
+  UV_DINGTALK_CLIENT_ID: ""
+  UV_DINGTALK_CLIENT_SECRET: ""
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -21,6 +23,7 @@ data:
   UV_WECOM_CONNECTOR_ID: wecom
   UV_LARK_CONNECTOR_ID: lark
   UV_LARK_REGION: feishu
+  UV_DINGTALK_CARD_TEMPLATE_ID: ""
 ---
 apiVersion: apps/v1
 kind: Deployment

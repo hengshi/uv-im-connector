@@ -13,6 +13,8 @@ import (
 )
 
 type messageIdentity struct {
+	ParentID string `json:"parent_id"`
+	RootID   string `json:"root_id"`
 	ID       string `json:"message_id"`
 	ChatID   string `json:"chat_id"`
 	ThreadID string `json:"thread_id"`
@@ -23,6 +25,33 @@ type messageIdentity struct {
 		Kind string `json:"id_type"`
 		Type string `json:"sender_type"`
 	} `json:"sender"`
+}
+
+// confirmedPublication converts only a provider-verified message lookup into
+// a native locator. It deliberately returns no error: callers invoke it after
+// a successful POST, where an unavailable lookup must not recategorize or
+// retry the already-completed publication.
+func (p *Provider) confirmedPublication(ctx context.Context, id string) (uvim.Publication, bool) {
+	message, err := p.messageIdentity(ctx, id)
+	if err != nil || message.Deleted || strings.TrimSpace(message.ID) != strings.TrimSpace(id) || strings.TrimSpace(message.ChatID) == "" {
+		return uvim.Publication{}, false
+	}
+	if message.Sender.Type != "app" || message.Sender.Kind != "app_id" || message.Sender.ID != p.config.AppID {
+		return uvim.Publication{}, false
+	}
+	return uvim.Publication{
+		PartOrdinal:   1,
+		DeliveryState: uvim.PublicationDeliveryConfirmed,
+		Locator: uvim.PublicationLocator{
+			Provider:             p.ID(),
+			Connector:            p.ConnectorID(),
+			MessageID:            message.ID,
+			NativeConversationID: message.ChatID,
+			BotAppID:             p.config.AppID,
+			BotAppIDType:         "app_id",
+			NativeTarget:         uvim.OutboundTarget{ID: message.ChatID, Kind: uvim.TargetConversation},
+		},
+	}, true
 }
 
 func (p *Provider) Update(ctx context.Context, msg uvim.MessageUpdate) (result uvim.SendResult, err error) {

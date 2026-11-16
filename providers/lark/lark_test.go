@@ -122,6 +122,9 @@ func TestPostDownloadDoesNotBlockFollowingACKOrDisconnectDrain(t *testing.T) {
 	if err != nil || string(data) != "image bytes" || ref.Error != "" {
 		t.Fatalf("resource=%+v data=%q err=%v", ref, data, err)
 	}
+	if len(events[0].Message.Elements) != 2 || events[0].Message.Elements[1].Resource == nil || events[0].Message.Elements[1].Resource.ID != ref.ID || events[0].Message.Elements[1].Resource.InternalURL != ref.InternalURL {
+		t.Fatalf("ordinary resource lost its element relation: %+v", events[0].Message.Elements)
+	}
 }
 
 func TestChunkAssemblerWithoutCountOrDefaultExpiry(t *testing.T) {
@@ -179,8 +182,12 @@ func TestDecodePayloadPostResources(t *testing.T) {
 			}
 			for i, want := range []uvim.ResourceRef{{Kind: "image", Key: "image-1"}, {Kind: "video", Key: "video-1"}} {
 				ref := event.Message.Resources[i]
-				if ref.Kind != want.Kind || ref.Key != want.Key || ref.Metadata["message_id"] != "message-1" || ref.Provider != "lark" || ref.Connector != "main" {
+				if ref.ID == "" || ref.Kind != want.Kind || ref.Key != want.Key || ref.Metadata["message_id"] != "message-1" || ref.Provider != "lark" || ref.Connector != "main" {
 					t.Fatalf("resource %d = %+v", i, ref)
+				}
+				leaf := event.Message.Elements[i+1]
+				if leaf.Resource == nil || leaf.Resource.ID != ref.ID {
+					t.Fatalf("resource %d did not keep an element relation: %+v", i, leaf)
 				}
 			}
 			ambient, _, err := DecodePayload(payload, DecoderConfig{Connector: "main", BotOpenID: "another-bot"})
@@ -230,6 +237,25 @@ func TestDecodePayloadPostResources(t *testing.T) {
 	}
 }
 
+func TestDecodePayloadPreservesNativeThreadID(t *testing.T) {
+	payload := []byte(`{
+		"header":{"event_id":"evt-thread","event_type":"im.message.receive_v1"},
+		"event":{"sender":{"sender_id":{"open_id":"ou-sender"}},"message":{
+			"message_id":"om-thread-message","chat_id":"oc-group","chat_type":"group",
+			"thread_id":"omt-topic","message_type":"text","content":"{\"text\":\"@bot summarize\"}",
+			"mentions":[{"key":"@bot","id":{"open_id":"ou-bot"}}],"create_time":"1700000000000"
+		}}
+	}`)
+
+	event, ok, err := DecodePayload(payload, DecoderConfig{Connector: "main", BotOpenID: "ou-bot"})
+	if err != nil || !ok {
+		t.Fatalf("ok=%t err=%v", ok, err)
+	}
+	if event.Referrer.ThreadID != "omt-topic" {
+		t.Fatalf("thread_id=%q, want native thread", event.Referrer.ThreadID)
+	}
+}
+
 func TestDecodePayloadTextMention(t *testing.T) {
 	event := map[string]any{
 		"schema": "2.0",
@@ -249,7 +275,7 @@ func TestDecodePayloadTextMention(t *testing.T) {
 				"chat_id":      "oc_chat",
 				"chat_type":    "group",
 				"message_type": "text",
-				"content":      `{"text":"@_user_1 帮我看一下"}`,
+				"content":      `{"text":"@_user_1 帮我看一下  \n"}`,
 				"mentions": []any{
 					map[string]any{
 						"key":  "@_user_1",
@@ -278,11 +304,93 @@ func TestDecodePayloadTextMention(t *testing.T) {
 	if got.Channel.Type != uvim.ChannelGroup {
 		t.Fatalf("channel = %+v", got.Channel)
 	}
-	if got.Message.Text != "帮我看一下" {
+	if got.Message.Text != "帮我看一下  \n" {
 		t.Fatalf("text = %q", got.Message.Text)
+	}
+	if got.BotMentionPrefix == nil || !*got.BotMentionPrefix {
+		t.Fatalf("BotMentionPrefix = %v, want true", got.BotMentionPrefix)
 	}
 	if got.Referrer.MessageID != "om_msg" || got.Referrer.ParentMessageID != "om_parent" || got.Referrer.RootMessageID != "om_root" {
 		t.Fatalf("referrer = %+v", got.Referrer)
+	}
+}
+
+func TestDecodePayloadPostKeepsBotMentionPrefixUnproven(t *testing.T) {
+	content := `{"content":[[{"tag":"at","user_name":"_user_1","user_id":"ou_other"},{"tag":"at","user_name":"Jarvis","user_id":"ou_bot"},{"tag":"text","text":" continue"}]]}`
+	payload, err := json.Marshal(map[string]any{
+		"header": map[string]any{"event_type": "im.message.receive_v1"},
+		"event": map[string]any{"message": map[string]any{
+			"message_id": "om_post", "chat_id": "oc_chat", "chat_type": "group", "message_type": "post", "content": content,
+			"mentions": []any{map[string]any{"key": "@_user_1", "name": "Jarvis", "id": map[string]any{"open_id": "ou_bot"}}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, ok, err := DecodePayload(payload, DecoderConfig{BotOpenID: "ou_bot"})
+	if err != nil || !ok {
+		t.Fatalf("DecodePayload() ok=%v err=%v", ok, err)
+	}
+	if !event.Addressed {
+		t.Fatal("Addressed = false")
+	}
+	if event.BotMentionPrefix == nil || *event.BotMentionPrefix {
+		t.Fatalf("BotMentionPrefix = %v for flattened post text %q, want explicit false", event.BotMentionPrefix, event.Message.Text)
+	}
+}
+
+func TestDecodePayloadBotMentionPrefixRequiresLeadingOwnNativeMention(t *testing.T) {
+	decode := func(t *testing.T, text string, mentions []any) uvim.Event {
+		t.Helper()
+		content, err := json.Marshal(map[string]string{"text": text})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(map[string]any{
+			"header": map[string]any{"event_type": "im.message.receive_v1"},
+			"event": map[string]any{"message": map[string]any{
+				"message_id": "om_msg", "chat_id": "oc_chat", "chat_type": "group", "message_type": "text", "content": string(content), "mentions": mentions,
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, ok, err := DecodePayload(raw, DecoderConfig{BotOpenID: "ou_bot"})
+		if err != nil || !ok {
+			t.Fatalf("DecodePayload() ok=%v err=%v", ok, err)
+		}
+		return event
+	}
+	bot := func(key string) any {
+		return map[string]any{"key": key, "name": "Jarvis", "id": map[string]any{"open_id": "ou_bot"}}
+	}
+	other := func(key, name string) any {
+		return map[string]any{"key": key, "name": name, "id": map[string]any{"open_id": "ou_other"}}
+	}
+	boolRef := func(value bool) *bool { return &value }
+	for _, tt := range []struct {
+		name     string
+		text     string
+		mentions []any
+		want     *bool
+	}{
+		{name: "leading own mention", text: "@_bot continue", mentions: []any{bot("@_bot")}, want: boolRef(true)},
+		{name: "leading whitespace then own mention", text: "\t @_bot continue", mentions: []any{bot("@_bot")}, want: boolRef(true)},
+		{name: "own mention in middle remains absent", text: "continue @_bot", mentions: []any{bot("@_bot")}},
+		{name: "foreign leading display name stays explicitly false", text: "@_other @_bot continue", mentions: []any{other("@_other", "Jarvis"), bot("@_bot")}, want: boolRef(false)},
+		{name: "literal display text without native prefix remains absent", text: "@Jarvis continue"},
+		{name: "longest native token wins", text: "@_user_10 continue", mentions: []any{bot("@_user_1"), other("@_user_10", "Someone")}, want: boolRef(false)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			event := decode(t, tt.text, tt.mentions)
+			if tt.want == nil {
+				if event.BotMentionPrefix != nil {
+					t.Fatalf("BotMentionPrefix = %v, want nil", *event.BotMentionPrefix)
+				}
+			} else if event.BotMentionPrefix == nil || *event.BotMentionPrefix != *tt.want {
+				t.Fatalf("BotMentionPrefix = %v, want %v", event.BotMentionPrefix, *tt.want)
+			}
+		})
 	}
 }
 
@@ -818,6 +926,116 @@ func TestSendTextRoutesRecipientsAndReplies(t *testing.T) {
 			}
 			if sends != 1 || result.MessageID != "om_sent" || result.Provider != "lark" || result.Time.IsZero() {
 				t.Fatalf("sends=%d result=%+v", sends, result)
+			}
+		})
+	}
+}
+
+func TestSendPublicationLocatorIsBestEffortAndOptIn(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		requestLocator bool
+		wantLookups    int
+	}{
+		{"lookup failure preserves successful send", true, 1},
+		{"ordinary send does not perform lookup", false, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var sends, lookups int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				switch req.URL.Path {
+				case "/open-apis/auth/v3/tenant_access_token/internal":
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+				case "/open-apis/im/v1/messages":
+					sends++
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"message_id": "om_sent"}})
+				case "/open-apis/im/v1/messages/om_sent":
+					lookups++
+					http.Error(w, "lookup unavailable", http.StatusServiceUnavailable)
+				default:
+					t.Errorf("unexpected route %s", req.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := provider.Send(t.Context(), uvim.OutboundMessage{
+				Target: &uvim.OutboundTarget{ID: "ou_recipient", Kind: uvim.TargetUser}, Text: "notification",
+				RequestPublicationLocator: tt.requestLocator,
+			})
+			if err != nil || result.MessageID != "om_sent" || len(result.Publications) != 0 {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if sends != 1 || lookups != tt.wantLookups {
+				t.Fatalf("sends=%d lookups=%d", sends, lookups)
+			}
+		})
+	}
+}
+
+func TestCapabilitiesAdvertiseNativeMetadataVersions(t *testing.T) {
+	provider, err := New(Config{AppID: "app", AppSecret: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := provider.Capabilities().PublicationLocatorVersion; got != uvim.PublicationLocatorVersionV1 {
+		t.Fatalf("publication locator capability = %q", got)
+	}
+	if got := provider.Capabilities().ConversationWindowVersion; got != uvim.ConversationWindowVersionV1 {
+		t.Fatalf("conversation window capability = %q", got)
+	}
+}
+
+func TestSendPublicationLocatorRequiresVerifiedNativeMessage(t *testing.T) {
+	base := func() map[string]any {
+		return map[string]any{
+			"message_id": "om_sent", "chat_id": "oc_verified", "msg_type": "text",
+			"sender": map[string]string{"id": "app", "id_type": "app_id", "sender_type": "app"},
+		}
+	}
+	for _, tt := range []struct {
+		name string
+		item map[string]any
+	}{
+		{"exact message is absent", func() map[string]any { item := base(); item["message_id"] = "om_other"; return item }()},
+		{"deleted message", func() map[string]any { item := base(); item["deleted"] = true; return item }()},
+		{"foreign app", func() map[string]any {
+			item := base()
+			item["sender"] = map[string]string{"id": "other", "id_type": "app_id", "sender_type": "app"}
+			return item
+		}()},
+		{"missing conversation", func() map[string]any { item := base(); item["chat_id"] = ""; return item }()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var sends, lookups int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				switch req.URL.Path {
+				case "/open-apis/auth/v3/tenant_access_token/internal":
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+				case "/open-apis/im/v1/messages":
+					sends++
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"message_id": "om_sent"}})
+				case "/open-apis/im/v1/messages/om_sent":
+					lookups++
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []map[string]any{tt.item}}})
+				default:
+					t.Errorf("unexpected route %s", req.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			provider, err := New(Config{AppID: "app", AppSecret: "secret", BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := provider.Send(t.Context(), uvim.OutboundMessage{
+				Target: &uvim.OutboundTarget{ID: "ou_recipient", Kind: uvim.TargetUser}, Text: "notification", RequestPublicationLocator: true,
+			})
+			if err != nil || result.MessageID != "om_sent" || len(result.Publications) != 0 || sends != 1 || lookups != 1 {
+				t.Fatalf("result=%+v err=%v sends=%d lookups=%d", result, err, sends, lookups)
 			}
 		})
 	}

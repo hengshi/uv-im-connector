@@ -57,14 +57,20 @@ func RuntimeBuildMetadata() BuildMetadata {
 }
 
 type ServiceMeta struct {
-	IdentityLinks    bool           `json:"identity_links,omitempty"`
-	Service          string         `json:"service"`
-	ConnectorVersion string         `json:"connector_version"`
-	ProtocolVersion  string         `json:"protocol_version"`
-	GitCommit        string         `json:"git_commit,omitempty"`
-	BuildTime        string         `json:"build_time,omitempty"`
-	VCSModified      bool           `json:"vcs_modified,omitempty"`
-	Providers        []ProviderMeta `json:"providers"`
+	IdentityLinks bool `json:"identity_links,omitempty"`
+	// ConversationContextQueryVersion is a service capability because received
+	// context is backed by the Hub EventLog rather than an adapter-native API.
+	ConversationContextQueryVersion string `json:"conversation_context_query_version,omitempty"`
+	// PublicationLocatorVersion describes the highest receipt schema the
+	// service can serialize. Provider support remains capability-specific.
+	PublicationLocatorVersion string         `json:"publication_locator_version,omitempty"`
+	Service                   string         `json:"service"`
+	ConnectorVersion          string         `json:"connector_version"`
+	ProtocolVersion           string         `json:"protocol_version"`
+	GitCommit                 string         `json:"git_commit,omitempty"`
+	BuildTime                 string         `json:"build_time,omitempty"`
+	VCSModified               bool           `json:"vcs_modified,omitempty"`
+	Providers                 []ProviderMeta `json:"providers"`
 }
 
 type ProviderMeta struct {
@@ -77,12 +83,13 @@ type ProviderMeta struct {
 func NewServiceMeta(providers []ProviderMeta) ServiceMeta {
 	build := RuntimeBuildMetadata()
 	return ServiceMeta{
-		Service:          ServiceName,
-		ConnectorVersion: build.Version,
-		ProtocolVersion:  ProtocolVersion,
-		GitCommit:        build.GitCommit,
-		BuildTime:        build.BuildTime,
-		VCSModified:      build.VCSModified,
-		Providers:        providers,
+		Service:                   ServiceName,
+		PublicationLocatorVersion: PublicationLocatorVersionV1,
+		ConnectorVersion:          build.Version,
+		ProtocolVersion:           ProtocolVersion,
+		GitCommit:                 build.GitCommit,
+		BuildTime:                 build.BuildTime,
+		VCSModified:               build.VCSModified,
+		Providers:                 providers,
 	}
 }

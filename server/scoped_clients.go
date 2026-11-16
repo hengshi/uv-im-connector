@@ -235,8 +235,7 @@ func clientPrincipal(req *http.Request) string {
 	if req == nil {
 		return ""
 	}
-	clientID, _ := req.Context().Value(clientPrincipalKey{}).(string)
-	return clientID
+	return clientIDFromContext(req.Context())
 }
 
 type resourceScope struct {
@@ -564,4 +563,9 @@ func (s *resourceScopes) saveFile(path string, raw []byte) error {
 		return err
 	}
 	return nil
+}
+
+func clientIDFromContext(ctx context.Context) string {
+	clientID, _ := ctx.Value(clientPrincipalKey{}).(string)
+	return clientID
 }

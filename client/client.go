@@ -135,6 +135,11 @@ func (c *Client) ResolveIdentity(ctx context.Context, request uvim.IdentityResol
 	return out, c.postJSON(ctx, "/v1/identity.resolve", request, &out)
 }
 
+func (c *Client) ResolveInboundIdentity(ctx context.Context, request uvim.IdentityInboundResolveRequest) (uvim.IdentityInboundResolveResult, error) {
+	var out uvim.IdentityInboundResolveResult
+	return out, c.postJSON(ctx, "/v1/identity.resolve-inbound", request, &out)
+}
+
 func (c *Client) UnlinkIdentity(ctx context.Context, request uvim.IdentityLinkRequest) (uvim.IdentityResolveResult, error) {
 	var out uvim.IdentityResolveResult
 	return out, c.postJSON(ctx, "/v1/identity.unlink", request, &out)
@@ -148,6 +153,11 @@ func (c *Client) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendR
 func (c *Client) Update(ctx context.Context, msg uvim.MessageUpdate) (uvim.SendResult, error) {
 	var out uvim.SendResult
 	return out, c.postJSON(ctx, "/v1/message.update", msg, &out)
+}
+
+func (c *Client) UpdateInteraction(ctx context.Context, request uvim.InteractionMessageUpdate) (uvim.InteractionUpdateResult, error) {
+	var out uvim.InteractionUpdateResult
+	return out, c.postJSON(ctx, "/v1/interaction.update", request, &out)
 }
 
 func (c *Client) Upload(ctx context.Context, ref uvim.ResourceRef, data []byte) (uvim.ResourceRef, error) {
@@ -164,6 +174,33 @@ func (c *Client) Upload(ctx context.Context, ref uvim.ResourceRef, data []byte) 
 func (c *Client) DownloadProviderResource(ctx context.Context, req uvim.ResourceDownloadRequest) (uvim.ResourceRef, error) {
 	var out uvim.ResourceRef
 	return out, c.postJSON(ctx, "/v1/resource.download", req, &out)
+}
+
+// ConversationWindow reads bounded native reference material for a retained
+// inbound trigger. Provider-level unavailability is represented in the result;
+// an error means the connector HTTP request did not complete successfully.
+func (c *Client) ConversationWindow(ctx context.Context, request uvim.ConversationWindowRequest) (uvim.ConversationWindowResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, uvim.ConversationWindowTimeout)
+	defer cancel()
+	var out uvim.ConversationWindowResult
+	return out, c.postJSON(ctx, "/v1/conversation.window", request, &out)
+}
+
+// ConversationSearch reads a bounded, explicitly requested native-history
+// page for a retained trigger. Provider-level unavailability is represented in
+// the result; an error means the authenticated connector request failed.
+func (c *Client) ConversationSearch(ctx context.Context, request uvim.ConversationSearchRequest) (uvim.ConversationSearchResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, uvim.ConversationSearchTimeout)
+	defer cancel()
+	var out uvim.ConversationSearchResult
+	return out, c.postJSON(ctx, "/v1/conversation.search", request, &out)
+}
+
+// ConversationMaterialize turns one opaque, current-query resource handle into
+// an internal resource. It does not accept a native resource key or URL.
+func (c *Client) ConversationMaterialize(ctx context.Context, request uvim.ConversationMaterializeRequest) (uvim.ConversationMaterializeResult, error) {
+	var out uvim.ConversationMaterializeResult
+	return out, c.postJSON(ctx, "/v1/conversation.materialize", request, &out)
 }
 
 func (c *Client) ResolveInternalURL(ctx context.Context, internalURL string) (*http.Response, error) {

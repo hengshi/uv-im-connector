@@ -109,6 +109,12 @@ Server 主动发送没有入站 `referrer`，必须显式传 `target`，并先�
 
 调用方不应该直接调用 provider-native send API。Provider 特有发送逻辑属于 provider adapter。
 
+## 显式原生会话搜索
+
+`conversation_search_version=v1` 是面向可信基础设施的可选能力，供调用方在当前 Run 中受限查询上下文；它与自动近期会话窗口分离。调用方必须提交已持久化的触发事件元组和脱敏触发事件摘要，以及当前已获授权 Run capability 的 SHA-256 audience 摘要。Agent 和用户不能选择 chat/thread 范围、原生 page token 或 connector 的 Bearer。
+
+Connector 只返回不透明、短效的 Hub cursor。它绑定已核验的触发、局部过滤器、已核验的原生范围和当前 capability audience；capability 轮换后旧 cursor 失效。结果会报告原生来源、不可变锚点、实际生效的边界和有界扫描覆盖，因此 `none`、部分扫描、过期、权限/限流和不可用都不会被表述成完整历史为空。Connector API 已支持该能力，不代表某个调用方 CLI 或 Task/Run 交接已经发布；调用方在调用前仍负责 ACL 和当前 Run 授权。
+
 ## 完整文本、流式回复和编辑
 
 `capabilities.text_max_bytes` 是单次发送或编辑的标准化 UTF-8 文本字节上限，包含调用方添加的可见前缀和格式。WeCom 根据[被动流式回复](https://developer.work.weixin.qq.com/document/path/101031)的 `stream.content` 和[长连接主动发送](https://developer.work.weixin.qq.com/document/path/101463)的 `markdown.content` 声明 20480 字节，并在上传或发送前校验；超限返回 `category=payload-too-large`、`delivery_state=not-attempted` 和包含精确上限的安全说明。`0` 或字段缺失表示未知上限。Lark 的原生限制针对实际序列化请求体，无法准确声明为固定的原始 UTF-8 文本预算，因此其 `text_max_bytes` 保持未知，由原生 API 校验请求体。Connector 不自动截断或分页；调用方按完整逻辑内容分页，并在无法合法继续分页时使用受支持的文件资源。
@@ -132,6 +138,16 @@ DingTalk 的原始文本预算也保持未知。官方[群聊服务端发送接�
 顶层 `message_id` 来自先前成功发送的 `SendResult`，与入站 `referrer.message_id` 不同。Lark 编辑前通过原生 GET 核验精确消息的 app 发送者、文本类型和会话，再调用原生 PUT；外部 app、已撤回消息、其他会话及指定但不匹配的话题均被拒绝。所有提供的会话字段必须一致。可提供已知 chat ID，或仅提供可查询到同一会话的原始 `referrer.message_id`；用户 Open ID 不足以证明会话，须使用原始 conversation target。读取失败不会执行编辑；应用需要消息读取和编辑权限。原生接口见[编辑消息](https://open.feishu.cn/document/server-docs/im-v1/message/update)及[获取指定消息](https://open.feishu.cn/document/server-docs/im-v1/message/get)。
 
 这些字段和 endpoint 是协议 v1 的增量能力。新调用方须先读取精确 provider/connector 的 metadata；旧服务缺少能力字段时保持追加策略，不调用编辑 endpoint。旧调用方继续使用 `message.create`。使用新 Go client/API 的应用须固定包含这些 API 的依赖版本，并升级服务二进制后再启用能力；仅更新本地 Go 依赖不会升级运行中的服务。
+
+## 已确认的出站发布定位符
+
+需要让后续系统安全引用一条**本 bot 已发送**的通知时，内部调用方可在 `message.create` 的请求体附加 `request_publication_locator: true`。这不是面向终端用户的设置或 connector 配置；普通消息不带该字段，connector 不会为它新增消息查询。调用方必须先在精确 provider/connector 的 `capabilities.publication_locator_version` 中确认支持 `v1`；服务级 `publication_locator_version` 仅表示当前 HTTP 协议能够序列化该结构，不能推断所有 provider 均可确认定位符。
+
+当前 Lark / Feishu adapter 支持 `v1`。它先完成原生 POST，再仅在显式请求时 GET 该 POST 返回的精确 `message_id`。只有查得同一消息、非 deleted、发送者是当前 app（`app_id` 与配置 app 一致），且返回非空 `chat_id` 时，成功 `SendResult.publications` 才包含 `delivery_state: "confirmed"` 的记录。记录含 provider、connector、message ID、实际 native conversation target 和 bot app ID；它绝不把主动发送时的用户 Open ID 猜作会话 ID。未声明该 capability 的 adapter 不得伪造 locator。
+
+原生 POST 一旦明确成功，后续 GET 的权限、网络、删除或响应校验失败都**不会**将这次发送改写为失败、unknown 或自动重试：仍返回原 `message_id` 的成功 `SendResult`，仅省略 `publications`。调用方因而只能把 `confirmed` locator 作为可引用凭据；缺失 locator 只能走自己的安全降级路径，不能从收件人或消息文本重建。
+
+一次逻辑发送被拆为 text/resources 多个 native part 时，`publications` 按成功 part 返回，并以一开始的 `part_ordinal` 标记顺序。若后续 part 出错，已有的已确认 locator 只出现在 `failure.delivered_publications` 的成功前缀；失败或 delivery-unknown 的 part 没有 locator，整批仍不得重放。
 
 ## 恢复
 

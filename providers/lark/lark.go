@@ -128,20 +128,27 @@ func (p *Provider) ID() string          { return "lark" }
 func (p *Provider) ConnectorID() string { return p.config.ConnectorID }
 func (p *Provider) Capabilities() uvim.Capabilities {
 	return uvim.Capabilities{
-		Inbound:          true,
-		Outbound:         true,
-		DirectMessage:    true,
-		GroupMessage:     true,
-		ThreadReply:      true,
-		ReplyMessage:     true,
-		EditMessage:      true,
-		ProactiveDirect:  true,
-		ProactiveGroup:   true,
-		TargetKinds:      []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
-		UploadResource:   p.config.ResourceStore != nil,
-		DownloadResource: true,
-		ResourceKinds:    []string{uvim.ElementImage, uvim.ElementAudio, uvim.ElementVideo, uvim.ElementFile},
-		ChannelTypes:     []string{uvim.ChannelDirect, uvim.ChannelGroup},
+		InteractiveMessage: true, InteractiveActionCallback: true, InteractiveMessageUpdate: true,
+		InteractionSchemaVersions: []string{uvim.InteractionSchemaV1}, InteractionUpdateVersion: uvim.InteractionUpdateVersionV1,
+		CardMaxBytes: uvim.InteractionCardMaxBytes, UpdateMinIntervalMS: 500,
+		Inbound:                        true,
+		Outbound:                       true,
+		DirectMessage:                  true,
+		GroupMessage:                   true,
+		ThreadReply:                    true,
+		ReplyMessage:                   true,
+		EditMessage:                    true,
+		ProactiveDirect:                true,
+		ProactiveGroup:                 true,
+		TargetKinds:                    []string{uvim.TargetUser, uvim.TargetGroup, uvim.TargetConversation},
+		UploadResource:                 p.config.ResourceStore != nil,
+		DownloadResource:               true,
+		ResourceKinds:                  []string{uvim.ElementImage, uvim.ElementAudio, uvim.ElementVideo, uvim.ElementFile},
+		ChannelTypes:                   []string{uvim.ChannelDirect, uvim.ChannelGroup},
+		PublicationLocatorVersion:      uvim.PublicationLocatorVersionV1,
+		ConversationWindowVersion:      uvim.ConversationWindowVersionV1,
+		ConversationSearchVersion:      uvim.ConversationSearchVersionV1,
+		ConversationMaterializeVersion: uvim.ConversationMaterializeVersionV1,
 	}
 }
 
@@ -199,7 +206,7 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) (runErr error) 
 	workers.Add(2)
 	go func(incoming chan<- uvim.Event, readErr chan<- error) {
 		defer workers.Done()
-		readErr <- p.readEvents(transportCtx, conn, &writeMu, endpoint.ServiceID, decoder, incoming)
+		readErr <- p.readEvents(transportCtx, conn, &writeMu, endpoint.ServiceID, decoder, incoming, sink)
 	}(incoming, readErr)
 	go func(events <-chan uvim.Event) {
 		defer workers.Done()
@@ -274,7 +281,7 @@ func (p *Provider) Run(ctx context.Context, sink uvim.EventSink) (runErr error) 
 
 // readEvents acknowledges frames without waiting for display-name lookups or
 // attachment downloads. Run retains received events until serial delivery ends.
-func (p *Provider) readEvents(ctx context.Context, conn WSConn, writeMu *sync.Mutex, serviceID int32, decoder DecoderConfig, events chan<- uvim.Event) error {
+func (p *Provider) readEvents(ctx context.Context, conn WSConn, writeMu *sync.Mutex, serviceID int32, decoder DecoderConfig, events chan<- uvim.Event, actionSink uvim.EventSink) error {
 	assembler := newChunkAssembler(p.config.ChunkTTL, p.config.Now)
 	for {
 		if err := conn.SetReadDeadline(uvim.OptionalDeadline(p.now(), p.config.ReadDeadline)); err != nil {
@@ -323,8 +330,37 @@ func (p *Provider) readEvents(ctx context.Context, conn WSConn, writeMu *sync.Mu
 		event, ok, decodeErr := DecodePayload(payload, decoder)
 		if decodeErr != nil {
 			p.config.Logger.Warn("lark payload decode failed", "err", decodeErr.Error(), "payload_len", len(payload))
-			if err := p.writeFrame(writeMu, conn, newAckFrame(inbound, true)); err != nil {
+			var header struct {
+				Header eventHeader `json:"header"`
+			}
+			_ = json.Unmarshal(payload, &header)
+			accepted := inbound.headerValue(frameHeaderTypeKey) != "card" && header.Header.EventType != "card.action.trigger"
+			if err := p.writeFrame(writeMu, conn, newAckFrame(inbound, accepted)); err != nil {
 				return fmt.Errorf("write ack: %w", err)
+			}
+			continue
+		}
+		if ok && event.Type == uvim.EventInteractionAction {
+			lookupCtx, cancelLookup := context.WithTimeout(ctx, 2*time.Second)
+			native, lookupErr := p.messageIdentity(lookupCtx, event.Interaction.MessageID)
+			cancelLookup()
+			if lookupErr != nil || native.Deleted || native.ID != event.Interaction.MessageID || native.ChatID != event.Interaction.ConversationID || native.Type != "interactive" || native.Sender.Type != "app" || native.Sender.Kind != "app_id" || native.Sender.ID != p.config.AppID {
+				_ = p.writeFrame(writeMu, conn, newAckFrame(inbound, false))
+				return errors.New("interaction native scope is unavailable")
+			}
+			event.Referrer.ParentMessageID, event.Referrer.RootMessageID, event.Referrer.ThreadID = native.ParentID, native.RootID, native.ThreadID
+			if actionSink == nil {
+				_ = p.writeFrame(writeMu, conn, newAckFrame(inbound, false))
+				return errors.New("interaction durable sink is unavailable")
+			}
+			// The same EventLog must accept the typed action before transport ACK.
+			// Normal message enrichment is deliberately not on this callback path.
+			if emitErr := actionSink.Emit(ctx, event); emitErr != nil {
+				_ = p.writeFrame(writeMu, conn, newAckFrame(inbound, false))
+				return errors.New("interaction durable append failed")
+			}
+			if err := p.writeFrame(writeMu, conn, newAckFrame(inbound, true)); err != nil {
+				return err
 			}
 			continue
 		}
@@ -511,9 +547,17 @@ func (p *Provider) larkUserProfile(ctx context.Context, userID, idType string) (
 func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {
 	defer func() {
 		err = uvim.NewProviderSendOperationError("lark send", err)
+		if msg.Interaction != nil && err != nil {
+			if failure, known := uvim.ProviderSendFailure(err); known {
+				err = uvim.NewProviderSendFailure(failure, "lark interaction send failed", err)
+			}
+		}
 	}()
 	if err := uvim.ValidateOutboundText(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, err
+	}
+	if err := uvim.ValidateOutboundInteraction(msg, p.Capabilities()); err != nil {
+		return result, updatePreparationError(err)
 	}
 	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("lark send: %w", err)
@@ -531,11 +575,18 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	if len(msg.Resources) > 1 || (text != "" && len(msg.Resources) > 0) {
 		return uvim.SendResourceSequence(ctx, msg, p.Send)
 	}
-	if text == "" && len(msg.Resources) == 0 {
+	if text == "" && len(msg.Resources) == 0 && msg.Interaction == nil {
 		return uvim.SendResult{}, fmt.Errorf("lark send: text or resource is required")
 	}
 	msgType := "text"
-	content := map[string]string{"text": text}
+	var content any = map[string]string{"text": text}
+	if msg.Interaction != nil {
+		msgType = "interactive"
+		content, err = renderInteractionCard(*msg.Interaction)
+		if err != nil {
+			return result, updatePreparationError(err)
+		}
+	}
 	if len(msg.Resources) == 1 {
 		var err error
 		msgType, content, err = p.uploadResource(ctx, msg.Resources[0])
@@ -606,7 +657,20 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 		sendErr := fmt.Errorf("lark send: response missing message ID")
 		return uvim.SendResult{}, uvim.NewProviderSendLogError(sendErr.Error(), sendErr)
 	}
-	return uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: decoded.Data.MessageID, Time: time.Now().UTC()}, nil
+	result = uvim.SendResult{Provider: p.ID(), Connector: p.ConnectorID(), MessageID: decoded.Data.MessageID, Time: time.Now().UTC()}
+	if msg.Interaction != nil {
+		digest, _ := msg.Interaction.Digest()
+		result.Interaction = &uvim.InteractionPublication{CardID: msg.Interaction.CardID, Revision: msg.Interaction.Revision, PayloadSHA256: digest, NativeMessageID: decoded.Data.MessageID}
+	}
+	// A locator is an optional receipt enrichment. The POST has already
+	// succeeded, so a lookup failure must not change delivery semantics, cause a
+	// retry, or manufacture a conversation from the requested recipient.
+	if msg.RequestPublicationLocator {
+		if publication, ok := p.confirmedPublication(ctx, decoded.Data.MessageID); ok {
+			result.Publications = []uvim.Publication{publication}
+		}
+	}
+	return result, nil
 }
 
 func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (kind string, content map[string]string, err error) {
@@ -715,8 +779,16 @@ func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[
 	return key, nil
 }
 
+const quotedMessageContextKey = "lark_quoted_message_context"
+
 func (p *Provider) Download(ctx context.Context, req uvim.ResourceDownloadRequest) (uvim.ResourceRef, error) {
 	ref := req.Resource
+	if text, ok := ref.Private[quotedMessageContextKey]; ok {
+		// Context follows the same Hub-selected cache directory as media.
+		// The private in-process body never enters the public resource shape.
+		ref.Private = nil
+		return p.store(req.Dir).Save(ctx, strings.NewReader(text), ref)
+	}
 	if strings.TrimSpace(ref.Key) == "" {
 		return ref, fmt.Errorf("lark download: resource key is required")
 	}
