@@ -38,6 +38,8 @@ Use `UV_IM_CLIENTS_FILE` on a shared connector and give every long-lived Box pri
 
 For a reply, jarvis-box persists and returns the complete inbound `Referrer`; it does not synthesize one from `channel.id`. For a proactive notification, its configured client must name the exact typed native target in `proactive_targets` or use its own verified identity link. Direct conversation IDs and another Box's `internal://` resources are not portable targets. Config changes require a connector restart and never transfer historical work to a different Box principal.
 
+The same boundary covers recent windows, explicit received-context searches, materialized files, inbound identity resolution and card updates. Shared mode selects retained received context and does not advertise native history search: provider history cannot prove which Box owned a message before a route reassignment. Read the [shared caller contract](./en/architecture.md#shared-caller-boundary) before enabling these capabilities.
+
 ### Quoted Lark messages
 
 When no `UV_LARK_BOT_OPEN_ID` or `UV_LARK_BOT_UNION_ID` is configured,
@@ -149,7 +151,7 @@ group trigger. This is separate from explicit quote enrichment. The trusted
 infrastructure request contains only provider/connector and trigger event/message
 IDs; no Agent-selected chat/thread/time. Require the exact provider's
 `conversation_window_version=v1` and the existing service Bearer credential.
-When no native window reader capability exists, that version can instead describe
+When no native window reader capability exists, or shared callers are enabled, that version can describe
 the Hub's retained received-ingress fallback: exactly one metadata page of at most
 10 sequence-proved items, with generation/trigger-digest/lower-bound source proof
 and no materialization handle or download. A native permission, rate, timeout or

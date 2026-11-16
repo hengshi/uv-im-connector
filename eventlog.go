@@ -245,15 +245,10 @@ func (l *EventLog) ReadAfter(ctx context.Context, sequence int64) ([]Event, erro
 		if errors.Is(readErr, io.EOF) {
 			return out, nil
 		}
-		var persisted struct {
-			Event
-			Audience string `json:"client_id,omitempty"`
-		}
-		if err := json.Unmarshal(raw, &persisted); err != nil {
+		event, err := decodePersistedEvent(raw)
+		if err != nil {
 			return nil, err
 		}
-		event := persisted.Event
-		event.Audience = persisted.Audience
 		if err := ValidateInteractionEvent(event); err != nil {
 			return nil, err
 		}
@@ -374,8 +369,8 @@ func (l *EventLog) ConversationContextSelected(ctx context.Context, cursor Conve
 		if len(raw) == 0 || raw[len(raw)-1] != '\n' {
 			return nil, errConversationContextUnavailable
 		}
-		var event Event
-		if err := json.Unmarshal(raw, &event); err != nil || event.Sequence != record.Sequence {
+		event, err := decodePersistedEvent(raw)
+		if err != nil || event.Sequence != record.Sequence {
 			return nil, errConversationContextUnavailable
 		}
 		selected[event.Sequence] = event
@@ -494,8 +489,8 @@ func conversationContextDecodeRawRecords(rawRecords []conversationContextRawReco
 	events := make([]Event, 0, len(rawRecords))
 	records := make([]ConversationContextRecord, 0, len(rawRecords))
 	for _, raw := range rawRecords {
-		var event Event
-		if err := json.Unmarshal(raw.raw, &event); err != nil || event.Sequence <= previousSequence {
+		event, err := decodePersistedEvent(raw.raw)
+		if err != nil || event.Sequence <= previousSequence {
 			return nil, nil, errConversationContextUnavailable
 		}
 		previousSequence = event.Sequence
@@ -671,8 +666,8 @@ func (l *EventLog) conversationWindowTailMatch(ctx context.Context, request Conv
 		}
 		recordCount++
 		if canonicalKeyPart(identity.Provider) == canonicalKeyPart(request.Provider) && canonicalKeyPart(identity.Connector) == canonicalKeyPart(request.Connector) && strings.TrimSpace(identity.ID) == strings.TrimSpace(request.TriggerEventID) && strings.TrimSpace(identity.Message.ID) == strings.TrimSpace(request.TriggerMessageID) {
-			var event Event
-			if err := json.Unmarshal(raw, &event); err != nil {
+			event, err := decodePersistedEvent(raw)
+			if err != nil {
 				return Event{}, errConversationWindowTriggerUnavailable
 			}
 			priorMatchOrdinal = lastMatchOrdinal
@@ -680,4 +675,17 @@ func (l *EventLog) conversationWindowTailMatch(ctx context.Context, request Conv
 			lastMatch = event
 		}
 	}
+}
+
+// decodePersistedEvent retains private audience evidence on every EventLog read.
+// Event public JSON continues to omit this field.
+func decodePersistedEvent(raw []byte) (Event, error) {
+	var persisted struct {
+		Event
+		Audience string `json:"client_id,omitempty"`
+	}
+	err := json.Unmarshal(raw, &persisted)
+	event := persisted.Event
+	event.Audience = persisted.Audience
+	return event, err
 }

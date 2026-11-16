@@ -54,6 +54,7 @@ type receivedContextState struct {
 }
 
 type receivedContextEntry struct {
+	Audience       string                    `json:"client_id,omitempty"`
 	Sequence       int64                     `json:"sequence"`
 	EventID        string                    `json:"event_id"`
 	EntryDigest    string                    `json:"entry_digest"`
@@ -218,7 +219,7 @@ func (r *receivedContextIndex) commit(ctx context.Context, pendingID, authToken 
 		return errors.New("received context EventLog record unavailable")
 	}
 	entry := receivedContextEntry{
-		Sequence: written.Sequence, EventID: written.ID, EntryDigest: digest, Provider: written.Provider, Connector: written.Connector,
+		Audience: written.Audience, Sequence: written.Sequence, EventID: written.ID, EntryDigest: digest, Provider: written.Provider, Connector: written.Connector,
 		ConversationID: written.Channel.ID, ThreadID: written.Referrer.ThreadID, MessageID: written.Message.ID, CreatedAt: sourceTime,
 		RecordOffset: position.Offset, RecordEnd: position.EndOffset, Resources: pending.Resources,
 	}
@@ -374,7 +375,7 @@ func (r *receivedContextIndex) query(ctx context.Context, authToken string, trig
 }
 
 func eligibleReceivedContextEntry(entry receivedContextEntry, trigger uvim.Event, before time.Time, beforeSequence int64) bool {
-	return entry.Sequence < trigger.Sequence && entry.Provider == trigger.Provider && entry.Connector == trigger.Connector && entry.ConversationID == trigger.Channel.ID && entry.ThreadID == trigger.Referrer.ThreadID && (before.IsZero() || entry.CreatedAt.Before(before) || entry.CreatedAt.Equal(before) && entry.Sequence < beforeSequence)
+	return entry.Audience == trigger.Audience && entry.Sequence < trigger.Sequence && entry.Provider == trigger.Provider && entry.Connector == trigger.Connector && entry.ConversationID == trigger.Channel.ID && entry.ThreadID == trigger.Referrer.ThreadID && (before.IsZero() || entry.CreatedAt.Before(before) || entry.CreatedAt.Equal(before) && entry.Sequence < beforeSequence)
 }
 
 func receivedContextOrderHasEligible(order []int64, start int, entries map[int64]receivedContextEntry, trigger uvim.Event, before time.Time, beforeSequence int64) bool {
@@ -430,7 +431,7 @@ func (r *receivedContextIndex) materializeEvent(ctx context.Context, record conv
 		}
 	}
 	entry, ok := r.state.Entries[record.Descriptor.SourceSequence]
-	if !ok || entry.EntryDigest != record.Descriptor.SourceEntryDigest || entry.Provider != trigger.Provider || entry.Connector != trigger.Connector || entry.ConversationID != trigger.Channel.ID || entry.ThreadID != trigger.Referrer.ThreadID {
+	if !ok || entry.Audience != trigger.Audience || entry.EntryDigest != record.Descriptor.SourceEntryDigest || entry.Provider != trigger.Provider || entry.Connector != trigger.Connector || entry.ConversationID != trigger.Channel.ID || entry.ThreadID != trigger.Referrer.ThreadID {
 		return uvim.Event{}, uvim.ErrConversationResourceUnavailable
 	}
 	ordinalActive := false
@@ -617,7 +618,7 @@ func receivedContextEntryFromEvent(event uvim.Event, cursor uvim.ConversationCon
 	if digestErr != nil || !sourceTimeOK || !positionOK {
 		return receivedContextEntry{}, false
 	}
-	entry := receivedContextEntry{Sequence: event.Sequence, EventID: event.ID, EntryDigest: digest, Provider: event.Provider, Connector: event.Connector, ConversationID: event.Channel.ID, ThreadID: event.Referrer.ThreadID, MessageID: event.Message.ID, CreatedAt: createdAt, RecordOffset: position.Offset, RecordEnd: position.EndOffset}
+	entry := receivedContextEntry{Audience: event.Audience, Sequence: event.Sequence, EventID: event.ID, EntryDigest: digest, Provider: event.Provider, Connector: event.Connector, ConversationID: event.Channel.ID, ThreadID: event.Referrer.ThreadID, MessageID: event.Message.ID, CreatedAt: createdAt, RecordOffset: position.Offset, RecordEnd: position.EndOffset}
 	for ordinal, resource := range event.Message.Resources {
 		entry.Resources = append(entry.Resources, receivedContextResource{Ordinal: ordinal, Descriptor: uvim.ContextResource{Source: "received", SourceMessageID: event.Message.ID, SourceGeneration: cursor.Generation, SourceEntryDigest: digest, SourceSequence: event.Sequence, SourceOrdinal: ordinal, Kind: resource.Kind, Name: resource.Name, MIME: resource.MIME, SizeBytes: resource.SizeBytes, SHA256: resource.SHA256, Availability: "unrecoverable"}, State: "unrecoverable"})
 	}
@@ -825,5 +826,5 @@ func receivedContextRecordFromCursor(cursor uvim.ConversationContextCursor, sequ
 
 func sameReceivedContextEntry(entry receivedContextEntry, event uvim.Event) bool {
 	digest, err := uvim.ConversationEventDigest(event)
-	return err == nil && entry.Sequence == event.Sequence && entry.EventID == event.ID && entry.EntryDigest == digest && entry.Provider == event.Provider && entry.Connector == event.Connector && entry.ConversationID == event.Channel.ID && entry.ThreadID == event.Referrer.ThreadID && entry.MessageID == event.Message.ID
+	return err == nil && entry.Audience == event.Audience && entry.Sequence == event.Sequence && entry.EventID == event.ID && entry.EntryDigest == digest && entry.Provider == event.Provider && entry.Connector == event.Connector && entry.ConversationID == event.Channel.ID && entry.ThreadID == event.Referrer.ThreadID && entry.MessageID == event.Message.ID
 }

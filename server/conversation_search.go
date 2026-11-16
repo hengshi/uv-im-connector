@@ -94,14 +94,18 @@ func (h *Hub) handleConversationSearch(w http.ResponseWriter, req *http.Request)
 
 	ctx, cancel := context.WithTimeout(req.Context(), uvim.ConversationSearchTimeout)
 	defer cancel()
-	cursor, cursorReason := h.conversationSearchCursor(input)
-	if cursorReason != "" {
-		writeJSON(w, http.StatusOK, unavailableConversationSearch(cursorReason))
-		return
-	}
 	trigger, digest, reason := h.conversationSearchTrigger(ctx, input)
 	if reason != "" {
 		writeJSON(w, http.StatusOK, unavailableConversationSearch(reason))
+		return
+	}
+	if h.scoped() && input.Source != "received" {
+		writeJSON(w, http.StatusOK, unavailableConversationSearch("unsupported"))
+		return
+	}
+	cursor, cursorReason := h.conversationSearchCursor(ctx, input)
+	if cursorReason != "" {
+		writeJSON(w, http.StatusOK, unavailableConversationSearch(cursorReason))
 		return
 	}
 	if input.Source == "received" {
@@ -213,7 +217,7 @@ func (h *Hub) handleConversationSearch(w http.ResponseWriter, req *http.Request)
 				writeJSON(w, http.StatusOK, h.finalizeConversationSearch(ctx, input, trigger, digest, result))
 				return
 			}
-			status, nextCursor := h.newConversationSearchCursor(input, filter, limit, *expectedScope, page.NextPageToken, tokenHashes)
+			status, nextCursor := h.newConversationSearchCursor(ctx, input, filter, limit, *expectedScope, page.NextPageToken, tokenHashes)
 			if status == "native_unavailable" {
 				writeJSON(w, http.StatusOK, unavailableConversationSearch(status))
 				return
@@ -234,7 +238,7 @@ func (h *Hub) handleConversationSearch(w http.ResponseWriter, req *http.Request)
 			return
 		}
 		if pageCount+1 == conversationSearchMaxPages {
-			status, nextCursor := h.newConversationSearchCursor(input, filter, limit, *expectedScope, page.NextPageToken, tokenHashes)
+			status, nextCursor := h.newConversationSearchCursor(ctx, input, filter, limit, *expectedScope, page.NextPageToken, tokenHashes)
 			if status == "native_unavailable" {
 				writeJSON(w, http.StatusOK, unavailableConversationSearch(status))
 				return
@@ -301,7 +305,7 @@ func (h *Hub) conversationSearchTrigger(ctx context.Context, input uvim.Conversa
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return uvim.Event{}, "", "search_timeout"
 	}
-	if err != nil {
+	if err != nil || h.scoped() && !h.clients.OwnsEvent(clientIDFromContext(ctx), trigger) {
 		return uvim.Event{}, "", "trigger_unavailable"
 	}
 	if _, ok := uvim.EventSourceTime(trigger); !ok {
@@ -335,7 +339,7 @@ func (h *Hub) finalizeConversationSearch(ctx context.Context, input uvim.Convers
 		return unavailableConversationSearch("trigger_unavailable")
 	}
 	if len(result.Items) > 0 && h.materialResources != nil {
-		if err := h.materialResources.present(h.authToken, input, trigger, &result); err != nil {
+		if err := h.materialResources.present(h.conversationAuthToken(ctx), input, trigger, &result); err != nil {
 			markConversationResourcesUnavailable(&result)
 		}
 	}
@@ -404,7 +408,7 @@ func (h *Hub) handleReceivedConversationSearch(w http.ResponseWriter, ctx contex
 	if cursor != nil {
 		before, beforeSequence = cursor.ReceivedBeforeTime, cursor.ReceivedBeforeSequence
 	}
-	query, err := h.receivedContext.query(ctx, h.authToken, trigger, filter, limit, before, beforeSequence)
+	query, err := h.receivedContext.query(ctx, h.conversationAuthToken(ctx), trigger, filter, limit, before, beforeSequence)
 	if err != nil {
 		writeJSON(w, http.StatusOK, unavailableConversationSearch("index_rebuild_limited"))
 		return
@@ -431,7 +435,7 @@ func (h *Hub) handleReceivedConversationSearch(w http.ResponseWriter, ctx contex
 		markConversationResourcesUnrecoverable(&result)
 	}
 	if result.HasMore {
-		status, next := h.newReceivedConversationSearchCursor(input, filter, limit, uvim.ConversationSearchScope{Provider: input.Provider, Connector: input.Connector, ConversationID: trigger.Channel.ID, ThreadID: trigger.Referrer.ThreadID, TriggerMessageID: trigger.Message.ID, AnchorTime: conversationSearchAnchor(trigger)}, query.Generation, query.LowerBound, query.NextBeforeTime, query.NextBeforeSequence)
+		status, next := h.newReceivedConversationSearchCursor(ctx, input, filter, limit, uvim.ConversationSearchScope{Provider: input.Provider, Connector: input.Connector, ConversationID: trigger.Channel.ID, ThreadID: trigger.Referrer.ThreadID, TriggerMessageID: trigger.Message.ID, AnchorTime: conversationSearchAnchor(trigger)}, query.Generation, query.LowerBound, query.NextBeforeTime, query.NextBeforeSequence)
 		if status == "cursor_capacity_limited" {
 			result.Status, result.Reason = "scan_limited", status
 		} else if status != "" {
@@ -673,14 +677,14 @@ func observeConversationSearchCandidate(result *uvim.ConversationSearchResult, o
 	}
 }
 
-func (h *Hub) conversationSearchCursor(input uvim.ConversationSearchRequest) (*conversationSearchCursor, string) {
+func (h *Hub) conversationSearchCursor(ctx context.Context, input uvim.ConversationSearchRequest) (*conversationSearchCursor, string) {
 	if input.Cursor == "" {
 		return nil, ""
 	}
 	if h == nil || h.materialResources == nil {
 		return nil, "cursor_expired"
 	}
-	cursor, ok, err := h.materialResources.loadSearchCursor(h.authToken, input.Cursor)
+	cursor, ok, err := h.materialResources.loadSearchCursor(h.conversationAuthToken(ctx), input.Cursor)
 	if err != nil || !ok {
 		// Unknown, expired, unreadable, or journal-invalid cursor state has one
 		// non-oracular result. Do not expose whether an opaque ID once existed.
@@ -704,7 +708,7 @@ func (h *Hub) conversationSearchCursorProof(ctx context.Context) (string, string
 	return delta.Cursor.Generation, delta.Cursor.FileIdentity, delta.Cursor.LowerBoundSequence, true
 }
 
-func (h *Hub) newConversationSearchCursor(input uvim.ConversationSearchRequest, filter conversationSearchFilter, limit int, scope uvim.ConversationSearchScope, pageToken string, inheritedHashes []string) (string, string) {
+func (h *Hub) newConversationSearchCursor(ctx context.Context, input uvim.ConversationSearchRequest, filter conversationSearchFilter, limit int, scope uvim.ConversationSearchScope, pageToken string, inheritedHashes []string) (string, string) {
 	if strings.TrimSpace(pageToken) == "" || tokenHashSeen(inheritedHashes, pageToken) {
 		return "native_unavailable", ""
 	}
@@ -730,14 +734,14 @@ func (h *Hub) newConversationSearchCursor(input uvim.ConversationSearchRequest, 
 	if h == nil || h.materialResources == nil {
 		return "native_unavailable", ""
 	}
-	id, err := h.materialResources.storeSearchCursor(h.authToken, cursor)
+	id, err := h.materialResources.storeSearchCursor(h.conversationAuthToken(ctx), cursor)
 	if err != nil {
 		return "native_unavailable", ""
 	}
 	return "", id
 }
 
-func (h *Hub) newReceivedConversationSearchCursor(input uvim.ConversationSearchRequest, filter conversationSearchFilter, limit int, scope uvim.ConversationSearchScope, generation string, lowerBound int64, before time.Time, sequence int64) (string, string) {
+func (h *Hub) newReceivedConversationSearchCursor(ctx context.Context, input uvim.ConversationSearchRequest, filter conversationSearchFilter, limit int, scope uvim.ConversationSearchScope, generation string, lowerBound int64, before time.Time, sequence int64) (string, string) {
 	if strings.TrimSpace(generation) == "" || lowerBound < 0 || before.IsZero() || sequence <= 0 {
 		return "index_capacity_limited", ""
 	}
@@ -752,7 +756,7 @@ func (h *Hub) newReceivedConversationSearchCursor(input uvim.ConversationSearchR
 	if h == nil || h.materialResources == nil {
 		return "index_capacity_limited", ""
 	}
-	id, err := h.materialResources.storeSearchCursor(h.authToken, cursor)
+	id, err := h.materialResources.storeSearchCursor(h.conversationAuthToken(ctx), cursor)
 	if err != nil {
 		return "index_capacity_limited", ""
 	}

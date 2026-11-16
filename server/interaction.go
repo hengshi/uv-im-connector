@@ -433,7 +433,7 @@ func (s *interactionTransportStore) update(ctx context.Context, request uvim.Int
 }
 
 func (h *Hub) handleInteractionUpdate(w http.ResponseWriter, r *http.Request) {
-	if h.authToken == "" {
+	if !h.authenticated() {
 		writeError(w, http.StatusUnauthorized, "interaction_authentication_required")
 		return
 	}
@@ -452,6 +452,10 @@ func (h *Hub) handleInteractionUpdate(w http.ResponseWriter, r *http.Request) {
 	provider := h.registry.Get(request.Provider, request.Connector)
 	if provider == nil {
 		writeJSON(w, http.StatusOK, interactionUpdateResult(request, uvim.InteractionNotAttempted, "unsupported"))
+		return
+	}
+	if h.scoped() && !h.resourceScopes.ownsOutboundReceipt(clientPrincipal(r), request.Provider, request.Connector, request.NativeMessageID) {
+		writeError(w, http.StatusForbidden, "scoped_update_not_authorized")
 		return
 	}
 	result, err := h.interactionUpdates.update(r.Context(), request, provider)

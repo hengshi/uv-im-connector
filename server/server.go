@@ -109,7 +109,7 @@ func (h *Hub) SetUserIdentityMapper(mapper *uvim.UserIdentityMapper) {
 }
 
 func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
-	if event.Type == uvim.EventInteractionAction && h.authToken == "" {
+	if event.Type == uvim.EventInteractionAction && !h.authenticated() {
 		return errors.New("interaction transport requires authentication")
 	}
 	if err := uvim.ValidateInteractionEvent(event); err != nil {
@@ -128,9 +128,6 @@ func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
 	if event.Time.IsZero() {
 		event.Time = time.Now().UTC()
 	}
-	if event.ID == "" {
-		event.ID = uvim.NewID("evt")
-	}
 	audience := ""
 	if h.scoped() {
 		audience = h.clients.Owner(event)
@@ -148,10 +145,12 @@ func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
 			return err
 		}
 	}
+	event.Audience = audience
+	token := h.callerToken(audience)
 	pendingReceived := ""
 	if h.receivedContext != nil {
 		var prepareErr error
-		pendingReceived, prepareErr = h.receivedContext.prepare(h.authToken, event)
+		pendingReceived, prepareErr = h.receivedContext.prepare(token, event)
 		if prepareErr != nil {
 			slog.Warn("received context resource was not journaled", "provider", event.Provider, "connector", event.Connector)
 		}
@@ -176,7 +175,7 @@ func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
 		return nil
 	}
 	if h.receivedContext != nil {
-		if err := h.receivedContext.commit(ctx, pendingReceived, h.authToken, written); err != nil {
+		if err := h.receivedContext.commit(ctx, pendingReceived, token, written); err != nil {
 			slog.Warn("received context resource was not committed", "provider", written.Provider, "connector", written.Connector)
 		}
 		h.receivedContext.observe(ctx)
@@ -284,14 +283,14 @@ func (h *Hub) handleMeta(w http.ResponseWriter, req *http.Request) {
 			continue
 		}
 		capabilities := provider.Capabilities()
-		if h.authToken == "" {
+		if !h.authenticated() {
 			clearInteractionCapabilities(&capabilities)
 		}
 		health := provider.Health(req.Context())
-		if h.authToken == "" {
+		if !h.authenticated() {
 			clearInteractionCapabilities(&health.Capabilities)
 		}
-		if !nativeConversationWindowAvailable(provider) && h.receivedConversationWindowAvailable(provider) {
+		if (h.scoped() || !nativeConversationWindowAvailable(provider)) && h.receivedConversationWindowAvailable(provider) {
 			capabilities.ConversationWindowVersion = uvim.ConversationWindowVersionV1
 			health.Capabilities.ConversationWindowVersion = uvim.ConversationWindowVersionV1
 		}
@@ -299,7 +298,12 @@ func (h *Hub) handleMeta(w http.ResponseWriter, req *http.Request) {
 			capabilities.ConversationMaterializeVersion = uvim.ConversationMaterializeVersionV1
 			health.Capabilities.ConversationMaterializeVersion = uvim.ConversationMaterializeVersionV1
 		}
-		if strings.TrimSpace(h.authToken) == "" {
+		if h.scoped() {
+			// Native provider history cannot prove the durable caller audience.
+			capabilities.ConversationSearchVersion = ""
+			health.Capabilities.ConversationSearchVersion = ""
+		}
+		if !h.authenticated() {
 			capabilities.ConversationWindowVersion = ""
 			capabilities.ConversationSearchVersion = ""
 			capabilities.ConversationMaterializeVersion = ""
@@ -316,7 +320,7 @@ func (h *Hub) handleMeta(w http.ResponseWriter, req *http.Request) {
 	}
 	meta := uvim.NewServiceMeta(providers)
 	meta.IdentityLinks = h.identityLinks != nil && h.authenticated()
-	if h.authToken != "" && h.receivedContext != nil && h.receivedContext.path != "" {
+	if h.authenticated() && h.receivedContext != nil && h.receivedContext.path != "" {
 		meta.ConversationContextQueryVersion = uvim.ConversationContextQueryVersionV1
 	}
 	writeJSON(w, http.StatusOK, meta)
@@ -345,14 +349,14 @@ func nativeConversationWindowAvailable(provider uvim.Provider) bool {
 // durable EventLog projection. It does not imply an adapter history reader or
 // resource download/materialization capability.
 func (h *Hub) receivedConversationWindowAvailable(provider uvim.Provider) bool {
-	return h != nil && provider != nil && strings.TrimSpace(h.authToken) != "" && h.receivedContext != nil && strings.TrimSpace(h.receivedContext.path) != ""
+	return h != nil && provider != nil && h.authenticated() && h.receivedContext != nil && strings.TrimSpace(h.receivedContext.path) != ""
 }
 
 // receivedMaterializeAvailable is deliberately based on the provider's
 // explicit DownloadResource capability and durable Hub prerequisites. Native
 // conversation-search support is neither necessary nor sufficient.
 func (h *Hub) receivedMaterializeAvailable(provider uvim.Provider) bool {
-	if h == nil || provider == nil || strings.TrimSpace(h.authToken) == "" || h.receivedContext == nil || h.materialResources == nil || strings.TrimSpace(h.receivedContext.path) == "" || strings.TrimSpace(h.materialResources.path) == "" || h.resources == nil || strings.TrimSpace(h.resources.Dir) == "" {
+	if h == nil || provider == nil || !h.authenticated() || h.receivedContext == nil || h.materialResources == nil || strings.TrimSpace(h.receivedContext.path) == "" || strings.TrimSpace(h.materialResources.path) == "" || h.resources == nil || strings.TrimSpace(h.resources.Dir) == "" {
 		return false
 	}
 	return provider.Capabilities().DownloadResource
@@ -371,7 +375,7 @@ func (h *Hub) handleEvents(w http.ResponseWriter, req *http.Request) {
 	}
 	visible := make([]uvim.Event, 0, len(events))
 	for _, event := range events {
-		if h.authToken == "" && event.Type == uvim.EventInteractionAction {
+		if !h.authenticated() && event.Type == uvim.EventInteractionAction {
 			continue
 		}
 		visible = append(visible, event.Sanitized())
@@ -408,7 +412,7 @@ func (h *Hub) handleEventsWS(w http.ResponseWriter, req *http.Request) {
 	}
 	lastSeq := after
 	for _, event := range backlog {
-		if h.authToken == "" && event.Type == uvim.EventInteractionAction {
+		if !h.authenticated() && event.Type == uvim.EventInteractionAction {
 			continue
 		}
 		if err := conn.WriteJSON(event.Sanitized()); err != nil {
@@ -426,7 +430,7 @@ func (h *Hub) handleEventsWS(w http.ResponseWriter, req *http.Request) {
 			if !ok {
 				return
 			}
-			if h.authToken == "" && event.Type == uvim.EventInteractionAction {
+			if !h.authenticated() && event.Type == uvim.EventInteractionAction {
 				continue
 			}
 			if event.Sequence <= lastSeq {
@@ -450,7 +454,7 @@ func (h *Hub) handleMessageCreate(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if msg.Interaction != nil && h.authToken == "" {
+	if msg.Interaction != nil && !h.authenticated() {
 		writeError(w, http.StatusUnauthorized, "interaction_authentication_required")
 		return
 	}
@@ -601,7 +605,7 @@ func (h *Hub) handleConversationWindow(w http.ResponseWriter, req *http.Request)
 		writeJSON(w, http.StatusOK, unavailableConversationWindow(input, "unsupported"))
 		return
 	}
-	nativeAvailable := nativeConversationWindowAvailable(provider)
+	nativeAvailable := !h.scoped() && nativeConversationWindowAvailable(provider)
 	receivedAvailable := !nativeAvailable && h.receivedConversationWindowAvailable(provider)
 	if !nativeAvailable && !receivedAvailable {
 		writeJSON(w, http.StatusOK, unavailableConversationWindow(input, "unsupported"))
@@ -614,7 +618,7 @@ func (h *Hub) handleConversationWindow(w http.ResponseWriter, req *http.Request)
 		writeJSON(w, http.StatusOK, unavailableConversationWindow(input, "window_timeout"))
 		return
 	}
-	if err != nil {
+	if err != nil || h.scoped() && !h.clients.OwnsEvent(clientPrincipal(req), trigger) {
 		writeJSON(w, http.StatusOK, unavailableConversationWindow(input, "trigger_unavailable"))
 		return
 	}
@@ -643,7 +647,7 @@ func (h *Hub) receivedConversationWindow(ctx context.Context, trigger uvim.Event
 		ConversationID: trigger.Channel.ID, ThreadID: trigger.Referrer.ThreadID,
 		TriggerMessageID: trigger.Message.ID, AnchorTime: conversationSearchAnchor(trigger), AnchorTimeSource: uvim.EventSourceTimeSource(trigger),
 	}
-	query, err := h.receivedContext.query(ctx, h.authToken, trigger, conversationSearchFilter{}, conversationSearchMaxLimit, time.Time{}, 0)
+	query, err := h.receivedContext.query(ctx, h.conversationAuthToken(ctx), trigger, conversationSearchFilter{}, conversationSearchMaxLimit, time.Time{}, 0)
 	if err != nil {
 		result.Reason = "index_rebuild_limited"
 		return result
@@ -680,14 +684,26 @@ func (h *Hub) receivedConversationWindow(ctx context.Context, trigger uvim.Event
 }
 
 func (h *Hub) conversationWindowAuthOK(req *http.Request) bool {
-	if h == nil || strings.TrimSpace(h.authToken) == "" || req == nil {
+	if h == nil || !h.authenticated() || req == nil {
 		return false
+	}
+	if h.scoped() {
+		caller, ok := h.clients.Authenticate(req)
+		return ok && caller == clientPrincipal(req)
 	}
 	value := strings.TrimSpace(req.Header.Get("Authorization"))
-	if !strings.HasPrefix(strings.ToLower(value), "bearer ") {
-		return false
+	return strings.HasPrefix(strings.ToLower(value), "bearer ") && strings.TrimSpace(value[7:]) == h.authToken
+}
+
+func (h *Hub) callerToken(caller string) string {
+	if h.scoped() {
+		return h.clients.clients[caller].Token
 	}
-	return strings.TrimSpace(value[7:]) == h.authToken
+	return h.authToken
+}
+
+func (h *Hub) conversationAuthToken(ctx context.Context) string {
+	return h.callerToken(clientIDFromContext(ctx))
 }
 
 func unavailableConversationWindow(request uvim.ConversationWindowRequest, reason string) uvim.ConversationWindowResult {

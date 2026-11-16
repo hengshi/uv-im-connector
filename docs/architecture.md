@@ -68,9 +68,11 @@ WeCom 的可选企业身份查询在事件发送 worker 中完成；应用 token
 
 同一 principal 持有 resource ID 和动态身份关联。发送/更新必须具备两种证明之一：从属于当前 client 的 event 得到唯一且完整的 referrer proof，或（主动发送）得到带类型的 manifest target 或该 principal 已验证身份关联。因而私聊 conversation ID 不会升级为 user 地址。route/client 的修改只在重启后生效，且绝不移交历史 event、reply、resource 或 identity 权限。已发布的 global-token 路径仍是单调用方默认值，不能与共享调用方并存。
 
+共享模式下，近期窗口和显式 `source="received"` 搜索只返回与触发事件具有同一持久 audience 的已接收记录；触发、cursor 和材料化句柄均先核验当前 principal。原生 provider 历史不携带这个归属证明，因此共享模式不声明 `conversation_search_version`，原生搜索返回 `unsupported`，自动窗口直接使用 received projection。路由移交不会让新调用方读到旧调用方的历史。资源私有引用使用所属 client 的 token 加密；材料化文件沿用资源归属检查。入站身份查询只返回当前 client 的身份关联；卡片更新还要求当前 client 持有原发送回执，重启和路由移交不改变该归属。
+
 ## 近期会话窗口
 
-`conversation_window_version=v1` 是可选的 provider 能力，Lark/Feishu 的 `ConversationWindowReader` 已提供原生实现；不改变必需的 `Provider` 接口。原生 reader capability 缺失时，已认证且有持久 received-context projection 的 Hub 才以同一版本声明 retained-ingress fallback。`POST /v1/conversation.window` 必须携带匹配的 Bearer 请求头，未配置认证时也拒绝读取；不能用 URL token 代替。调用方先完成自己的用户/会话准入，再以受信基础设施身份调用，不能把服务令牌交给 Agent 或将此接口当作 Task 授权。
+`conversation_window_version=v1` 是可选的 provider 能力，Lark/Feishu 的 `ConversationWindowReader` 已提供原生实现；不改变必需的 `Provider` 接口。原生 reader capability 缺失或启用共享调用方模式时，已认证且有持久 received-context projection 的 Hub 才以同一版本声明 retained-ingress fallback。`POST /v1/conversation.window` 必须携带匹配的 Bearer 请求头，未配置认证时也拒绝读取；不能用 URL token 代替。调用方先完成自己的用户/会话准入，再以受信基础设施身份调用，不能把服务令牌交给 Agent 或将此接口当作 Task 授权。
 
 请求仅含 `provider`、`connector`、`trigger_event_id`、`trigger_message_id`，不接受会话、话题、时间或路径覆盖。Hub 只在事件日志尾部 64 MiB、最后 10,000 条记录内核对同一已持久化、被唤起的群触发消息；缺失、损坏或身份冲突时不访问原生历史。事件日志用于触发证明，不是历史来源，也不建立另一份正文索引。Lark 再以当前 bot 权限读取精确触发消息，核对会话、时间和真实 `thread_id`；root/parent 不提供话题证明。
 
@@ -78,7 +80,7 @@ WeCom 的可选企业身份查询在事件发送 worker 中完成；应用 token
 
 近期窗口的请求和原生筛选不接收也不使用 `referenced_message_ids`。调用方若在自己的已准备引用材料中避免重复，只能在已取得准确的 `quoted-message.txt` 字节、并与同一脱敏 `ResourceRef.sha256` 核验一致后，将列表中的精确 ID 从已验证的窗口结果移除；不得按正文、文件名或位置 ID 推断。该列表没有访问或 Task 权限，缺少、错误或未验证时必须保留窗口项。调用方局部移除后若该页没有剩余项，可将其本地参考表述为 `none`，但不得改变原始候选数量、边界省略数、`has_more` 或 `scan_limited`，也不得翻页、重试或扩大原生读取。
 
-`available` 只说明该页可用，`none` 是该页无符合项，不能宣称完整历史。时间边界排除且还有更多或页面已满时用 `scan_limited`；`permission_denied`、`rate_limited`、`unavailable` 分别表示拒读、限流与不可用，原因经过归一化，不返回原生错误正文。仅在原生 reader 缺失而被选择的 received fallback 固定读取同一 generation-bound EventLog projection 的一页 10 条元数据，携带 generation/trigger digest/lower bound，以 ingress `sequence` 而不是时间证明早于触发，并只保留安全媒体描述（kind/name/MIME/availability/provenance），绝不返回 resource handle、私有引用或下载媒体；原生 reader 调用失败绝不降级。调用方保留显式材料并显示缺失/覆盖说明，不将背景当作新指令、引用绑定或 Task 权限。
+`available` 只说明该页可用，`none` 是该页无符合项，不能宣称完整历史。时间边界排除且还有更多或页面已满时用 `scan_limited`；`permission_denied`、`rate_limited`、`unavailable` 分别表示拒读、限流与不可用，原因经过归一化，不返回原生错误正文。原生 reader 缺失或共享模式下选择的 received fallback 固定读取同一 generation-bound EventLog projection 的一页 10 条元数据，携带 generation/trigger digest/lower bound，以 ingress `sequence` 而不是时间证明早于触发，并只保留安全媒体描述（kind/name/MIME/availability/provenance），绝不返回 resource handle、私有引用或下载媒体；原生 reader 调用失败绝不降级。调用方保留显式材料并显示缺失/覆盖说明，不将背景当作新指令、引用绑定或 Task 权限。
 
 ## 显式原生会话搜索
 
@@ -168,7 +170,7 @@ ResourceRef
 | `GET /v1/events/ws?after=<seq>` | 订阅标准事件。 |
 | `POST /v1/message.create` | 发送出站消息。 |
 | `POST /v1/message.update` | 编辑精确 connector 的本 bot 文本消息，需能力和 `MessageUpdater` 实现。 |
-| `POST /v1/conversation.window` | 在已持久触发 scope 下读取单页原生背景；仅原生 capability 缺失时退到 retained received fallback；强制 Bearer 认证及可选 provider 能力。 |
+| `POST /v1/conversation.window` | 在已持久触发 scope 下读取单页原生背景；原生 capability 缺失或共享模式下使用 retained received projection；强制 Bearer 认证及可选 provider 能力。 |
 | `POST /v1/conversation.search` | 在同一已验证触发 scope 下按本地筛选读取有限的显式原生或明确请求的 retained received 材料；强制 Bearer、audience 摘要和可选 provider 能力。 |
 | `POST /v1/conversation.materialize` | 重新验证触发/来源后材料化一个不透明、当前查询的 context resource；强制 Bearer、audience 摘要和可选 provider 能力。 |
 | `POST /v1/upload.create` | 从本地字节创建内部资源。 |

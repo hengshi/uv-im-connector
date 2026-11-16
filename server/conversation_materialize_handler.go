@@ -50,7 +50,7 @@ func (h *Hub) handleConversationMaterialize(w http.ResponseWriter, req *http.Req
 		writeJSON(w, http.StatusOK, unavailableConversationMaterialize("trigger_unavailable"))
 		return
 	}
-	record, resource, err := h.materialResources.resolve(h.authToken, input)
+	record, resource, err := h.materialResources.resolve(h.conversationAuthToken(req.Context()), input)
 	if err != nil {
 		writeJSON(w, http.StatusOK, unavailableConversationMaterialize("handle_not_recoverable"))
 		return
@@ -63,6 +63,18 @@ func (h *Hub) handleConversationMaterialize(w http.ResponseWriter, req *http.Req
 	// Each read gets its own storage object. A repeated provider reference or
 	// concurrent attempt must not truncate a previously completed cached file.
 	resource.ID = uvim.NewID("res")
+	if h.scoped() {
+		caller := clientPrincipal(req)
+		if record.Resource.InternalURL != "" {
+			if !h.resourceScopes.owns(resourceID(record.Resource), caller) {
+				writeJSON(w, http.StatusOK, unavailableConversationMaterialize("cached_resource_unavailable"))
+				return
+			}
+		} else if err := h.resourceScopes.claim(resource.ID, resourceScope{ClientID: caller}); err != nil {
+			writeJSON(w, http.StatusOK, unavailableConversationMaterialize("resource_scope_unavailable"))
+			return
+		}
+	}
 	if record.Source == "received" {
 		source, sourceErr := h.receivedContext.materializeEvent(req.Context(), record, trigger)
 		if sourceErr != nil {

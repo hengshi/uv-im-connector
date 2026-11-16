@@ -16,7 +16,7 @@ func (h *Hub) handleInboundIdentity(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
-	if h.authToken == "" || h.identityLinks == nil || h.eventLog == nil || h.eventLog.Path == "" {
+	if !h.authenticated() || h.identityLinks == nil || h.eventLog == nil || h.eventLog.Path == "" {
 		writeError(w, http.StatusNotImplemented, "identity_links_unavailable")
 		return
 	}
@@ -32,7 +32,7 @@ func (h *Hub) handleInboundIdentity(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusNotFound, "provider_not_found")
 		return
 	}
-	events, err := h.eventLog.ReadAfter(req.Context(), 0)
+	events, err := h.readEvents(req.Context(), clientPrincipal(req), 0)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "identity_event_unavailable")
 		return
@@ -88,7 +88,7 @@ func (h *Hub) handleInboundIdentity(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	for _, link := range h.identityLinks.links {
-		if link.Revoked || link.Provider != event.Provider || link.Connector != event.Connector || link.UserID != event.User.ID {
+		if h.scoped() && link.ClientID != clientPrincipal(req) || link.Revoked || link.Provider != event.Provider || link.Connector != event.Connector || link.UserID != event.User.ID {
 			continue
 		}
 		// Identity membership belongs to the native actor. A business link may
