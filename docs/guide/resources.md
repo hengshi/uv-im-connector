@@ -91,6 +91,8 @@ POST /v1/resource.download
 
 发送前必须从 `GET /v1/meta` 校验目标 provider + connector 的 `upload_resource` 和 `resource_kinds`，并把 `upload.create` 返回的完整 `ResourceRef` 原样放进 `OutboundMessage.resources`。不能自行拼装 `internal_url`，也不能拿另一个 uv-im-connector 进程的内部 URL 来用。
 
+附件显示名保留 Unicode、空格和标点。连接器取文件的基本名称并过滤控制字符，再按通道协议编码，平台负责校验其原生文件名限制。
+
 standalone binary 中，WeCom、Lark / Feishu、DingTalk（配置应用凭据）、Discord、KOOK、Telegram、Matrix、Slack、WhatsApp、Zulip、WeChat Official Account 和 Mail 与 HTTP upload endpoint 使用同一个 resource store，并真正声明 `upload_resource=true`。完整逐 provider 清单见 [Provider 能力矩阵](/architecture.html#provider-能力矩阵)。
 
 - WeCom：WebSocket 上传每片 512 KiB，总大小和分片数量由平台校验。

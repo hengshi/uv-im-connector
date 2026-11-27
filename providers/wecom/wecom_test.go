@@ -314,7 +314,7 @@ func TestSendResourceReplyUploadsChunksAndSendsMedia(t *testing.T) {
 		t.Run("text="+text, func(t *testing.T) {
 			data := bytes.Repeat([]byte("x"), uploadChunkSize+1)
 			store := &uvim.ResourceStore{Dir: t.TempDir()}
-			ref, err := store.Save(context.Background(), bytes.NewReader(data), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
+			ref, err := store.Save(context.Background(), bytes.NewReader(data), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "企业 AI 工作产品｜Jarvis 有何不同.pdf", MIME: "text/plain"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -378,7 +378,7 @@ func TestSendResourceReplyUploadsChunksAndSendsMedia(t *testing.T) {
 					t.Fatalf("frame %d command = %q, want %q", i, frames[i].Cmd, command)
 				}
 			}
-			if frames[0].Body["filename"] != "report.txt" || int(frames[0].Body["total_chunks"].(float64)) != 2 {
+			if frames[0].Body["filename"] != "企业 AI 工作产品｜Jarvis 有何不同.pdf" || int(frames[0].Body["total_chunks"].(float64)) != 2 {
 				t.Fatalf("init body = %+v", frames[0].Body)
 			}
 			if frames[0].Body["md5"] != fmt.Sprintf("%x", md5.Sum(data)) {

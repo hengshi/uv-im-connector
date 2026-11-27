@@ -193,7 +193,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 		}
 	}
 	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, field, name))
+	header.Set("Content-Disposition", uvim.MultipartFileDisposition(field, name))
 	if strings.TrimSpace(ref.MIME) != "" {
 		header.Set("Content-Type", ref.MIME)
 	}

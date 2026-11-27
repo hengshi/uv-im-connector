@@ -313,7 +313,7 @@ func encodeBody(req Request) (io.Reader, string, error) {
 		for _, file := range req.Multipart.Files {
 			name := uvim.ResourceUploadName(0, uvim.ResourceRef{Name: file.Name, MIME: file.MIME}, file.MIME)
 			header := make(textproto.MIMEHeader)
-			header.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, file.Field, name))
+			header.Set("Content-Disposition", uvim.MultipartFileDisposition(file.Field, name))
 			if strings.TrimSpace(file.MIME) != "" {
 				header.Set("Content-Type", file.MIME)
 			}

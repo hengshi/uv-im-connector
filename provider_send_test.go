@@ -33,7 +33,7 @@ import (
 
 func TestSlackSendUploadsInternalResource(t *testing.T) {
 	store := &uvim.ResourceStore{Dir: t.TempDir()}
-	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
+	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "季度 报告｜验收.txt", MIME: "text/plain"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestSlackSendUploadsInternalResource(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "channel": map[string]string{"id": "D1"}})
 		case "/api/files.getUploadURLExternal":
-			if req.Header.Get("Authorization") != "Bearer token" || req.FormValue("filename") != "report.txt" || req.FormValue("length") != "6" {
+			if req.Header.Get("Authorization") != "Bearer token" || req.FormValue("filename") != "季度 报告｜验收.txt" || req.FormValue("length") != "6" {
 				t.Fatalf("init auth=%q form=%v", req.Header.Get("Authorization"), req.Form)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "upload_url": server.URL + "/upload", "file_id": "F1"})
@@ -69,6 +69,10 @@ func TestSlackSendUploadsInternalResource(t *testing.T) {
 			}
 			if body["channel_id"] != "D1" || body["thread_ts"] != "T1" || body["initial_comment"] != "caption" {
 				t.Fatalf("complete body = %+v", body)
+			}
+			files, ok := body["files"].([]any)
+			if !ok || len(files) != 1 || files[0].(map[string]any)["title"] != "季度 报告｜验收.txt" {
+				t.Errorf("complete files = %+v", body["files"])
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "files": []map[string]string{{"id": "F1"}}})
 		default:
@@ -91,7 +95,7 @@ func TestSlackSendUploadsInternalResource(t *testing.T) {
 
 func TestDiscordSendUploadsInternalResource(t *testing.T) {
 	store := &uvim.ResourceStore{Dir: t.TempDir()}
-	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
+	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "季度 报告｜验收.txt", MIME: "text/plain"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,8 +116,14 @@ func TestDiscordSendUploadsInternalResource(t *testing.T) {
 		if payload["content"] != "caption" {
 			t.Fatalf("payload = %+v", payload)
 		}
-		if len(payload["attachments"].([]any)) != 2 {
+		attachments := payload["attachments"].([]any)
+		if len(attachments) != 2 {
 			t.Fatalf("attachments = %+v", payload)
+		}
+		for _, attachment := range attachments {
+			if attachment.(map[string]any)["filename"] != "季度 报告｜验收.txt" {
+				t.Errorf("attachment = %+v", attachment)
+			}
 		}
 		for _, field := range []string{"files[0]", "files[1]"} {
 			file, header, err := req.FormFile(field)
@@ -122,7 +132,7 @@ func TestDiscordSendUploadsInternalResource(t *testing.T) {
 			}
 			defer file.Close()
 			data, _ := io.ReadAll(file)
-			if header.Filename != "report.txt" || string(data) != "report" {
+			if header.Filename != "季度 报告｜验收.txt" || string(data) != "report" {
 				t.Fatalf("filename=%q data=%q", header.Filename, data)
 			}
 		}
@@ -182,7 +192,7 @@ func TestDiscordProactiveUserCreatesDMThenSends(t *testing.T) {
 
 func TestKOOKSendUploadsInternalResource(t *testing.T) {
 	store := &uvim.ResourceStore{Dir: t.TempDir()}
-	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
+	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "季度 报告｜验收.txt", MIME: "text/plain"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +211,7 @@ func TestKOOKSendUploadsInternalResource(t *testing.T) {
 			}
 			defer file.Close()
 			data, _ := io.ReadAll(file)
-			if header.Filename != "report.txt" || string(data) != "report" {
+			if header.Filename != "季度 报告｜验收.txt" || string(data) != "report" {
 				t.Fatalf("filename=%q data=%q", header.Filename, data)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"url": "https://assets.kook/report"}})
@@ -219,7 +229,7 @@ func TestKOOKSendUploadsInternalResource(t *testing.T) {
 			}
 			modules, _ := cards[0]["modules"].([]any)
 			module, _ := modules[0].(map[string]any)
-			if module["type"] != "file" || module["src"] != "https://assets.kook/report" || module["title"] != "report.txt" {
+			if module["type"] != "file" || module["src"] != "https://assets.kook/report" || module["title"] != "季度 报告｜验收.txt" {
 				t.Fatalf("cards = %+v", cards)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"msg_id": "message1"}})
@@ -243,7 +253,7 @@ func TestKOOKSendUploadsInternalResource(t *testing.T) {
 
 func TestMatrixSendUploadsInternalResource(t *testing.T) {
 	store := &uvim.ResourceStore{Dir: t.TempDir()}
-	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
+	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "季度 报告｜验收.txt", MIME: "text/plain"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +266,7 @@ func TestMatrixSendUploadsInternalResource(t *testing.T) {
 		switch {
 		case req.Method == http.MethodPost && req.URL.Path == "/_matrix/media/v3/upload":
 			uploads++
-			if req.URL.Query().Get("filename") != "report.txt" || req.Header.Get("Content-Type") != "text/plain" {
+			if req.URL.Query().Get("filename") != "季度 报告｜验收.txt" || req.Header.Get("Content-Type") != "text/plain" {
 				t.Fatalf("upload request = %s %s content-type=%q", req.URL.Path, req.URL.RawQuery, req.Header.Get("Content-Type"))
 			}
 			data, readErr := io.ReadAll(req.Body)
@@ -273,7 +283,7 @@ func TestMatrixSendUploadsInternalResource(t *testing.T) {
 			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 				t.Fatal(err)
 			}
-			if body["msgtype"] != "m.file" || body["body"] != "report.txt" || body["url"] != "mxc://example.org/media1" {
+			if body["msgtype"] != "m.file" || body["body"] != "季度 报告｜验收.txt" || body["url"] != "mxc://example.org/media1" {
 				t.Fatalf("send body = %+v", body)
 			}
 			relation, _ := body["m.relates_to"].(map[string]any)
@@ -317,7 +327,7 @@ func TestWhatsAppSendRequiresPhoneNumberID(t *testing.T) {
 
 func TestWeChatOfficialSendUploadsInternalMedia(t *testing.T) {
 	store := &uvim.ResourceStore{Dir: t.TempDir()}
-	ref, err := store.Save(context.Background(), bytes.NewBufferString("image"), uvim.ResourceRef{Kind: uvim.ElementImage, Name: "chart.png", MIME: "image/png"})
+	ref, err := store.Save(context.Background(), bytes.NewBufferString("image"), uvim.ResourceRef{Kind: uvim.ElementImage, Name: "发布 图表.png", MIME: "image/png"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +346,7 @@ func TestWeChatOfficialSendUploadsInternalMedia(t *testing.T) {
 			}
 			defer file.Close()
 			data, _ := io.ReadAll(file)
-			if header.Filename != "chart.png" || string(data) != "image" {
+			if header.Filename != "发布 图表.png" || string(data) != "image" {
 				t.Fatalf("filename=%q data=%q", header.Filename, data)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"type": "image", "media_id": "MEDIA1"})
@@ -413,7 +423,7 @@ func TestWhatsAppDownloadMediaLookupPreservesPrefixedAuthorization(t *testing.T)
 
 func TestWhatsAppSendUploadsInternalResource(t *testing.T) {
 	store := &uvim.ResourceStore{Dir: t.TempDir()}
-	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
+	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "季度 报告｜验收.txt", MIME: "text/plain"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +448,7 @@ func TestWhatsAppSendUploadsInternalResource(t *testing.T) {
 			}
 			defer file.Close()
 			data, _ := io.ReadAll(file)
-			if header.Filename != "report.txt" || string(data) != "report" {
+			if header.Filename != "季度 报告｜验收.txt" || string(data) != "report" {
 				t.Fatalf("filename=%q data=%q", header.Filename, data)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "MEDIA1"})
@@ -449,7 +459,7 @@ func TestWhatsAppSendUploadsInternalResource(t *testing.T) {
 			}
 			document, _ := body["document"].(map[string]any)
 			contextBody, _ := body["context"].(map[string]any)
-			if body["type"] != "document" || body[expectedField] != "user1" || document["id"] != "MEDIA1" || document["filename"] != "report.txt" || contextBody["message_id"] != "original" {
+			if body["type"] != "document" || body[expectedField] != "user1" || document["id"] != "MEDIA1" || document["filename"] != "季度 报告｜验收.txt" || contextBody["message_id"] != "original" {
 				t.Fatalf("message body = %+v", body)
 			}
 			if expectedField == "recipient" && body["to"] != nil {
@@ -522,7 +532,7 @@ func TestWhatsAppTypedTextAddressing(t *testing.T) {
 
 func TestZulipSendUploadsInternalResource(t *testing.T) {
 	store := &uvim.ResourceStore{Dir: t.TempDir()}
-	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
+	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "季度 [发布] *报告* &amp;.txt", MIME: "text/plain"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -541,15 +551,15 @@ func TestZulipSendUploadsInternalResource(t *testing.T) {
 			}
 			defer file.Close()
 			data, _ := io.ReadAll(file)
-			if header.Filename != "report.txt" || string(data) != "report" {
+			if header.Filename != "季度 [发布] *报告* &amp;.txt" || string(data) != "report" {
 				t.Fatalf("filename=%q data=%q", header.Filename, data)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"result": "success", "url": "/user_uploads/report", "filename": "report.txt"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": "success", "url": "/user_uploads/report", "filename": "季度 [发布] *报告* &amp;.txt"})
 		case "/api/v1/messages":
 			if err := req.ParseForm(); err != nil {
 				t.Fatal(err)
 			}
-			if req.FormValue("type") != "stream" || req.FormValue("to") != "engineering" || strings.Count(req.FormValue("content"), "[report.txt](/user_uploads/report)") != 2 {
+			if req.FormValue("type") != "stream" || req.FormValue("to") != "engineering" || strings.Count(req.FormValue("content"), `[季度 \[发布\] \*报告\* &amp;amp;.txt](/user_uploads/report)`) != 2 {
 				t.Fatalf("message form = %v", req.Form)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"result": "success", "id": 42})

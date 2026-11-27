@@ -6,12 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -143,7 +141,7 @@ func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (ke
 	var envelope bytes.Buffer
 	writer := multipart.NewWriter(&envelope)
 	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": "media", "filename": name}))
+	header.Set("Content-Disposition", uvim.MultipartFileDisposition("media", name))
 	header.Set("Content-Type", firstNonEmpty(stored.MIME, "application/octet-stream"))
 	if _, err := writer.CreatePart(header); err != nil {
 		return "", nil, err
@@ -179,7 +177,9 @@ func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (ke
 		return "sampleImageMsg", map[string]string{"photoURL": decoded.MediaID}, nil
 	}
 	// Audio and video retain their bytes and filename as downloadable files.
-	return "sampleFile", map[string]string{"mediaId": decoded.MediaID, "fileName": name, "fileType": strings.TrimPrefix(strings.ToLower(filepath.Ext(name)), ".")}, nil
+	extension := uvim.ResourceMediaExtension(ref, firstNonEmpty(stored.MIME, ref.MIME))
+	fileType := strings.TrimPrefix(strings.ToLower(extension), ".")
+	return "sampleFile", map[string]string{"mediaId": decoded.MediaID, "fileName": name, "fileType": fileType}, nil
 }
 
 func (p *Provider) mediaAccessToken(ctx context.Context) (string, error) {

@@ -13,7 +13,7 @@ import (
 
 func TestSendResourceUsesMultipartBotAPI(t *testing.T) {
 	store := &uvim.ResourceStore{Dir: t.TempDir()}
-	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
+	ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "季度 \"发布\".pdf", MIME: "text/plain"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestSendResourceUsesMultipartBotAPI(t *testing.T) {
 			defer file.Close()
 			var data bytes.Buffer
 			_, _ = data.ReadFrom(file)
-			if header.Filename != "report.txt" || data.String() != "report" {
+			if header.Filename != "季度 \"发布\".pdf" || data.String() != "report" {
 				t.Errorf("filename=%q data=%q", header.Filename, data.String())
 			}
 		}

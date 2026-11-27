@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/mail"
 	"net/smtp"
 	"net/textproto"
+	"net/url"
 	"strings"
 	"time"
 
@@ -298,7 +300,7 @@ func mailBytes(from, to, subject, body, replyTo string, now time.Time, attachmen
 	for _, attachment := range attachments {
 		header := make(textproto.MIMEHeader)
 		header.Set("Content-Type", attachment.mime)
-		header.Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, attachment.name))
+		header.Set("Content-Disposition", attachmentDisposition(attachment.name))
 		header.Set("Content-Transfer-Encoding", "base64")
 		part, _ := mixed.CreatePart(header)
 		encoded := base64.StdEncoding.EncodeToString(attachment.data)
@@ -310,6 +312,34 @@ func mailBytes(from, to, subject, body, replyTo string, now time.Time, attachmen
 	}
 	_ = mixed.Close()
 	return buf.Bytes()
+}
+
+func attachmentDisposition(name string) string {
+	const maxHeaderLine = 998
+	value := mime.FormatMediaType("attachment", map[string]string{"filename": name})
+	if len("Content-Disposition: ")+len(value) <= maxHeaderLine {
+		return value
+	}
+
+	// RFC 2231 continuation parameters keep long names within the mail header
+	// line limit. Do not split a percent-encoded byte between parameters.
+	const parameterBytes = 72
+	encoded := strings.ReplaceAll(url.QueryEscape(name), "+", "%20")
+	var folded strings.Builder
+	folded.WriteString("attachment")
+	for number := 0; encoded != ""; number++ {
+		end := min(len(encoded), parameterBytes)
+		if percent := strings.LastIndexByte(encoded[:end], '%'); percent >= 0 && end-percent < 3 {
+			end = percent
+		}
+		fmt.Fprintf(&folded, ";\r\n filename*%d*=", number)
+		if number == 0 {
+			folded.WriteString("utf-8''")
+		}
+		folded.WriteString(encoded[:end])
+		encoded = encoded[end:]
+	}
+	return folded.String()
 }
 
 func subject(msg uvim.OutboundMessage) string {

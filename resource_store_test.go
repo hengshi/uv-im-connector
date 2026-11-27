@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,7 +32,7 @@ func TestResourceStoreSavesBeyondLegacySizeLimits(t *testing.T) {
 
 func TestResourceStoreSaveOpenAndSanitize(t *testing.T) {
 	store := &ResourceStore{Dir: t.TempDir()}
-	ref, err := store.Save(context.Background(), strings.NewReader("hello"), ResourceRef{ID: "r1", Kind: ElementFile, Name: "hello.txt"})
+	ref, err := store.Save(context.Background(), strings.NewReader("hello"), ResourceRef{ID: "r1", Kind: ElementFile, Name: "客户反馈 ｜版本 é-📄.txt "})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +47,7 @@ func TestResourceStoreSaveOpenAndSanitize(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	if opened.ID != "r1" || opened.Name != "hello.txt" || !strings.HasPrefix(opened.MIME, "text/plain") {
+	if opened.ID != "r1" || opened.Name != "客户反馈 ｜版本 é-📄.txt " || !strings.HasPrefix(opened.MIME, "text/plain") {
 		t.Fatalf("opened = %+v", opened)
 	}
 	safe := ref.Sanitized()
@@ -114,7 +115,27 @@ func TestResourceStoreCleansFailedSave(t *testing.T) {
 
 func TestResourceUploadNameSanitizesPathsAndHeaderBytes(t *testing.T) {
 	got := ResourceUploadName(0, ResourceRef{Name: "../report\r\nInjected: yes.pdf"}, "application/pdf")
-	if got != "report-Injected-yes.pdf" {
+	if got != "report-Injected: yes.pdf" {
 		t.Fatalf("ResourceUploadName() = %q", got)
+	}
+	name := ResourceUploadName(0, ResourceRef{Name: `C:\work\客户反馈.pdf`}, "application/pdf")
+	disposition := MultipartFileDisposition("file\r\n", name)
+	_, params, err := mime.ParseMediaType(disposition)
+	if err != nil || strings.ContainsAny(disposition, "\r\n") || params["filename"] != "客户反馈.pdf" {
+		t.Fatalf("Content-Disposition = %q, err = %v", disposition, err)
+	}
+	if got := ResourceMediaExtension(ResourceRef{Name: "report.p\x00df"}, ""); got != ".pdf" {
+		t.Fatalf("ResourceMediaExtension() = %q", got)
+	}
+}
+
+func TestResourceUploadNameKeepsNamesWithoutSuffix(t *testing.T) {
+	for _, name := range []string{"无扩展名｜报告", "   "} {
+		if got := ResourceUploadName(0, ResourceRef{Name: name}, "application/pdf"); got != name {
+			t.Fatalf("ResourceUploadName(%q) = %q", name, got)
+		}
+	}
+	if got := ResourceUploadName(0, ResourceRef{Key: "upload token+v1"}, "application/pdf"); got != "upload-token-v1.pdf" {
+		t.Fatalf("fallback ResourceUploadName() = %q", got)
 	}
 }

@@ -83,7 +83,7 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 		var body bytes.Buffer
 		writer := multipart.NewWriter(&body)
 		header := make(textproto.MIMEHeader)
-		header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="filename"; filename=%q`, name))
+		header.Set("Content-Disposition", uvim.MultipartFileDisposition("filename", name))
 		if strings.TrimSpace(ref.MIME) != "" {
 			header.Set("Content-Type", ref.MIME)
 		}
@@ -137,8 +137,14 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 			missingErr := fmt.Errorf("zulip upload: response missing url")
 			return msg, uvim.NewProviderSendLogError("zulip upload: URL missing", missingErr)
 		}
-		displayName := firstNonEmpty(decoded.Filename, name)
-		displayName = strings.NewReplacer("[", "", "]", "").Replace(displayName)
+		displayName := decoded.Filename
+		if displayName == "" {
+			displayName = name
+		}
+		displayName = strings.NewReplacer(
+			`\`, `\\`, "[", `\[`, "]", `\]`, "*", `\*`, "_", `\_`, "`", "\\`", "~", `\~`,
+			"&", "&amp;", "<", "&lt;", ">", "&gt;",
+		).Replace(displayName)
 		link := "[" + displayName + "](" + uploadURL + ")"
 		if strings.TrimSpace(msg.Text) == "" {
 			msg.Text = link

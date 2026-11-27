@@ -91,6 +91,8 @@ Use `POST /v1/upload.create` to create an internal resource from local bytes bef
 
 Before sending, inspect the exact provider and connector in `GET /v1/meta`, require `upload_resource` and the desired `resource_kinds`, and pass the complete `ResourceRef` returned by `upload.create` in `OutboundMessage.resources`. Do not construct an `internal_url` or reuse one from another uv-im-connector process.
 
+Attachment display names keep Unicode, spaces, and punctuation. The connector uses the basename, filters control characters, and encodes the name for the channel. Providers enforce their own filename rules.
+
 In the standalone binary, WeCom, Lark / Feishu, DingTalk (with application credentials), Discord, KOOK, Telegram, Matrix, Slack, WhatsApp, Zulip, WeChat Official Account, and Mail share the HTTP upload resource store and declare `upload_resource=true`. See the [provider capability matrix](/en/architecture.html#provider-capability-matrix) for every provider.
 
 - WeCom: WebSocket upload uses 512 KiB chunks, and the provider validates total size and chunk count.

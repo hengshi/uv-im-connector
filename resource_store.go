@@ -90,7 +90,7 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 		Name: ResourceUploadName(0, ref, ""),
 		// Preserve the content type that ServeContent previously inferred from
 		// the on-disk extension, including names whose MIME supplied that suffix.
-		MIME: mime.TypeByExtension(filepath.Ext(ResourceUploadName(0, ref, ref.MIME))),
+		MIME: mime.TypeByExtension(ResourceMediaExtension(ref, ref.MIME)),
 	}
 	metaFile, err := os.CreateTemp(dir, ".metadata-*")
 	if err != nil {

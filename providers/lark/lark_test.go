@@ -644,7 +644,7 @@ func TestSendResourceUploadsThenReplies(t *testing.T) {
 	for _, text := range []string{"", "file summary"} {
 		t.Run("text="+text, func(t *testing.T) {
 			store := &uvim.ResourceStore{Dir: t.TempDir()}
-			ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
+			ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "企业 AI 工作产品｜Jarvis 有何不同.pdf", MIME: "text/plain"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -666,7 +666,7 @@ func TestSendResourceUploadsThenReplies(t *testing.T) {
 						defer file.Close()
 						var data bytes.Buffer
 						_, _ = data.ReadFrom(file)
-						if header.Filename != "report.txt" || data.String() != "report" || req.FormValue("file_type") != "stream" {
+						if header.Filename != "企业 AI 工作产品｜Jarvis 有何不同.pdf" || req.FormValue("file_name") != "企业 AI 工作产品｜Jarvis 有何不同.pdf" || data.String() != "report" || req.FormValue("file_type") != "stream" {
 							t.Errorf("upload filename=%q data=%q type=%q", header.Filename, data.String(), req.FormValue("file_type"))
 						}
 					}

@@ -731,7 +731,7 @@ func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[
 		}
 	}
 	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, fileField, name))
+	header.Set("Content-Disposition", uvim.MultipartFileDisposition(fileField, name))
 	if strings.TrimSpace(mimeType) != "" {
 		header.Set("Content-Type", mimeType)
 	}
