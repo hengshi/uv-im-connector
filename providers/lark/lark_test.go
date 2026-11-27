@@ -164,7 +164,7 @@ func TestChunkAssemblerWithoutCountOrDefaultExpiry(t *testing.T) {
 func TestDecodePayloadPostResources(t *testing.T) {
 	for _, chatType := range []string{"p2p", "group"} {
 		t.Run(chatType, func(t *testing.T) {
-			content := `{"title":"Review","content":[[{"tag":"text","text":"analyze this"},{"tag":"img","image_key":"image-1"}],[{"tag":"media","file_key":"video-1","image_key":"preview-1"},{"tag":"img"}]]}`
+			content := `{"title":"Review","content":[[{"tag":"text","text":"flattened text"},{"tag":"img","image_key":"legacy-only"},{"tag":"img","image_key":"image-1"}]],"content_v2":[[{"tag":"md","text":"| A | B |\n|---|---|\n| 1 | 2 |"}],[{"tag":"img","image_key":"image-1"},{"tag":"media","file_key":"video-1","image_key":"preview-1"}]]}`
 			payload, err := json.Marshal(map[string]any{
 				"header": map[string]any{"event_type": "im.message.receive_v1", "event_id": "event-1"},
 				"event": map[string]any{"message": map[string]any{
@@ -177,10 +177,13 @@ func TestDecodePayloadPostResources(t *testing.T) {
 				t.Fatal(err)
 			}
 			event, ok, err := DecodePayload(payload, DecoderConfig{Connector: "main", BotOpenID: "bot"})
-			if err != nil || !ok || !event.Addressed || len(event.Message.Resources) != 2 {
+			if err != nil || !ok || !event.Addressed || len(event.Message.Resources) != 3 {
 				t.Fatalf("ok=%t err=%v event=%+v", ok, err, event)
 			}
-			for i, want := range []uvim.ResourceRef{{Kind: "image", Key: "image-1"}, {Kind: "video", Key: "video-1"}} {
+			if !strings.Contains(event.Message.Text, "| A | B |\n|---|---|\n| 1 | 2 |") || strings.Contains(event.Message.Text, "flattened text") {
+				t.Fatalf("expected intact v2 Markdown in post: %q", event.Message.Text)
+			}
+			for i, want := range []uvim.ResourceRef{{Kind: "image", Key: "legacy-only"}, {Kind: "image", Key: "image-1"}, {Kind: "video", Key: "video-1"}} {
 				ref := event.Message.Resources[i]
 				if ref.ID == "" || ref.Kind != want.Kind || ref.Key != want.Key || ref.Metadata["message_id"] != "message-1" || ref.Provider != "lark" || ref.Connector != "main" {
 					t.Fatalf("resource %d = %+v", i, ref)
@@ -191,16 +194,16 @@ func TestDecodePayloadPostResources(t *testing.T) {
 				}
 			}
 			ambient, _, err := DecodePayload(payload, DecoderConfig{Connector: "main", BotOpenID: "another-bot"})
-			if err != nil || ambient.Addressed != (chatType == "p2p") || len(ambient.Message.Resources) != 2 {
+			if err != nil || ambient.Addressed != (chatType == "p2p") || len(ambient.Message.Resources) != 3 {
 				t.Fatalf("ambient addressed=%t resources=%d err=%v", ambient.Addressed, len(ambient.Message.Resources), err)
 			}
 			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				switch req.URL.Path {
 				case "/open-apis/auth/v3/tenant_access_token/internal":
 					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
-				case "/open-apis/im/v1/messages/message-1/resources/image-1", "/open-apis/im/v1/messages/message-1/resources/video-1":
+				case "/open-apis/im/v1/messages/message-1/resources/legacy-only", "/open-apis/im/v1/messages/message-1/resources/image-1", "/open-apis/im/v1/messages/message-1/resources/video-1":
 					wantType := "file"
-					if req.URL.Path == "/open-apis/im/v1/messages/message-1/resources/image-1" {
+					if !strings.HasSuffix(req.URL.Path, "/video-1") {
 						wantType = "image"
 					}
 					if req.URL.Query().Get("type") != wantType || req.Header.Get("Authorization") != "Bearer token" {
@@ -641,10 +644,19 @@ func TestFrameRoundTrip(t *testing.T) {
 }
 
 func TestSendResourceUploadsThenReplies(t *testing.T) {
-	for _, text := range []string{"", "file summary"} {
-		t.Run("text="+text, func(t *testing.T) {
+	const title = "企业 AI 工作产品｜Jarvis 有何不同"
+	for _, tc := range []struct {
+		name, fileName, mimeType, text, suffix string
+	}{
+		{"existing suffix", title + ".pdf", "text/plain", "", ".pdf"},
+		{"inferred suffix with caption", title, "application/pdf", "file summary", ".pdf"},
+		{"unknown MIME with caption", title, "", "file summary", ".bin"},
+		{"trailing dot", title + ".", "application/pdf", "", ".pdf"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := tc.text
 			store := &uvim.ResourceStore{Dir: t.TempDir()}
-			ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
+			ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: tc.fileName, MIME: tc.mimeType})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -655,9 +667,16 @@ func TestSendResourceUploadsThenReplies(t *testing.T) {
 				case "/open-apis/auth/v3/tenant_access_token/internal":
 					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
 				case "/open-apis/im/v1/files":
+					http.Redirect(w, req, "/native-upload", http.StatusTemporaryRedirect)
+				case "/native-upload":
 					operations = append(operations, "upload")
 					if err := req.ParseMultipartForm(1 << 20); err != nil {
 						t.Error(err)
+					}
+					if got := req.FormValue("file_name"); got != title+tc.suffix {
+						t.Errorf("file_name = %q, want %q", got, title+tc.suffix)
+						http.Error(w, "invalid file_name", http.StatusBadRequest)
+						return
 					}
 					file, header, err := req.FormFile("file")
 					if err != nil {
@@ -666,7 +685,7 @@ func TestSendResourceUploadsThenReplies(t *testing.T) {
 						defer file.Close()
 						var data bytes.Buffer
 						_, _ = data.ReadFrom(file)
-						if header.Filename != "report.txt" || data.String() != "report" || req.FormValue("file_type") != "stream" {
+						if header.Filename != title+tc.suffix || data.String() != "report" || req.FormValue("file_type") != "stream" {
 							t.Errorf("upload filename=%q data=%q type=%q", header.Filename, data.String(), req.FormValue("file_type"))
 						}
 					}
@@ -867,6 +886,7 @@ func TestSendTextRoutesRecipientsAndReplies(t *testing.T) {
 		{"conversation", uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "oc_chat", Kind: uvim.TargetConversation}}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", ""},
 		{"legacy direct channel", uvim.OutboundMessage{ChannelID: "oc_chat", ChannelType: uvim.ChannelDirect}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", ""},
 		{"reply", uvim.OutboundMessage{Referrer: uvim.Referrer{MessageID: "om_original"}}, "/open-apis/im/v1/messages/om_original/reply", "", "", ""},
+		{"preserve outer whitespace", uvim.OutboundMessage{ChannelID: "oc_chat"}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", "    first\n    second\n"},
 		{"20 KiB text", uvim.OutboundMessage{ChannelID: "oc_chat"}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", strings.Repeat("x", 20*1024)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

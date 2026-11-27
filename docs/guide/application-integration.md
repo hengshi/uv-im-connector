@@ -117,7 +117,7 @@ Connector 只返回不透明、短效的 Hub cursor。它绑定已核验的触�
 
 ## 完整文本、流式回复和编辑
 
-`capabilities.text_max_bytes` 是单次发送或编辑的标准化 UTF-8 文本字节上限，包含调用方添加的可见前缀和格式。WeCom 根据[被动流式回复](https://developer.work.weixin.qq.com/document/path/101031)的 `stream.content` 和[长连接主动发送](https://developer.work.weixin.qq.com/document/path/101463)的 `markdown.content` 声明 20480 字节，并在上传或发送前校验；超限返回 `category=payload-too-large`、`delivery_state=not-attempted` 和包含精确上限的安全说明。`0` 或字段缺失表示未知上限。Lark 的原生限制针对实际序列化请求体，无法准确声明为固定的原始 UTF-8 文本预算，因此其 `text_max_bytes` 保持未知，由原生 API 校验请求体。Connector 不自动截断或分页；调用方按完整逻辑内容分页，并在无法合法继续分页时使用受支持的文件资源。
+`capabilities.text_max_bytes` 是换行符归一化后的单次发送或编辑 UTF-8 字节上限，包含可见前缀、缩进和末尾空白。WeCom 根据[被动流式回复](https://developer.work.weixin.qq.com/document/path/101031)的 `stream.content` 和[长连接主动发送](https://developer.work.weixin.qq.com/document/path/101463)的 `markdown.content` 声明 20480 字节，并在上传或发送前校验；超限返回 `category=payload-too-large`、`delivery_state=not-attempted` 和包含精确上限的安全说明。`0` 或字段缺失表示未知上限。Lark 的原生限制针对实际序列化请求体，无法准确声明为固定的原始 UTF-8 文本预算，因此其 `text_max_bytes` 保持未知，由原生 API 校验请求体。Connector 不自动截断或分页；调用方按完整逻辑内容分页，并在无法合法继续分页时使用受支持的文件资源。
 
 DingTalk 的原始文本预算也保持未知。官方[群聊服务端发送接口](https://open.dingtalk.com/document/development/the-robot-sends-a-group-message)限制的是序列化后的 `msgParam` JSON 字符串，不超过 15000 字节，其中包含 title、text 和 JSON 转义；不能直接作为单聊及 sessionWebhook 路由通用的原始 UTF-8 文本上限。未知不等于无限制，各路由仍由原生 API 校验，connector 返回归一化失败。
 
@@ -157,7 +157,7 @@ DingTalk 的原始文本预算也保持未知。官方[群聊服务端发送接�
 /v1/events/ws?after=42
 ```
 
-Connector 会先发送该 sequence 之后的 backlog，再继续推送新事件。
+Connector 会先补发该 sequence 之后的事件，再继续推送新事件。启用持久化事件日志时，如果接收方过慢耗尽了实时队列，Connector 可以在同一连接上从日志补发缺口。
 
 ## 调用方边界
 
@@ -174,4 +174,4 @@ Connector 会先发送该 sequence 之后的 backlog，再继续推送新事件�
 
 这些职责属于调用方应用。
 
-一次发送可同时提交 text 和多个 resources，connector 不设附件数量上限。Discord、Mail、Zulip 将它们合并为一条平台消息；其他支持上传的适配器先发送文本，再按顺序发送各附件（Slack 单附件仍可携带说明文字）。顺序发送的结果通过 `message_ids` 返回全部 ID，`message_id` 为最后一条 ID。中途失败时，`failure.delivered_count` 和 `failure.delivered_message_ids` 标明已完成部分，`retryable=false`、`delivery_state=unknown` 表示不能重放整批；失败的那一条仍可能已送达。
+一次发送可同时提交 text 和多个 resources，connector 不设附件数量上限。Discord、Mail、Zulip 将它们合并为一条平台消息。Slack、Telegram、WhatsApp 在平台支持的单附件场景下把说明放在同一条消息里。Telegram 和 WhatsApp 在原生格式不支持说明或说明超出原生长度时另发完整正文。其他顺序发送场景先发文本，再发附件。顺序发送的结果通过 `message_ids` 返回全部 ID，`message_id` 为最后一条 ID。中途失败时，`failure.delivered_count` 和 `failure.delivered_message_ids` 标明已完成部分，`retryable=false`、`delivery_state=unknown` 表示不能重放整批；失败的那一条仍可能已送达。

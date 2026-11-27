@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,6 +46,66 @@ func TestDecodeUsesSessionWebhookExpiry(t *testing.T) {
 
 func formatUnixMilli(value time.Time) string {
 	return fmt.Sprintf("%d", value.UnixMilli())
+}
+
+func TestSendFilePreservesUploadAndDisplayName(t *testing.T) {
+	const name = "季度 报告｜验收"
+	store := &uvim.ResourceStore{Dir: t.TempDir()}
+	ref, err := store.Save(t.Context(), strings.NewReader("report"), uvim.ResourceRef{
+		Kind: uvim.ElementFile, Name: "C:\\archive.2026\\" + name, MIME: "application/pdf",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var redirectMedia atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/gettoken", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "{\"access_token\":\"token\"}") })
+	mux.HandleFunc("/v1.0/oauth2/accessToken", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "{\"accessToken\":\"token\"}") })
+	mux.HandleFunc("/media/upload", func(w http.ResponseWriter, req *http.Request) {
+		if redirectMedia.Load() {
+			http.Redirect(w, req, "/redirected-upload", http.StatusTemporaryRedirect)
+			return
+		}
+		file, header, err := req.FormFile("media")
+		if err != nil {
+			t.Error(err)
+			http.Error(w, "missing media", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+		data, err := io.ReadAll(file)
+		if err != nil || string(data) != "report" || header.Filename != name || header.Header.Get("Content-Type") != "application/pdf" {
+			t.Errorf("upload filename=%q data=%q error=%v", header.Filename, data, err)
+		}
+		fmt.Fprint(w, "{\"media_id\":\"media\"}")
+	})
+	mux.HandleFunc("/v1.0/robot/groupMessages/send", func(w http.ResponseWriter, req *http.Request) {
+		var body map[string]string
+		var params map[string]string
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if err := json.Unmarshal([]byte(body["msgParam"]), &params); err != nil || params["fileName"] != name || params["fileType"] != "pdf" {
+			t.Errorf("send parameters = %v, %v", params, err)
+		}
+		fmt.Fprint(w, "{\"processQueryKey\":\"sent\"}")
+	})
+	api := httptest.NewServer(mux)
+	defer api.Close()
+	p, err := New(Config{BaseURL: api.URL, ClientID: "app", ClientSecret: "secret", ResourceStore: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := uvim.OutboundMessage{Target: &uvim.OutboundTarget{Kind: uvim.TargetGroup, ID: "mock-group"}, Resources: []uvim.ResourceRef{ref}}
+	if result, err := p.Send(t.Context(), msg); err != nil || result.MessageID != "sent" {
+		t.Fatalf("result = %+v, error = %v", result, err)
+	}
+
+	redirectMedia.Store(true)
+	_, err = p.Send(t.Context(), msg)
+	if failure, ok := uvim.ProviderSendFailure(err); !ok || failure.HTTPStatus != http.StatusTemporaryRedirect {
+		t.Fatalf("redirected media upload was replayed or lost its status: %v", err)
+	}
 }
 
 func TestNewRejectsPartialStreamCredentials(t *testing.T) {

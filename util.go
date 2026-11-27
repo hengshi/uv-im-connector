@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"mime"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -13,6 +14,9 @@ import (
 )
 
 var unsafeSegmentPattern = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+
+var fileNameControls = regexp.MustCompile(`[\p{Cc}]+`)
+var multipartQuotes = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 
 func FirstNonEmpty(values ...string) string {
 	for _, value := range values {
@@ -74,13 +78,12 @@ func NewID(prefix string) string {
 	return SafeSegment(prefix) + "_" + hex.EncodeToString(b[:])
 }
 
+// ResourceFileName returns a local filesystem name with an ordinal prefix.
 func ResourceFileName(index int, ref ResourceRef, contentType string) string {
-	return fmt.Sprintf("%02d-%s", index+1, ResourceUploadName(index, ref, contentType))
+	return fmt.Sprintf("%02d-%s", index+1, localResourceName(index, ref, contentType))
 }
 
-// ResourceUploadName returns a provider-safe basename for multipart, MIME, and
-// JSON upload metadata. It deliberately removes path and header control bytes.
-func ResourceUploadName(index int, ref ResourceRef, contentType string) string {
+func localResourceName(index int, ref ResourceRef, contentType string) string {
 	raw := filepath.Base(FirstNonEmpty(ref.Name, ref.Key, ref.ID, fmt.Sprintf("resource-%d", index)))
 	ext := filepath.Ext(raw)
 	if ext == "" && contentType != "" {
@@ -95,6 +98,45 @@ func ResourceUploadName(index int, ref ResourceRef, contentType string) string {
 		return base
 	}
 	return base + "." + ext
+}
+
+// ResourceUploadName retains the display name while removing path components
+// and characters that cannot be safely used in upload headers.
+func ResourceUploadName(index int, ref ResourceRef, contentType string) string {
+	ref.Name = resourceDisplayName(ref.Name)
+	if ref.Name == "" {
+		ref.Key = ""
+		return localResourceName(index, ref, contentType)
+	}
+	return ref.Name
+}
+
+func resourceDisplayName(name string) string {
+	return fileNameControls.ReplaceAllString(resourceBasename(name), "-")
+}
+
+// ResourceMediaExtension infers the type suffix independently of display-name
+// escaping, using the original basename and legacy extension fallback.
+func ResourceMediaExtension(ref ResourceRef, contentType string) string {
+	ref.Name = resourceBasename(ref.Name)
+	ref.Key = ""
+	return filepath.Ext(localResourceName(0, ref, contentType))
+}
+
+func resourceBasename(name string) string {
+	name = path.Base(strings.ReplaceAll(name, `\`, "/"))
+	if name == "." || name == ".." || name == "/" {
+		return ""
+	}
+	return name
+}
+
+// MultipartFileDisposition quotes form-data parameters without changing UTF-8
+// filename bytes or encoding them as the unsupported multipart filename* field.
+func MultipartFileDisposition(field, name string) string {
+	field = fileNameControls.ReplaceAllString(field, "-")
+	name = fileNameControls.ReplaceAllString(name, "-")
+	return `form-data; name="` + multipartQuotes.Replace(field) + `"; filename="` + multipartQuotes.Replace(name) + `"`
 }
 
 func ResourceKindFromMIME(contentType, fallback string) string {
@@ -118,7 +160,10 @@ func NowUTC() time.Time {
 }
 
 func NormalizeOutboundText(text string) string {
-	return strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	return strings.ReplaceAll(text, "\r\n", "\n")
 }
 
 // OptionalDeadline leaves transport I/O unbounded unless the caller configures a timeout.

@@ -257,9 +257,7 @@ type outboundReceiptScope struct {
 	MessageID string `json:"message_id"`
 }
 
-const resourceScopeStateMaxBytes int64 = 8 << 20
-
-// resourceScopes is a small durable authorization index. Resource bytes remain
+// resourceScopes is the durable authorization index. Resource bytes remain
 // in the existing provider store, while this index prevents an internal:// ID
 // from becoming a bearer capability for another scoped caller.
 type resourceScopes struct {
@@ -277,7 +275,7 @@ func openResourceScopes(path string) (*resourceScopes, error) {
 		return nil, err
 	}
 	// Persist the receipt directory before accepting any native sends. Receipts
-	// grow independently of the bounded resource index and are never evicted.
+	// grow independently of the resource index and are never evicted.
 	if err := os.MkdirAll(path+".receipts", 0o700); err != nil {
 		return nil, err
 	}
@@ -302,10 +300,10 @@ func openResourceScopes(path string) (*resourceScopes, error) {
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > resourceScopeStateMaxBytes {
-		return nil, errors.New("resource scope state is not a bounded regular file")
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, errors.New("resource scope state is not a regular file")
 	}
-	decoder := json.NewDecoder(io.LimitReader(file, resourceScopeStateMaxBytes))
+	decoder := json.NewDecoder(file)
 	decoder.DisallowUnknownFields()
 	var state struct {
 		Version  int                             `json:"version"`
@@ -525,9 +523,6 @@ func (s *resourceScopes) save(values map[string]resourceScope) error {
 	}{Version: 1, Values: values})
 	if err != nil {
 		return err
-	}
-	if int64(len(raw)+1) > resourceScopeStateMaxBytes {
-		return errors.New("resource scope state exceeds its restartable size limit")
 	}
 	return s.saveFile(s.path, raw)
 }

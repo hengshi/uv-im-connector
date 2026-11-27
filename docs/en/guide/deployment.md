@@ -125,3 +125,9 @@ curl -H "Authorization: Bearer $UV_IM_AUTH_TOKEN" http://127.0.0.1:8787/v1/meta
 ```
 
 After an upgrade, use `/health` for process liveness and `/v1/meta` for service version, protocol version, and provider capabilities.
+
+### Rollback and snapshot cleanup
+
+Connector can read attachments stored in the previous format. To keep the option to return to a version that cannot read the current format or load a shared resource index over its old size limit, capture the entire Connector state directory and caller cursors at the same point before upgrading. Reuse an existing deployment snapshot that covers both.
+
+Before rolling back, pause delivery and preserve events and receipts recorded after the snapshot for reconciliation. Restore the matching state and cursors, then reconcile before resuming delivery. Delete the temporary snapshot after you validate the upgrade and decide to keep it, or after you complete and validate the rollback.

@@ -129,7 +129,7 @@ caller still owns ACL and current-Run authorization before invoking it.
 
 ## Complete text, reply streams, and editing
 
-`capabilities.text_max_bytes` bounds normalized UTF-8 text bytes per send or edit, including visible prefixes and formatting added by the caller. WeCom declares 20480 bytes for [passive stream](https://developer.work.weixin.qq.com/document/path/101031) `stream.content` and [long-connection proactive](https://developer.work.weixin.qq.com/document/path/101463) `markdown.content`, and validates it before upload or send. Oversized text returns `category=payload-too-large`, `delivery_state=not-attempted`, and a safe detail containing the exact limit. Zero or an absent field means unknown. Lark's native limits apply to serialized request bodies and cannot be declared accurately as a fixed raw UTF-8 text budget, so its `text_max_bytes` remains unknown and the native API validates the request body. The connector does not truncate or paginate; callers should page complete logical content and use a supported file resource when further pages cannot legally be sent.
+`capabilities.text_max_bytes` bounds UTF-8 text bytes per send or edit after newline normalization, including visible prefixes, indentation and trailing whitespace. WeCom declares 20480 bytes for [passive stream](https://developer.work.weixin.qq.com/document/path/101031) `stream.content` and [long-connection proactive](https://developer.work.weixin.qq.com/document/path/101463) `markdown.content`, and validates it before upload or send. Oversized text returns `category=payload-too-large`, `delivery_state=not-attempted`, and a safe detail containing the exact limit. Zero or an absent field means unknown. Lark's native limits apply to serialized request bodies and cannot be declared accurately as a fixed raw UTF-8 text budget, so its `text_max_bytes` remains unknown and the native API validates the request body. The connector does not truncate or paginate; callers should page complete logical content and use a supported file resource when further pages cannot legally be sent.
 
 DingTalk also leaves the raw-text budget unknown. Its [group server API](https://open.dingtalk.com/document/development/the-robot-sends-a-group-message) limits the serialized `msgParam` JSON string to 15000 bytes, including title, text, and JSON escaping. This is not a plain UTF-8 text limit shared by its direct-message and session-webhook routes. Unknown does not mean unlimited; native APIs enforce their route constraints and the connector returns normalized failures.
 
@@ -169,7 +169,7 @@ The event log is sequence-based. A consumer can reconnect with the last processe
 /v1/events/ws?after=42
 ```
 
-The connector sends backlog events after that sequence before streaming fresh events.
+The connector sends backlog events after that sequence before streaming fresh events. With a persistent event log, the connector can replay gaps on the same connection when a slow receiver exhausts its live queue.
 
 ## Caller Boundary
 
@@ -186,4 +186,4 @@ The connector sends backlog events after that sequence before streaming fresh ev
 
 Those responsibilities belong to the caller application.
 
-A send accepts text and multiple resources without a connector-imposed count limit. Discord, Mail, and Zulip combine them in one native message; the other upload-capable adapters send text first, then each resource in order (Slack also keeps its single-file caption form). Ordered sends return all IDs in `message_ids` and the last ID in `message_id`. On partial failure, `failure.delivered_count` and `failure.delivered_message_ids` identify completed messages; `retryable=false` and `delivery_state=unknown` prohibit replaying the whole sequence. The failed part may have an ambiguous outcome.
+A send accepts text and multiple resources without a connector-imposed count limit. Discord, Mail, and Zulip combine them in one native message. Slack, Telegram, and WhatsApp also keep a supported single-attachment caption in the same message. Where the native caption is unavailable or too short, Telegram and WhatsApp send the full text separately. Other ordered sends deliver text first and then attachments. Ordered sends return all IDs in `message_ids` and the last ID in `message_id`. On partial failure, `failure.delivered_count` and `failure.delivered_message_ids` identify completed messages; `retryable=false` and `delivery_state=unknown` prohibit replaying the whole sequence. The failed part may have an ambiguous outcome.

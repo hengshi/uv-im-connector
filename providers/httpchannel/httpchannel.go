@@ -301,23 +301,75 @@ func (p *Provider) store(dir string) *uvim.ResourceStore {
 	return store
 }
 
+// MultipartRequest streams a native single-attachment POST and supports redirects.
+func MultipartRequest(ctx context.Context, endpoint string, fields map[string]string, file MultipartFile, data io.ReaderAt, size int64) (*http.Request, error) {
+	var envelope bytes.Buffer
+	writer := multipart.NewWriter(&envelope)
+	if err := writeMultipartFields(writer, fields); err != nil {
+		return nil, err
+	}
+	if _, err := writer.CreatePart(multipartFileHeader(file)); err != nil {
+		return nil, err
+	}
+	offset := envelope.Len()
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	headers, tail := envelope.Bytes()[:offset], envelope.Bytes()[offset:]
+	req, err := uploadRequest(ctx, endpoint, int64(envelope.Len())+size, func() io.Reader {
+		return io.MultiReader(bytes.NewReader(headers), io.NewSectionReader(data, 0, size), bytes.NewReader(tail))
+	})
+	if err == nil {
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+	}
+	return req, err
+}
+
+// UploadRequest streams a raw native POST with a replayable request body.
+func UploadRequest(ctx context.Context, endpoint string, data io.ReaderAt, size int64) (*http.Request, error) {
+	return uploadRequest(ctx, endpoint, size, func() io.Reader { return io.NewSectionReader(data, 0, size) })
+}
+
+func uploadRequest(ctx context.Context, endpoint string, size int64, body func() io.Reader) (*http.Request, error) {
+	if size == 0 {
+		return http.NewRequestWithContext(ctx, http.MethodPost, endpoint, http.NoBody)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, body())
+	if err == nil {
+		req.ContentLength = size
+		req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(body()), nil }
+	}
+	return req, err
+}
+
+func writeMultipartFields(writer *multipart.Writer, fields map[string]string) error {
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func multipartFileHeader(file MultipartFile) textproto.MIMEHeader {
+	name := uvim.ResourceUploadName(0, uvim.ResourceRef{Name: file.Name, MIME: file.MIME}, file.MIME)
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", uvim.MultipartFileDisposition(file.Field, name))
+	if strings.TrimSpace(file.MIME) != "" {
+		header.Set("Content-Type", file.MIME)
+	}
+	return header
+}
+
 func encodeBody(req Request) (io.Reader, string, error) {
 	if req.Multipart != nil {
 		var body bytes.Buffer
 		writer := multipart.NewWriter(&body)
-		for key, value := range req.Multipart.Fields {
-			if err := writer.WriteField(key, value); err != nil {
-				return nil, "", err
-			}
+		if err := writeMultipartFields(writer, req.Multipart.Fields); err != nil {
+			return nil, "", err
 		}
 		for _, file := range req.Multipart.Files {
-			name := uvim.ResourceUploadName(0, uvim.ResourceRef{Name: file.Name, MIME: file.MIME}, file.MIME)
-			header := make(textproto.MIMEHeader)
-			header.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, file.Field, name))
-			if strings.TrimSpace(file.MIME) != "" {
-				header.Set("Content-Type", file.MIME)
-			}
-			part, err := writer.CreatePart(header)
+			part, err := writer.CreatePart(multipartFileHeader(file))
 			if err != nil {
 				return nil, "", err
 			}

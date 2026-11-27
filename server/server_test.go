@@ -719,12 +719,16 @@ func TestHubLogsCredentialSafeProviderSendFailureDetail(t *testing.T) {
 	}
 }
 
-func TestHubDownloadsInboundResourcesBeforeEventLog(t *testing.T) {
+func TestHubPublishesDownloadedInboundResourceAfterCancellation(t *testing.T) {
 	dir := t.TempDir()
-	provider := &downloadProvider{id: "test", connector: "main"}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	provider := &downloadProvider{id: "test", connector: "main", afterDownload: cancel}
 	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
 	hub := NewHub(uvim.NewProviderRegistry(provider), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
-	err := hub.Emit(context.Background(), uvim.Event{
+	live := make(chan uvim.Event, 1)
+	hub.subscribers[live] = ""
+	err := hub.Emit(ctx, uvim.Event{
 		ID:        "evt-1",
 		Type:      uvim.EventMessageCreate,
 		Provider:  "test",
@@ -741,8 +745,8 @@ func TestHubDownloadsInboundResourcesBeforeEventLog(t *testing.T) {
 			}},
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || ctx.Err() != context.Canceled || provider.downloadCalls != 1 {
+		t.Fatalf("emit=%v context=%v downloads=%d", err, ctx.Err(), provider.downloadCalls)
 	}
 	events, err := log.ReadAfter(context.Background(), 0)
 	if err != nil {
@@ -754,6 +758,14 @@ func TestHubDownloadsInboundResourcesBeforeEventLog(t *testing.T) {
 	ref := events[0].Message.Resources[0]
 	if ref.InternalURL == "" || ref.Key != "" || ref.Metadata != nil {
 		t.Fatalf("resource was not resolved and sanitized: %+v", ref)
+	}
+	select {
+	case event := <-live:
+		if event.Sequence != events[0].Sequence || !reflect.DeepEqual(event.Message.Resources, events[0].Message.Resources) {
+			t.Fatalf("live event diverges from persisted event: %+v", event)
+		}
+	default:
+		t.Fatal("persisted event did not reach the live subscriber")
 	}
 }
 
@@ -1159,6 +1171,16 @@ func TestScopedClientUpdateRequiresOwnedReceiptAndReplyProofWithLarkStub(t *test
 			fmt.Fprint(w, `{"code":0}`)
 		case "POST /open-apis/im/v1/messages/message-b/reply":
 			fmt.Fprint(w, `{"code":0,"data":{"message_id":"sent-b"}}`)
+		case "POST /open-apis/im/v1/messages/message-partial/reply":
+			fmt.Fprint(w, `{"code":0,"data":{"message_id":"partial-caption"}}`)
+		case "POST /open-apis/im/v1/messages/message-without-receipt/reply":
+			fmt.Fprint(w, `{"code":0,"data":{"message_id":"caption-without-receipt"}}`)
+		case "POST /open-apis/im/v1/files":
+			http.Error(w, `{"code":234001,"msg":"test file rejection"}`, http.StatusBadRequest)
+		case "GET /open-apis/im/v1/messages/partial-caption":
+			fmt.Fprint(w, `{"code":0,"data":{"items":[{"message_id":"partial-caption","chat_id":"c","msg_type":"text","sender":{"sender_type":"app","id_type":"app_id","id":"app"}}]}}`)
+		case "PUT /open-apis/im/v1/messages/partial-caption":
+			fmt.Fprint(w, `{"code":0,"data":{"message_id":"partial-caption"}}`)
 		case "GET /open-apis/im/v1/messages/sent-a":
 			fmt.Fprint(w, `{"code":0,"data":{"items":[{"message_id":"sent-a","chat_id":"c","msg_type":"text","sender":{"sender_type":"app","id_type":"app_id","id":"app"}}]}}`)
 		case "PUT /open-apis/im/v1/messages/sent-a":
@@ -1169,13 +1191,13 @@ func TestScopedClientUpdateRequiresOwnedReceiptAndReplyProofWithLarkStub(t *test
 		}
 	}))
 	defer native.Close()
-	provider, err := lark.New(lark.Config{AppID: "app", AppSecret: "secret", ConnectorID: "main", BaseURL: native.URL})
+	resources := &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")}
+	provider, err := lark.New(lark.Config{AppID: "app", AppSecret: "secret", ConnectorID: "main", BaseURL: native.URL, ResourceStore: resources})
 	if err != nil {
 		t.Fatal(err)
 	}
 	logPath := filepath.Join(dir, "events.jsonl")
 	scopePath := filepath.Join(dir, "resource-scopes.json")
-	resources := &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")}
 	target := &uvim.OutboundTarget{Kind: uvim.TargetConversation, ID: "c"}
 	first := NewHub(uvim.NewProviderRegistry(provider), mustEventLog(t, logPath), resources)
 	firstRegistry := mustClientRegistry(t, dir, []map[string]any{
@@ -1202,6 +1224,37 @@ func TestScopedClientUpdateRequiresOwnedReceiptAndReplyProofWithLarkStub(t *test
 	if err != nil || publication.Interaction == nil || publication.MessageID != "card-a" {
 		t.Fatalf("scoped card publication: %+v %v", publication, err)
 	}
+	partialEvent := eventA
+	partialEvent.ID, partialEvent.Message.ID, partialEvent.Referrer.MessageID = "event-partial", "message-partial", "message-partial"
+	if err := first.Emit(ctx, partialEvent); err != nil {
+		t.Fatal(err)
+	}
+	file, err := a.Upload(ctx, uvim.ResourceRef{Kind: uvim.ElementFile, Name: "file.txt", MIME: "text/plain"}, []byte("file"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.Send(ctx, uvim.OutboundMessage{Provider: "lark", Connector: "main", Referrer: partialEvent.Referrer, Text: "caption", Resources: []uvim.ResourceRef{file}})
+	failure, ok := client.ProviderSendFailure(err)
+	if !ok || failure.Retryable || failure.DeliveredCount != 1 || !reflect.DeepEqual(failure.DeliveredMessageIDs, []string{"partial-caption"}) {
+		t.Fatalf("partial send: %+v, %v", failure, err)
+	}
+	withoutReceipt := eventA
+	withoutReceipt.ID, withoutReceipt.Message.ID, withoutReceipt.Referrer.MessageID = "event-without-receipt", "message-without-receipt", "message-without-receipt"
+	if err := first.Emit(ctx, withoutReceipt); err != nil {
+		t.Fatal(err)
+	}
+	receiptKey := outboundReceiptKey("lark", "main", "caption-without-receipt")
+	if err := os.Mkdir(first.resourceScopes.receiptPath(receiptKey), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.Send(ctx, uvim.OutboundMessage{Provider: "lark", Connector: "main", Referrer: withoutReceipt.Referrer, Text: "caption", Resources: []uvim.ResourceRef{file}})
+	failure, ok = client.ProviderSendFailure(err)
+	var sendErr *client.HTTPError
+	if !ok || failure.Retryable || failure.Category != uvim.SendFailureUnknown || failure.DeliveryState != uvim.DeliveryUnknown ||
+		!slices.Equal(failure.DeliveredMessageIDs, []string{"caption-without-receipt"}) ||
+		!errors.As(err, &sendErr) || !strings.Contains(sendErr.Detail, "edit authorization") {
+		t.Fatalf("partial send with unavailable receipt: %+v, %v", failure, err)
+	}
 	firstAPI.Close()
 
 	second := NewHub(uvim.NewProviderRegistry(provider, memory.NewConnector("memory", "secondary")), mustEventLog(t, logPath), resources)
@@ -1225,12 +1278,12 @@ func TestScopedClientUpdateRequiresOwnedReceiptAndReplyProofWithLarkStub(t *test
 	if err != nil || secondSend.MessageID != "sent-b" {
 		t.Fatalf("B new send: %+v %v", secondSend, err)
 	}
-	if len(calls) != 3 {
-		t.Fatalf("native sends = %d", len(calls))
+	if len(calls) != 7 {
+		t.Fatalf("native requests before edits = %d", len(calls))
 	}
-	<-calls
-	<-calls
-	<-calls
+	for len(calls) > 0 {
+		<-calls
+	}
 	for _, tc := range []struct {
 		name   string
 		caller *client.Client
@@ -1242,6 +1295,9 @@ func TestScopedClientUpdateRequiresOwnedReceiptAndReplyProofWithLarkStub(t *test
 	}{
 		{"owner proactive after route move", a, firstSend.MessageID, uvim.Referrer{}, target, 200, []string{"GET /open-apis/im/v1/messages/sent-a", "PUT /open-apis/im/v1/messages/sent-a"}},
 		{"owner historic reply", a, firstSend.MessageID, eventA.Referrer, nil, 200, []string{"GET /open-apis/im/v1/messages/sent-a", "PUT /open-apis/im/v1/messages/sent-a"}},
+		{"owner edits confirmed partial delivery after restart", a, "partial-caption", partialEvent.Referrer, nil, 200, []string{"GET /open-apis/im/v1/messages/partial-caption", "PUT /open-apis/im/v1/messages/partial-caption"}},
+		{"failed receipt cannot authorize edits after restart", a, "caption-without-receipt", withoutReceipt.Referrer, nil, 403, nil},
+		{"new route owner cannot edit confirmed partial delivery", b, "partial-caption", eventB.Referrer, nil, 403, nil},
 		{"new route owner cannot edit old receipt", b, firstSend.MessageID, eventB.Referrer, nil, 403, nil},
 		{"old owner cannot edit new receipt", a, secondSend.MessageID, eventA.Referrer, nil, 403, nil},
 		{"unknown receipt", a, "unknown", eventA.Referrer, nil, 403, nil},
@@ -1454,21 +1510,86 @@ func TestScopedClientRejectsCollidingInboundResourceBeforeDownload(t *testing.T)
 	}
 }
 
-func TestResourceScopesRefuseStateThatWouldFailToReopen(t *testing.T) {
+func TestLiveEventStreamCatchesUpAfterOverflow(t *testing.T) {
+	hub := NewHub(nil, mustEventLog(t, filepath.Join(t.TempDir(), "events.jsonl")), nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	const count = eventSubscriberQueueSize + 3
+	emit := func(i int) {
+		id := strconv.Itoa(i)
+		if err := hub.Emit(ctx, uvim.Event{ID: id, Type: uvim.EventMessageCreate, Provider: "memory", Message: uvim.Message{ID: id}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emit(1)
+	blocked, resume := make(chan struct{}), make(chan struct{})
+	seen, done := make(chan int64, count), make(chan error, 1)
+	go func() {
+		done <- hub.watchEvents(ctx, "", 0, func(event uvim.Event) error {
+			if event.Sequence == 1 {
+				close(blocked)
+				select {
+				case <-resume:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			seen <- event.Sequence
+			return nil
+		})
+	}()
+	select {
+	case <-blocked:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	for i := 2; i <= count; i++ {
+		emit(i)
+	}
+	close(resume)
+	for i := 1; i <= count; i++ {
+		select {
+		case seq := <-seen:
+			if seq != int64(i) {
+				t.Fatalf("sequence=%d, want %d", seq, i)
+			}
+		case err := <-done:
+			t.Fatalf("stream ended before event %d: %v", i, err)
+		case <-ctx.Done():
+			t.Fatalf("missing event %d: %v", i, ctx.Err())
+		}
+	}
+	cancel()
+	<-done
+}
+
+func TestScopedResourcesGrowBeyondLegacyIndexAndSurviveRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "resource-scopes.json")
 	scopes, err := openResourceScopes(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	values := make(map[string]resourceScope, 2100)
-	for i := 0; i < 2100; i++ {
-		values[fmt.Sprintf("%04d-%s", i, strings.Repeat("x", 4090))] = resourceScope{ClientID: "a"}
+	values := map[string]resourceScope{"old": {ClientID: "a"}}
+	// These valid IDs each expand to about 24 KiB when JSON encodes '<'.
+	for i := 0; i < 350; i++ {
+		values[fmt.Sprintf("%04d-%s", i, strings.Repeat("<", 4090))] = resourceScope{ClientID: "a"}
 	}
-	if err := scopes.save(values); err == nil {
-		t.Fatal("scope writer accepted state its reader rejects")
+	if err := scopes.save(values); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := openResourceScopes(path); err != nil {
-		t.Fatalf("refused scope state made existing store unreadable: %v", err)
+	if info, err := os.Stat(path); err != nil || info.Size() <= 8<<20 {
+		t.Fatalf("fixture must exceed the historical limit: %v %v", info, err)
+	}
+	scopes, err = openResourceScopes(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scopes.claim("new", resourceScope{ClientID: "b"}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openResourceScopes(path)
+	if err != nil || !reopened.owns("old", "a") || !reopened.owns("new", "b") || reopened.owns("new", "a") {
+		t.Fatalf("ownership changed after reopening: %v", err)
 	}
 }
 
@@ -3274,6 +3395,7 @@ type downloadProvider struct {
 	conversationMaterializeCalls   int
 	conversationMaterializeErr     error
 	downloadCalls                  int
+	afterDownload                  func()
 	payload                        string
 }
 
@@ -3319,8 +3441,11 @@ func (p *downloadProvider) Send(context.Context, uvim.OutboundMessage) (uvim.Sen
 func (p *downloadProvider) Download(ctx context.Context, req uvim.ResourceDownloadRequest) (uvim.ResourceRef, error) {
 	p.downloadCalls++
 	store := &uvim.ResourceStore{Dir: req.Dir}
-	ref := req.Resource
-	return store.Save(ctx, strings.NewReader(uvim.FirstNonEmpty(p.payload, "downloaded")), ref)
+	ref, err := store.Save(ctx, strings.NewReader(uvim.FirstNonEmpty(p.payload, "downloaded")), req.Resource)
+	if err == nil && p.afterDownload != nil {
+		p.afterDownload()
+	}
+	return ref, err
 }
 func (p *downloadProvider) ReadConversationWindow(_ context.Context, trigger uvim.Event) uvim.ConversationWindowResult {
 	p.conversationWindowCalls++

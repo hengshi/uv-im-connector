@@ -43,11 +43,11 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("http %d", e.StatusCode)
 }
 
-// ProviderSendFailure extracts normalized delivery facts from a client error.
+// ProviderSendFailure extracts normalized delivery facts from a client or provider error.
 func ProviderSendFailure(err error) (uvim.SendFailure, bool) {
 	var httpErr *HTTPError
 	if !errors.As(err, &httpErr) || httpErr.Failure == nil {
-		return uvim.SendFailure{}, false
+		return uvim.ProviderSendFailure(err)
 	}
 	return *httpErr.Failure, true
 }
@@ -146,11 +146,17 @@ func (c *Client) UnlinkIdentity(ctx context.Context, request uvim.IdentityLinkRe
 }
 
 func (c *Client) Send(ctx context.Context, msg uvim.OutboundMessage) (uvim.SendResult, error) {
+	if err := uvim.ValidateOutboundText(msg, uvim.Capabilities{}); err != nil {
+		return uvim.SendResult{}, err
+	}
 	var out uvim.SendResult
 	return out, c.postJSON(ctx, "/v1/message.create", msg, &out)
 }
 
 func (c *Client) Update(ctx context.Context, msg uvim.MessageUpdate) (uvim.SendResult, error) {
+	if err := uvim.ValidateOutboundText(msg.OutboundMessage, uvim.Capabilities{}); err != nil {
+		return uvim.SendResult{}, err
+	}
 	var out uvim.SendResult
 	return out, c.postJSON(ctx, "/v1/message.update", msg, &out)
 }

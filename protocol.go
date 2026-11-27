@@ -418,9 +418,6 @@ type MessageUpdate struct {
 // ValidateOutboundText enforces a provider's declared normalized text budget.
 // Providers must also call this for direct Go callers, before upload or send.
 func ValidateOutboundText(msg OutboundMessage, capabilities Capabilities) error {
-	if capabilities.TextMaxBytes <= 0 {
-		return nil
-	}
 	text := msg.Text
 	if strings.TrimSpace(text) == "" {
 		var parts []string
@@ -440,7 +437,7 @@ func ValidateOutboundText(msg OutboundMessage, capabilities Capabilities) error 
 	if !utf8.ValidString(text) {
 		return NewProviderSendFailure(SendFailure{Category: SendFailureInvalidRequest, DeliveryState: DeliveryNotAttempted}, "text must be valid UTF-8", nil)
 	}
-	if len(text) > capabilities.TextMaxBytes {
+	if capabilities.TextMaxBytes > 0 && len(text) > capabilities.TextMaxBytes {
 		return NewProviderSendFailure(SendFailure{Category: SendFailurePayloadTooLarge, DeliveryState: DeliveryNotAttempted},
 			fmt.Sprintf("text is %d bytes; maximum is %d bytes", len(text), capabilities.TextMaxBytes), nil)
 	}

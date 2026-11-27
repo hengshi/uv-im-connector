@@ -607,9 +607,11 @@ func TestValidateOutboundTextCountsNormalizedUTF8Bytes(t *testing.T) {
 		{"below", OutboundMessage{Text: "甲a"}, 5, ""},
 		{"exact", OutboundMessage{Text: "甲ab"}, 5, ""},
 		{"over", OutboundMessage{Text: "甲abc"}, 5, SendFailurePayloadTooLarge},
-		{"normalization", OutboundMessage{Text: " \r\n甲\r\na \n"}, 5, ""},
+		{"normalize CRLF, preserve outer whitespace", OutboundMessage{Text: " \r\n甲\r\na \n"}, 9, ""},
+		{"count outer whitespace", OutboundMessage{Text: " 甲 "}, 4, SendFailurePayloadTooLarge},
 		{"elements", OutboundMessage{Elements: []Element{Text("甲"), {Children: []Element{Text("abc")}}}}, 5, SendFailurePayloadTooLarge},
 		{"invalid UTF8", OutboundMessage{Text: string([]byte{0xff})}, 5, SendFailureInvalidRequest},
+		{"invalid UTF8 with unknown budget", OutboundMessage{Text: string([]byte{0xff})}, 0, SendFailureInvalidRequest},
 		{"unknown budget", OutboundMessage{Text: strings.Repeat("a", 20000)}, 0, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -5,21 +5,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"mime"
-	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"time"
 
 	uvim "github.com/hengshi/uv-im-connector"
+	"github.com/hengshi/uv-im-connector/providers/httpchannel"
 )
 
 func (p *Provider) send(ctx context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {
 	defer func() { err = uvim.NewProviderSendOperationError("dingtalk send", err) }()
+	if err := uvim.ValidateOutboundText(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, err
+	}
 	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
 		return result, err
 	}
@@ -126,10 +125,6 @@ func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (ke
 		return "", nil, err
 	}
 	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return "", nil, err
-	}
 	name := uvim.ResourceUploadName(0, ref, stored.MIME)
 	mediaType := "file"
 	if ref.Kind == uvim.ElementImage {
@@ -139,27 +134,14 @@ func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (ke
 	if err != nil {
 		return "", nil, err
 	}
-	// Keep the multipart envelope in memory; stream the original file bytes.
-	var envelope bytes.Buffer
-	writer := multipart.NewWriter(&envelope)
-	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": "media", "filename": name}))
-	header.Set("Content-Type", firstNonEmpty(stored.MIME, "application/octet-stream"))
-	if _, err := writer.CreatePart(header); err != nil {
-		return "", nil, err
-	}
-	prefix := append([]byte(nil), envelope.Bytes()...)
-	if err := writer.Close(); err != nil {
-		return "", nil, err
-	}
-	suffix := envelope.Bytes()[len(prefix):]
 	endpoint := p.config.BaseURL + "/media/upload?" + url.Values{"access_token": {token}, "type": {mediaType}}.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, io.MultiReader(bytes.NewReader(prefix), file, bytes.NewReader(suffix)))
+	req, err := httpchannel.MultipartRequest(ctx, endpoint, nil,
+		httpchannel.MultipartFile{Field: "media", Name: name, MIME: firstNonEmpty(stored.MIME, "application/octet-stream")}, file, stored.SizeBytes)
 	if err != nil {
 		return "", nil, err
 	}
-	req.ContentLength = int64(len(prefix)) + info.Size() + int64(len(suffix))
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	// Keep the existing no-replay behavior for the token-bearing upload URL.
+	req.GetBody = nil
 	response, err := doDingTalkJSON(req)
 	if err != nil {
 		return "", nil, err
@@ -179,7 +161,9 @@ func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (ke
 		return "sampleImageMsg", map[string]string{"photoURL": decoded.MediaID}, nil
 	}
 	// Audio and video retain their bytes and filename as downloadable files.
-	return "sampleFile", map[string]string{"mediaId": decoded.MediaID, "fileName": name, "fileType": strings.TrimPrefix(strings.ToLower(filepath.Ext(name)), ".")}, nil
+	extension := uvim.ResourceMediaExtension(ref, firstNonEmpty(stored.MIME, ref.MIME))
+	fileType := strings.TrimPrefix(strings.ToLower(extension), ".")
+	return "sampleFile", map[string]string{"mediaId": decoded.MediaID, "fileName": name, "fileType": fileType}, nil
 }
 
 func (p *Provider) mediaAccessToken(ctx context.Context) (string, error) {

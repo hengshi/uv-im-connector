@@ -19,7 +19,8 @@ import (
 
 func TestSendTextAndAttachmentsThroughSMTP(t *testing.T) {
 	store := &uvim.ResourceStore{Dir: t.TempDir()}
-	ref, err := store.Save(t.Context(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "report.txt", MIME: "text/plain"})
+	name := strings.Repeat("报告", 60) + " + '版本'.txt"
+	ref, err := store.Save(t.Context(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: name, MIME: "text/plain"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +88,14 @@ func TestSendTextAndAttachmentsThroughSMTP(t *testing.T) {
 			if mediaType != "multipart/mixed" {
 				t.Fatalf("media type = %s", mediaType)
 			}
+			if !bytes.Contains(raw, []byte("filename*0*=utf-8''")) || !bytes.Contains(raw, []byte("filename*1*=")) {
+				t.Error("missing RFC 2231 filename continuation parameters")
+			}
+			for line := range strings.SplitSeq(string(raw), "\r\n") {
+				if len(line) > 998 {
+					t.Errorf("SMTP line exceeds 998 octets: %d", len(line))
+				}
+			}
 			reader := multipart.NewReader(message.Body, params["boundary"])
 			for i := 0; ; i++ {
 				part, err := reader.NextPart()
@@ -107,7 +116,7 @@ func TestSendTextAndAttachmentsThroughSMTP(t *testing.T) {
 					}
 				} else {
 					body, err = io.ReadAll(base64.NewDecoder(base64.StdEncoding, part))
-					if string(body) != "report" || part.FileName() != "report.txt" || part.Header.Get("Content-Type") != "text/plain" {
+					if string(body) != "report" || part.FileName() != name || part.Header.Get("Content-Type") != "text/plain" {
 						t.Errorf("attachment = %q headers=%v", body, part.Header)
 					}
 				}

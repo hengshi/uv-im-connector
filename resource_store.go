@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 type ResourceStore struct {
@@ -20,9 +22,16 @@ type ResourceStore struct {
 	HTTPClient    *http.Client
 }
 
+const resourceCurrentMetadata = "current.json"
+
+// Publishing and opening a generation share a short lock, even when callers
+// use separate ResourceStore values. The open descriptor pins the bytes.
+var resourcePublicationLocks [256]sync.Mutex
+
 type resourceFileMetadata struct {
-	Name string `json:"name"`
-	MIME string `json:"mime,omitempty"`
+	Content string `json:"content,omitempty"`
+	Name    string `json:"name"`
+	MIME    string `json:"mime,omitempty"`
 }
 
 func (s *ResourceStore) SaveHTTP(ctx context.Context, req *http.Request, ref ResourceRef) (ResourceRef, error) {
@@ -64,51 +73,69 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return ref, err
 	}
-	path := filepath.Join(dir, "content")
-	metadataPath := filepath.Join(dir, "metadata.json")
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	file, err := os.CreateTemp(dir, ".content-*")
 	if err != nil {
 		return ref, err
 	}
 	committed := false
 	defer func() {
 		if !committed {
-			_ = os.Remove(path)
-			_ = os.Remove(metadataPath)
+			_ = os.Remove(file.Name())
 		}
 	}()
 	hash := sha256.New()
 	size, copyErr := io.Copy(io.MultiWriter(file, hash), src)
-	closeErr := file.Close()
-	if copyErr != nil {
-		return ref, copyErr
-	}
-	if closeErr != nil {
-		return ref, closeErr
+	if err := finishResourceFile(file, copyErr); err != nil {
+		return ref, err
 	}
 	metadata := resourceFileMetadata{
-		Name: ResourceUploadName(0, ref, ""),
+		Content: filepath.Base(file.Name()),
+		Name:    resourceDisplayName(ref.Name),
 		// Preserve the content type that ServeContent previously inferred from
 		// the on-disk extension, including names whose MIME supplied that suffix.
-		MIME: mime.TypeByExtension(filepath.Ext(ResourceUploadName(0, ref, ref.MIME))),
+		MIME: mime.TypeByExtension(ResourceMediaExtension(ref, ref.MIME)),
 	}
 	metaFile, err := os.CreateTemp(dir, ".metadata-*")
 	if err != nil {
 		return ref, err
 	}
 	defer os.Remove(metaFile.Name())
-	encodeErr := json.NewEncoder(metaFile).Encode(metadata)
-	closeErr = metaFile.Close()
-	if encodeErr != nil {
-		return ref, encodeErr
+	if err := finishResourceFile(metaFile, json.NewEncoder(metaFile).Encode(metadata)); err != nil {
+		return ref, err
 	}
-	if closeErr != nil {
-		return ref, closeErr
+	lock := &resourcePublicationLocks[sha256.Sum256([]byte(id))[0]]
+	lock.Lock()
+	defer lock.Unlock()
+	metadataPath := filepath.Join(dir, resourceCurrentMetadata)
+	previous, err := readResourceMetadata(metadataPath)
+	if err != nil && !os.IsNotExist(err) {
+		return ref, err
 	}
+	directory, err := os.Open(dir)
+	if err != nil {
+		return ref, err
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return ref, err
+	}
+	// The metadata rename is the single publication point. Readers always
+	// get the name, MIME, and descriptor of the same immutable generation.
 	if err := os.Rename(metaFile.Name(), metadataPath); err != nil {
 		return ref, err
 	}
 	committed = true
+	if err := directory.Sync(); err != nil {
+		return ref, err
+	}
+	if validResourceContentName(previous.Content) {
+		_ = os.Remove(filepath.Join(dir, previous.Content))
+	} else {
+		// The published generation replaces the previous release's file pair.
+		_ = os.Remove(filepath.Join(dir, "metadata.json"))
+		_ = os.Remove(filepath.Join(dir, "content"))
+	}
+	ref.Name = metadata.Name
 	ref.SizeBytes = size
 	ref.SHA256 = hex.EncodeToString(hash.Sum(nil))
 	ref.InternalURL = "internal://" + id
@@ -124,13 +151,20 @@ func (s *ResourceStore) Open(internalURL string) (*os.File, ResourceRef, error) 
 		return nil, ResourceRef{}, fmt.Errorf("invalid internal resource url")
 	}
 	dir := filepath.Join(s.Dir, resourceDirectory(id))
-	raw, err := os.ReadFile(filepath.Join(dir, ".resource", "metadata.json"))
+	resourceDir := filepath.Join(dir, ".resource")
+	lock := &resourcePublicationLocks[sha256.Sum256([]byte(id))[0]]
+	lock.Lock()
+	defer lock.Unlock()
+	metadata, err := readResourceMetadata(filepath.Join(resourceDir, resourceCurrentMetadata))
+	content := metadata.Content
+	if os.IsNotExist(err) {
+		metadata, err = readResourceMetadata(filepath.Join(resourceDir, "metadata.json"))
+		content = "content"
+	} else if err == nil && !validResourceContentName(content) {
+		return nil, ResourceRef{}, fmt.Errorf("invalid resource content generation")
+	}
 	if err == nil {
-		var metadata resourceFileMetadata
-		if err := json.Unmarshal(raw, &metadata); err != nil {
-			return nil, ResourceRef{}, err
-		}
-		file, ref, err := openResourceFile(filepath.Join(dir, ".resource", "content"), id)
+		file, ref, err := openResourceFile(filepath.Join(resourceDir, content), id)
 		if err != nil {
 			return nil, ResourceRef{}, err
 		}
@@ -164,6 +198,28 @@ func (s *ResourceStore) Open(internalURL string) (*os.File, ResourceRef, error) 
 		}
 	}
 	return nil, ResourceRef{}, os.ErrNotExist
+}
+
+func finishResourceFile(file *os.File, writeErr error) error {
+	if writeErr != nil {
+		_ = file.Close()
+		return writeErr
+	}
+	return errors.Join(file.Sync(), file.Close())
+}
+
+func readResourceMetadata(path string) (resourceFileMetadata, error) {
+	var metadata resourceFileMetadata
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return metadata, err
+	}
+	err = json.Unmarshal(raw, &metadata)
+	return metadata, err
+}
+
+func validResourceContentName(name string) bool {
+	return strings.HasPrefix(name, ".content-") && filepath.Base(name) == name
 }
 
 func resourceDirectory(id string) string {

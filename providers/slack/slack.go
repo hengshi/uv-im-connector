@@ -90,6 +90,9 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	defer func() {
 		err = uvim.NewProviderSendOperationError("slack send", err)
 	}()
+	if err := uvim.ValidateOutboundText(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, err
+	}
 	if err := uvim.ValidateOutboundInteraction(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, err
 	}
@@ -115,24 +118,17 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	if p.config.ResourceStore == nil || !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
 		return uvim.SendResult{}, fmt.Errorf("slack upload: internal resource is required")
 	}
-	file, _, err := p.config.ResourceStore.Open(ref.InternalURL)
+	file, stored, err := p.config.ResourceStore.Open(ref.InternalURL)
 	if err != nil {
 		return uvim.SendResult{}, uvim.NewProviderSendError("slack resource is unavailable", err)
 	}
-	data, readErr := io.ReadAll(file)
-	closeErr := file.Close()
-	if readErr != nil {
-		return uvim.SendResult{}, uvim.NewProviderSendError("slack resource read failed", readErr)
-	}
-	if closeErr != nil {
-		return uvim.SendResult{}, uvim.NewProviderSendError("slack resource close failed", closeErr)
-	}
+	defer file.Close()
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	channelID, err := p.resourceChannelID(ctx, msg.ResolvedTarget())
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
-	form := url.Values{"filename": {name}, "length": {strconv.Itoa(len(data))}}
+	form := url.Values{"filename": {name}, "length": {strconv.FormatInt(stored.SizeBytes, 10)}}
 	initRaw, err := p.request(ctx, "/api/files.getUploadURLExternal", strings.NewReader(form.Encode()), "application/x-www-form-urlencoded", "slack upload init")
 	if err != nil {
 		return uvim.SendResult{}, err
@@ -150,7 +146,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 		businessErr := fmt.Errorf("slack upload init: error=%q", initResponse.Error)
 		return uvim.SendResult{}, uvim.NewProviderResponseErrorWithCode(initRaw, initResponse.Error, businessErr)
 	}
-	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPost, initResponse.UploadURL, bytes.NewReader(data))
+	uploadReq, err := httpchannel.UploadRequest(ctx, initResponse.UploadURL, file, stored.SizeBytes)
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
@@ -167,7 +163,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 		_ = uploadResp.Body.Close()
 		return uvim.SendResult{}, err
 	}
-	if closeErr = uploadResp.Body.Close(); closeErr != nil {
+	if closeErr := uploadResp.Body.Close(); closeErr != nil {
 		return uvim.SendResult{}, uvim.NewProviderSendLogError("slack upload data: close response failed", closeErr)
 	}
 	complete := map[string]any{

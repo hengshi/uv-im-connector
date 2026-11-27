@@ -109,6 +109,12 @@ func (h *Hub) SetUserIdentityMapper(mapper *uvim.UserIdentityMapper) {
 }
 
 func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if event.Type == uvim.EventInteractionAction && !h.authenticated() {
 		return errors.New("interaction transport requires authentication")
 	}
@@ -161,7 +167,12 @@ func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
 			return err
 		}
 	}
-	written, fresh, err := h.eventLog.AppendForAudience(ctx, event, audience)
+	// Once ingress is prepared, finish publication even if the callback has
+	// disconnected. Keep fan-out in the same sequence order as the log.
+	publishCtx := context.WithoutCancel(ctx)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	written, fresh, err := h.eventLog.AppendForAudience(publishCtx, event, audience)
 	if err != nil {
 		if h.receivedContext != nil {
 			h.receivedContext.discard(pendingReceived)
@@ -175,12 +186,11 @@ func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
 		return nil
 	}
 	if h.receivedContext != nil {
-		if err := h.receivedContext.commit(ctx, pendingReceived, token, written); err != nil {
+		if err := h.receivedContext.commit(publishCtx, pendingReceived, token, written); err != nil {
 			slog.Warn("received context resource was not committed", "provider", written.Provider, "connector", written.Connector)
 		}
-		h.receivedContext.observe(ctx)
+		h.receivedContext.observe(publishCtx)
 	}
-	h.mu.Lock()
 	for ch, subscriberAudience := range h.subscribers {
 		if h.scoped() && subscriberAudience != audience {
 			continue
@@ -192,7 +202,6 @@ func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
 			delete(h.subscribers, ch)
 		}
 	}
-	h.mu.Unlock()
 	return nil
 }
 
@@ -395,52 +404,72 @@ func (h *Hub) handleEventsWS(w http.ResponseWriter, req *http.Request) {
 	}
 	defer conn.Close()
 	after, _ := strconv.ParseInt(req.URL.Query().Get("after"), 10, 64)
-	ch := make(chan uvim.Event, 32)
 	caller := clientPrincipal(req)
-	h.mu.Lock()
-	h.subscribers[ch] = caller
-	h.mu.Unlock()
+	if err := h.watchEvents(req.Context(), caller, after, func(event uvim.Event) error {
+		return conn.WriteJSON(event)
+	}); err != nil && req.Context().Err() == nil {
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "resume event stream from the last processed sequence"), time.Now().Add(time.Second))
+	}
+}
+
+const eventSubscriberQueueSize = 32
+
+func (h *Hub) watchEvents(ctx context.Context, caller string, after int64, write func(uvim.Event) error) error {
+	subscribe := func() chan uvim.Event {
+		ch := make(chan uvim.Event, eventSubscriberQueueSize)
+		h.mu.Lock()
+		h.subscribers[ch] = caller
+		h.mu.Unlock()
+		return ch
+	}
+	ch := subscribe()
 	defer func() {
 		h.mu.Lock()
 		delete(h.subscribers, ch)
 		h.mu.Unlock()
 	}()
-	backlog, err := h.readEvents(req.Context(), caller, after)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		_ = conn.WriteJSON(map[string]any{"error": err.Error()})
-		return
-	}
-	lastSeq := after
-	for _, event := range backlog {
-		if !h.authenticated() && event.Type == uvim.EventInteractionAction {
-			continue
+
+	deliver := func(event uvim.Event) error {
+		if event.Sequence <= after || (!h.authenticated() && event.Type == uvim.EventInteractionAction) {
+			return nil
 		}
-		if err := conn.WriteJSON(event.Sanitized()); err != nil {
-			return
+		if err := write(event.Sanitized()); err != nil {
+			return err
 		}
-		if event.Sequence > lastSeq {
-			lastSeq = event.Sequence
-		}
+		after = event.Sequence
+		return nil
 	}
 	for {
-		select {
-		case <-req.Context().Done():
-			return
-		case event, ok := <-ch:
-			if !ok {
-				return
-			}
-			if !h.authenticated() && event.Type == uvim.EventInteractionAction {
-				continue
-			}
-			if event.Sequence <= lastSeq {
-				continue
-			}
-			if err := conn.WriteJSON(event.Sanitized()); err != nil {
-				return
-			}
-			lastSeq = event.Sequence
+		// Subscribe before reading to cover events appended during replay. The
+		// cursor suppresses overlap between the log snapshot and the live queue.
+		backlog, err := h.readEvents(ctx, caller, after)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
 		}
+		for _, event := range backlog {
+			if err := deliver(event); err != nil {
+				return err
+			}
+		}
+	live:
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case event, ok := <-ch:
+				if !ok {
+					break live
+				}
+				if err := deliver(event); err != nil {
+					return err
+				}
+			}
+		}
+		if h.eventLog.Path == "" {
+			return errors.New("event stream cannot replay without a persistent log")
+		}
+		// A slow consumer exhausted its live queue. Replay the gap from disk.
+		ch = subscribe()
 	}
 }
 
@@ -490,6 +519,15 @@ func (h *Hub) handleMessageCreate(w http.ResponseWriter, req *http.Request) {
 	}
 	result, err := provider.Send(req.Context(), msg)
 	if err != nil {
+		if failure, ok := uvim.ProviderSendFailure(err); ok && len(failure.DeliveredMessageIDs) > 0 {
+			confirmed := uvim.SendResult{MessageIDs: failure.DeliveredMessageIDs}
+			if receiptErr := h.persistScopedOutboundReceipt(caller, provider, confirmed); receiptErr != nil {
+				slog.Error("partial outbound receipt persistence failed", "provider", provider.ID(), "connector", provider.ConnectorID(), "reason", receiptErr.Error())
+				failure.Category, failure.DeliveryState, failure.Retryable = uvim.SendFailureUnknown, uvim.DeliveryUnknown, false
+				writeProviderError(w, uvim.NewProviderSendFailure(failure, "outbound edit authorization could not be saved; do not retry the send", receiptErr))
+				return
+			}
+		}
 		reason := uvim.ProviderSendErrorLogDetail(err)
 		if reason == "" {
 			reason = "provider send failed"
@@ -798,8 +836,7 @@ func (h *Hub) handleUploadCreate(w http.ResponseWriter, req *http.Request) {
 	}
 	refInput := uvim.ResourceRef{Kind: input.Kind, Name: input.Name, MIME: input.MIME}
 	if h.scoped() {
-		// Reserve the Hub-generated storage ID before bytes are written, so a
-		// bounded scope index cannot fail after an irreversible resource write.
+		// Reserve the Hub-generated storage ID before writing resource bytes.
 		refInput.ID = uvim.NewID("res")
 		if err := h.resourceScopes.claim(refInput.ID, resourceScope{ClientID: clientPrincipal(req)}); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "resource_scope_unavailable")

@@ -1,18 +1,15 @@
 package telegram
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	uvim "github.com/hengshi/uv-im-connector"
 	"github.com/hengshi/uv-im-connector/providers/httpchannel"
@@ -84,6 +81,9 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	defer func() {
 		err = uvim.NewProviderSendOperationError("telegram send", err)
 	}()
+	if err := uvim.ValidateOutboundText(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, err
+	}
 	if err := uvim.ValidateOutboundInteraction(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, err
 	}
@@ -96,7 +96,7 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	if err := uvim.ValidateOutboundResources(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("telegram send: %w", err)
 	}
-	if len(msg.Resources) > 1 || strings.TrimSpace(msg.Text) != "" || len(msg.Elements) > 0 {
+	if len(msg.Resources) > 1 || len(msg.Elements) > 0 || (strings.TrimSpace(msg.Text) != "" && utf8.RuneCountInString(msg.Text) > 1024) {
 		return uvim.SendResourceSequence(ctx, msg, p.Send)
 	}
 	return p.sendResource(ctx, msg, msg.Resources[0])
@@ -163,56 +163,31 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	if !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
 		return uvim.SendResult{}, fmt.Errorf("telegram upload: internal resource is required")
 	}
-	file, _, err := p.config.ResourceStore.Open(ref.InternalURL)
+	file, stored, err := p.config.ResourceStore.Open(ref.InternalURL)
 	if err != nil {
 		return uvim.SendResult{}, uvim.NewProviderSendError("telegram resource is unavailable", err)
 	}
-	data, readErr := io.ReadAll(file)
-	closeErr := file.Close()
-	if readErr != nil {
-		return uvim.SendResult{}, uvim.NewProviderSendError("telegram resource read failed", readErr)
-	}
-	if closeErr != nil {
-		return uvim.SendResult{}, uvim.NewProviderSendError("telegram resource close failed", closeErr)
-	}
+	defer file.Close()
 	method, field := telegramMediaRoute(ref)
 	target := msg.ResolvedTarget()
 	if target.ID == "" {
 		return uvim.SendResult{}, fmt.Errorf("telegram send: target chat id is required")
 	}
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	if err := writer.WriteField("chat_id", target.ID); err != nil {
-		return uvim.SendResult{}, err
+	fields := map[string]string{"chat_id": target.ID}
+	if strings.TrimSpace(msg.Text) != "" {
+		fields["caption"] = msg.Text
 	}
 	if replyTo, err := strconv.ParseInt(msg.Referrer.MessageID, 10, 64); err == nil && replyTo != 0 {
 		raw, _ := json.Marshal(map[string]int64{"message_id": replyTo})
-		if err := writer.WriteField("reply_parameters", string(raw)); err != nil {
-			return uvim.SendResult{}, err
-		}
-	}
-	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, field, name))
-	if strings.TrimSpace(ref.MIME) != "" {
-		header.Set("Content-Type", ref.MIME)
-	}
-	part, err := writer.CreatePart(header)
-	if err != nil {
-		return uvim.SendResult{}, err
-	}
-	if _, err := part.Write(data); err != nil {
-		return uvim.SendResult{}, err
-	}
-	if err := writer.Close(); err != nil {
-		return uvim.SendResult{}, err
+		fields["reply_parameters"] = string(raw)
 	}
 	endpoint := strings.TrimRight(p.config.BaseURL, "/") + "/bot" + p.config.Token + "/" + method
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
+	req, err := httpchannel.MultipartRequest(ctx, endpoint, fields,
+		httpchannel.MultipartFile{Field: field, Name: name, MIME: ref.MIME}, file, stored.SizeBytes)
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
 	resp, err := p.config.HTTPClient.Do(req)
 	if err != nil {
 		return uvim.SendResult{}, err

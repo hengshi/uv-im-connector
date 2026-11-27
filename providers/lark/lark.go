@@ -8,10 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -683,27 +682,26 @@ func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (ki
 	if !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
 		return "", nil, fmt.Errorf("lark upload: internal resource is required")
 	}
-	file, _, err := p.config.ResourceStore.Open(ref.InternalURL)
+	file, stored, err := p.config.ResourceStore.Open(ref.InternalURL)
 	if err != nil {
 		return "", nil, uvim.NewProviderSendError("lark resource is unavailable", err)
 	}
-	data, readErr := io.ReadAll(file)
-	closeErr := file.Close()
-	if readErr != nil {
-		return "", nil, uvim.NewProviderSendError("lark resource read failed", readErr)
-	}
-	if closeErr != nil {
-		return "", nil, uvim.NewProviderSendError("lark resource close failed", closeErr)
-	}
+	defer file.Close()
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	if strings.EqualFold(strings.TrimSpace(ref.Kind), uvim.ElementImage) && larkNativeImageMIME(ref.MIME) {
-		key, err := p.uploadMultipart(ctx, "/open-apis/im/v1/images", map[string]string{"image_type": "message"}, "image", name, ref.MIME, data, "image_key")
+		key, err := p.uploadMultipart(ctx, "/open-apis/im/v1/images", map[string]string{"image_type": "message"}, "image", name, ref.MIME, file, stored.SizeBytes, "image_key")
 		if err != nil {
 			return "", nil, err
 		}
 		return uvim.ElementImage, map[string]string{"image_key": key}, nil
 	}
-	key, err := p.uploadMultipart(ctx, "/open-apis/im/v1/files", map[string]string{"file_type": "stream", "file_name": name}, "file", name, ref.MIME, data, "file_key")
+	// Lark's file API requires a suffix in file_name.
+	if ext := path.Ext(name); ext == "" || ext == "." {
+		ref.Name = strings.TrimSuffix(name, ".")
+		extension := uvim.ResourceMediaExtension(ref, uvim.FirstNonEmpty(ref.MIME, stored.MIME))
+		name = ref.Name + uvim.FirstNonEmpty(extension, ".bin")
+	}
+	key, err := p.uploadMultipart(ctx, "/open-apis/im/v1/files", map[string]string{"file_type": "stream", "file_name": name}, "file", name, ref.MIME, file, stored.SizeBytes, "file_key")
 	if err != nil {
 		return "", nil, err
 	}
@@ -719,42 +717,20 @@ func larkNativeImageMIME(mimeType string) bool {
 	}
 }
 
-func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[string]string, fileField, name, mimeType string, data []byte, responseKey string) (key string, err error) {
+func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[string]string, fileField, name, mimeType string, file io.ReaderAt, size int64, responseKey string) (key string, err error) {
 	defer func() {
 		err = uvim.NewProviderSendOperationError("lark upload", err)
 	}()
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	for key, value := range fields {
-		if err := writer.WriteField(key, value); err != nil {
-			return "", err
-		}
-	}
-	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, fileField, name))
-	if strings.TrimSpace(mimeType) != "" {
-		header.Set("Content-Type", mimeType)
-	}
-	part, err := writer.CreatePart(header)
-	if err != nil {
-		return "", err
-	}
-	if _, err := part.Write(data); err != nil {
-		return "", err
-	}
-	if err := writer.Close(); err != nil {
-		return "", err
-	}
 	token, err := p.tenantAccessToken(ctx)
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL()+path, &body)
+	req, err := httpchannel.MultipartRequest(ctx, p.baseURL()+path, fields,
+		httpchannel.MultipartFile{Field: fileField, Name: name, MIME: mimeType}, file, size)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
 	respRaw, err := p.doJSON(req, "lark upload")
 	if err != nil {
 		return "", err

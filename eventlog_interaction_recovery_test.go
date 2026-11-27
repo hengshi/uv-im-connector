@@ -10,6 +10,24 @@ import (
 	"time"
 )
 
+// Simulate cancellation immediately after Append's acceptance check. If
+// Append asks Done after writing, the cancellation is already visible.
+type cancelAtAppendBoundary struct {
+	context.Context
+	cancel context.CancelFunc
+}
+
+func (c cancelAtAppendBoundary) Err() error {
+	err := c.Context.Err()
+	c.cancel()
+	return err
+}
+
+func (c cancelAtAppendBoundary) Done() <-chan struct{} {
+	c.cancel()
+	return c.Context.Done()
+}
+
 func recoveryInteractionEvent() Event {
 	actor := User{ID: "original-user", Kind: UserKindUser}
 	return Event{ID: "click-before-ack", Type: EventInteractionAction, Provider: "lark", Connector: "main", Channel: Channel{ID: "chat"}, User: actor, Referrer: Referrer{MessageID: "card-message"}, Interaction: &InteractionActionEvent{SchemaVersion: InteractionSchemaV1, EventID: "click-before-ack", Provider: "lark", Connector: "main", ConversationID: "chat", MessageID: "card-message", CardID: "card", Revision: 1, ActionID: "answer", Kind: InteractionAnswer, Token: "private-handle", Actor: actor, OccurredAt: time.Now().UTC(), BotAppID: "app", BotProofDigest: strings.Repeat("a", 64)}}
@@ -21,9 +39,11 @@ func TestInteractionLogRecoversPreACKTornTailThenDeduplicatesDurableAction(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = log.Append(t.Context(), Event{ID: "ordinary", Provider: "lark", Connector: "main", Message: Message{ID: "ordinary"}})
-	if err != nil {
-		t.Fatal(err)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	_, fresh, err := log.Append(cancelAtAppendBoundary{ctx, cancel}, Event{ID: "ordinary", Provider: "lark", Connector: "main", Message: Message{ID: "ordinary"}})
+	if ctx.Err() == nil || err != nil || !fresh {
+		t.Fatalf("cancellation hid a committed event: fresh=%t error=%v", fresh, err)
 	}
 	committed, err := os.ReadFile(path)
 	if err != nil {

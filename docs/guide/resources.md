@@ -4,7 +4,7 @@
 
 Connector 不对附件大小设置额外上限：入站下载、本地存储、HTTP 上传和出站发送均不按字节数拦截，大小限制由 IM 平台或邮件服务器执行。
 
-群聊和私聊使用相同的附件下载链路，资源会在事件持久化前下载。企业微信会提取消息本身以及 `quote` 中的文件、图片、视频和引用文本，支持引用群文件后 @ 机器人；DingTalk 在配置 Stream 凭据时会用入站 `downloadCode` 换取临时文件 URL；飞书会提取图文消息中的图片和视频，也会提取本次显式选中的被引用父消息的可下载附件。更早的飞书回复链节点只作为引用文本：其中媒体仅作说明，不会成为资源或被隐式下载。飞书 `folder` 会作为文件资源识别，但平台资源 API 不保证可以下载文件夹。显式引用的 `merge_forward` 会提取同一响应中可归属的子消息正文及支持的图片、文件等资源，包括嵌套转发；下载使用顶层转发容器的 message ID。`interactive` 消息卡片仍只提供正文/摘要，不提取卡片子资源。企业微信 AI Bot 回调标记为 `addressed=true`，飞书群消息仍按是否 @ 机器人设置该字段。入站事件只处理平台实际投递的消息；原生近期窗口是另行授权的只读查询。文件内容识别由调用方应用负责。
+群聊和私聊使用相同的附件下载链路，资源会在事件持久化前下载。企业微信会提取消息本身以及 `quote` 中的文件、图片、视频和引用文本，支持引用群文件后 @ 机器人；DingTalk 在配置 Stream 凭据时会用入站 `downloadCode` 换取临时文件 URL；飞书普通图文优先读取非空的 `content_v2` 以保留 Markdown，缺失时读取 `content`，同时提取两种结构中的图片和视频。飞书也会提取本次显式选中的被引用父消息的可下载附件。更早的飞书回复链节点只作为引用文本：其中媒体仅作说明，不会成为资源或被隐式下载。飞书 `folder` 会作为文件资源识别，但平台资源 API 不保证可以下载文件夹。显式引用的 `merge_forward` 会提取同一响应中可归属的子消息正文及支持的图片、文件等资源，包括嵌套转发；下载使用顶层转发容器的 message ID。`interactive` 消息卡片仍只提供正文/摘要，不提取卡片子资源。企业微信 AI Bot 回调标记为 `addressed=true`，飞书群消息仍按是否 @ 机器人设置该字段。入站事件只处理平台实际投递的消息；原生近期窗口是另行授权的只读查询。文件内容识别由调用方应用负责。
 
 ## 公开形态
 
@@ -91,10 +91,12 @@ POST /v1/resource.download
 
 发送前必须从 `GET /v1/meta` 校验目标 provider + connector 的 `upload_resource` 和 `resource_kinds`，并把 `upload.create` 返回的完整 `ResourceRef` 原样放进 `OutboundMessage.resources`。不能自行拼装 `internal_url`，也不能拿另一个 uv-im-connector 进程的内部 URL 来用。
 
+附件显示名保留 Unicode、空格和标点。连接器取文件的基本名称并过滤控制字符，再按通道协议编码，平台负责校验其原生文件名限制。
+
 standalone binary 中，WeCom、Lark / Feishu、DingTalk（配置应用凭据）、Discord、KOOK、Telegram、Matrix、Slack、WhatsApp、Zulip、WeChat Official Account 和 Mail 与 HTTP upload endpoint 使用同一个 resource store，并真正声明 `upload_resource=true`。完整逐 provider 清单见 [Provider 能力矩阵](/architecture.html#provider-能力矩阵)。
 
 - WeCom：WebSocket 上传每片 512 KiB，总大小和分片数量由平台校验。
-- Lark / Feishu：支持格式的图片始终使用图片 API，不按大小转为文件；其他资源走文件上传，由平台校验大小。
+- Lark / Feishu：支持格式的图片始终使用图片 API，不按大小转为文件；其他资源走文件上传，由平台校验大小。文件 API 要求文件名带后缀。缺后缀时仅在上传文件名中按 MIME 补齐，无法推断时使用 `.bin`。
 - DingTalk：使用应用凭据上传媒体，再向明确的用户或群发送。图片为图片消息，文件、音频和视频为可下载文件；无需保留有效的 session webhook。
 - Discord：资源随消息直接 multipart 上传，由平台校验大小。
 - KOOK：先上传 asset，再发送图片消息或附件卡片。
@@ -106,8 +108,8 @@ standalone binary 中，WeCom、Lark / Feishu、DingTalk（配置应用凭据）
 - WeChat Official Account：临时素材上传后通过客服消息发送；不支持任意文件。
 - Mail：作为 MIME 附件发送；大小和数量由邮件服务器校验。
 
-其余 provider 当前只能接收 / 下载资源，不能从 `internal://` 直接发送；矩阵逐项记录了缺失的 provider-native 上传环节。一次发送可同时提交 text 和多个 resources，connector 不设附件数量上限。Discord、Mail、Zulip 将它们合并为一条平台消息；其他支持上传的适配器先发送文本，再按顺序发送各附件（Slack 单附件仍可携带说明文字）。顺序发送的结果通过 `message_ids` 返回全部 ID，`message_id` 为最后一条 ID。中途失败时，`failure.delivered_count` 和 `failure.delivered_message_ids` 标明已完成部分，`retryable=false`、`delivery_state=unknown` 表示不能重放整批；失败的那一条仍可能已送达。
+其余 provider 当前只能接收 / 下载资源，不能从 `internal://` 直接发送；矩阵逐项记录了缺失的 provider-native 上传环节。一次发送可同时提交 text 和多个 resources，connector 不设附件数量上限。Discord、Mail、Zulip 将它们合并为一条平台消息。Slack、Telegram、WhatsApp 在平台支持的单附件场景下把说明放在同一条消息里。Telegram 和 WhatsApp 在原生格式不支持说明或说明超出原生长度时另发完整正文。其他顺序发送场景先发文本，再发附件。顺序发送的结果通过 `message_ids` 返回全部 ID，`message_id` 为最后一条 ID。中途失败时，`failure.delivered_count` 和 `failure.delivered_message_ids` 标明已完成部分，`retryable=false`、`delivery_state=unknown` 表示不能重放整批；失败的那一条仍可能已送达。
 
 Provider 不支持某种 outbound resource 时，应该返回显式错误，而不是静默丢弃内容。
 
-connector 不对资源、webhook 请求体、飞书事件拼装、事件日志记录或平台响应读取设置字节数/条数上限。空资源交由平台校验；文本、安全文件名片段和错误元数据不按长度截断。鉴权、路径/请求头安全、支持的消息格式和原生协议校验仍然有效。内存、文件系统、标准库传输、代理和平台自身的约束仍是外部边界。
+空附件由平台校验。传输仍受鉴权、路径和请求头安全、文件系统及平台规则约束。

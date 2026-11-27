@@ -5,12 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	uvim "github.com/hengshi/uv-im-connector"
 	"github.com/hengshi/uv-im-connector/providers/httpchannel"
@@ -87,6 +85,9 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	defer func() {
 		err = uvim.NewProviderSendOperationError("whatsapp send", err)
 	}()
+	if err := uvim.ValidateOutboundText(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, err
+	}
 	if err := uvim.ValidateOutboundInteraction(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, err
 	}
@@ -99,7 +100,8 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	if err := uvim.ValidateOutboundResources(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("whatsapp send: %w", err)
 	}
-	if len(msg.Resources) > 1 || strings.TrimSpace(msg.Text) != "" || len(msg.Elements) > 0 {
+	if len(msg.Resources) > 1 || len(msg.Elements) > 0 ||
+		(strings.TrimSpace(msg.Text) != "" && (whatsappMediaRoute(msg.Resources[0].Kind) == "audio" || utf8.RuneCountInString(msg.Text) > 1024)) {
 		return uvim.SendResourceSequence(ctx, msg, p.Send)
 	}
 	return p.sendResource(ctx, msg, msg.Resources[0])
@@ -175,46 +177,20 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	if p.config.ResourceStore == nil || !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
 		return uvim.SendResult{}, fmt.Errorf("whatsapp upload: internal resource is required")
 	}
-	file, _, err := p.config.ResourceStore.Open(ref.InternalURL)
+	file, stored, err := p.config.ResourceStore.Open(ref.InternalURL)
 	if err != nil {
 		return uvim.SendResult{}, uvim.NewProviderSendError("whatsapp resource is unavailable", err)
 	}
 	mediaType := whatsappMediaRoute(ref.Kind)
-	data, readErr := io.ReadAll(file)
-	closeErr := file.Close()
-	if readErr != nil {
-		return uvim.SendResult{}, uvim.NewProviderSendError("whatsapp resource read failed", readErr)
-	}
-	if closeErr != nil {
-		return uvim.SendResult{}, uvim.NewProviderSendError("whatsapp resource close failed", closeErr)
-	}
+	defer file.Close()
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
-	var uploadBody bytes.Buffer
-	writer := multipart.NewWriter(&uploadBody)
-	if err := writer.WriteField("messaging_product", "whatsapp"); err != nil {
-		return uvim.SendResult{}, err
-	}
-	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename=%q`, name))
-	if strings.TrimSpace(ref.MIME) != "" {
-		header.Set("Content-Type", ref.MIME)
-	}
-	part, err := writer.CreatePart(header)
-	if err != nil {
-		return uvim.SendResult{}, err
-	}
-	if _, err := part.Write(data); err != nil {
-		return uvim.SendResult{}, err
-	}
-	if err := writer.Close(); err != nil {
-		return uvim.SendResult{}, err
-	}
-	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(p.config.BaseURL, "/")+"/"+phoneNumberID+"/media", &uploadBody)
+	endpoint := strings.TrimRight(p.config.BaseURL, "/") + "/" + phoneNumberID + "/media"
+	uploadReq, err := httpchannel.MultipartRequest(ctx, endpoint, map[string]string{"messaging_product": "whatsapp"},
+		httpchannel.MultipartFile{Field: "file", Name: name, MIME: ref.MIME}, file, stored.SizeBytes)
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
 	p.authorize(uploadReq)
-	uploadReq.Header.Set("Content-Type", writer.FormDataContentType())
 	uploadRaw, err := p.do(uploadReq, "whatsapp upload")
 	if err != nil {
 		return uvim.SendResult{}, err
@@ -243,6 +219,9 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 		recipientType = "group"
 	}
 	media := map[string]string{"id": uploadResponse.ID}
+	if strings.TrimSpace(msg.Text) != "" {
+		media["caption"] = msg.Text
+	}
 	if mediaType == "document" {
 		media["filename"] = name
 	}

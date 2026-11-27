@@ -1,14 +1,10 @@
 package kook
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"strings"
 
 	uvim "github.com/hengshi/uv-im-connector"
@@ -75,44 +71,20 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	if config.ResourceStore == nil || !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
 		return msg, fmt.Errorf("kook upload: internal resource is required")
 	}
-	file, _, err := config.ResourceStore.Open(ref.InternalURL)
+	file, stored, err := config.ResourceStore.Open(ref.InternalURL)
 	if err != nil {
 		return msg, uvim.NewProviderSendError("kook resource is unavailable", err)
 	}
-	data, readErr := io.ReadAll(file)
-	closeErr := file.Close()
-	if readErr != nil {
-		return msg, uvim.NewProviderSendError("kook resource read failed", readErr)
-	}
-	if closeErr != nil {
-		return msg, uvim.NewProviderSendError("kook resource close failed", closeErr)
-	}
+	defer file.Close()
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename=%q`, name))
-	if strings.TrimSpace(ref.MIME) != "" {
-		header.Set("Content-Type", ref.MIME)
-	}
-	part, err := writer.CreatePart(header)
-	if err != nil {
-		return msg, err
-	}
-	if _, err := part.Write(data); err != nil {
-		return msg, err
-	}
-	if err := writer.Close(); err != nil {
-		return msg, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(config.BaseURL, "/")+"/api/v3/asset/create", &body)
+	req, err := httpchannel.MultipartRequest(ctx, strings.TrimRight(config.BaseURL, "/")+"/api/v3/asset/create", nil,
+		httpchannel.MultipartFile{Field: "file", Name: name, MIME: ref.MIME}, file, stored.SizeBytes)
 	if err != nil {
 		return msg, err
 	}
 	if auth := httpchannel.BotAuthorization(config.Token); auth != "" {
 		req.Header.Set("Authorization", auth)
 	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
 	client := config.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
