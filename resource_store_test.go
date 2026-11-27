@@ -80,6 +80,26 @@ func TestResourceStoreOpensLegacyFiles(t *testing.T) {
 	}
 }
 
+func TestResourceStoreWritesUnderTraversalOnlyParent(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "resources")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o100); err != nil {
+		t.Skipf("cannot set traversal-only permissions: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
+	if dir, err := os.Open(parent); err == nil {
+		dir.Close()
+		t.Skip("parent can be opened despite traversal-only permissions")
+	}
+	store := &ResourceStore{Dir: root}
+	if _, err := store.Save(t.Context(), strings.NewReader("bytes"), ResourceRef{Name: "test.txt"}); err != nil {
+		t.Fatalf("save into writable root: %v", err)
+	}
+}
+
 func TestResourceReplacementPinsMetadataAndBytes(t *testing.T) {
 	store := &ResourceStore{Dir: t.TempDir()}
 	dir := filepath.Join(store.Dir, resourceDirectory("r1"), ".resource")

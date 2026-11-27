@@ -27,6 +27,11 @@ const resourceCurrentMetadata = "current.json"
 // use separate ResourceStore values. The open descriptor pins the bytes.
 var resourcePublicationLocks [256]sync.Mutex
 
+var resourceRootInit = struct {
+	sync.Mutex
+	pending map[string]string
+}{pending: make(map[string]string)}
+
 type resourceFileMetadata struct {
 	Content string `json:"content,omitempty"`
 	Name    string `json:"name"`
@@ -72,18 +77,11 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 	if err != nil {
 		return ref, err
 	}
-	syncRoot := filepath.Dir(dir)
-	for {
-		_, err := os.Stat(syncRoot)
-		if !os.IsNotExist(err) {
-			if err != nil {
-				return ref, err
-			}
-			break
-		}
-		syncRoot = filepath.Dir(syncRoot)
+	root := dir
+	if err := ensureResourceRoot(root); err != nil {
+		return ref, err
 	}
-	dir = filepath.Join(dir, resourceDirectory(id), ".resource")
+	dir = filepath.Join(root, resourceDirectory(id), ".resource")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return ref, err
 	}
@@ -146,7 +144,7 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 		if err := syncResourceDirectory(folder); err != nil {
 			return ref, err
 		}
-		if folder == syncRoot {
+		if folder == root {
 			break
 		}
 	}
@@ -224,6 +222,43 @@ func (s *ResourceStore) Open(internalURL string) (*os.File, ResourceRef, error) 
 		}
 	}
 	return nil, ResourceRef{}, os.ErrNotExist
+}
+
+// Initialize a missing root before writers can mistake it for an established
+// directory. A retry after a failed sync must cover the same ancestors.
+func ensureResourceRoot(root string) error {
+	resourceRootInit.Lock()
+	defer resourceRootInit.Unlock()
+
+	ancestor, pending := resourceRootInit.pending[root]
+	if !pending {
+		if _, err := os.Stat(root); !os.IsNotExist(err) {
+			return err
+		}
+		for ancestor = filepath.Dir(root); ; ancestor = filepath.Dir(ancestor) {
+			_, err := os.Stat(ancestor)
+			if !os.IsNotExist(err) {
+				if err != nil {
+					return err
+				}
+				break
+			}
+		}
+		resourceRootInit.pending[root] = ancestor
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return err
+	}
+	for folder := filepath.Dir(root); ; folder = filepath.Dir(folder) {
+		if err := syncResourceDirectory(folder); err != nil {
+			return err
+		}
+		if folder == ancestor {
+			break
+		}
+	}
+	delete(resourceRootInit.pending, root)
+	return nil
 }
 
 func syncResourceDirectory(path string) error {
