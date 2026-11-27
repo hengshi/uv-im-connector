@@ -568,11 +568,8 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 		return uvim.SendResult{}, fmt.Errorf("lark send: rich elements are not supported")
 	}
 	text := uvim.NormalizeOutboundText(msg.Text)
-	if strings.TrimSpace(text) == "" {
+	if text == "" && len(msg.Elements) > 0 {
 		text = uvim.NormalizeOutboundText(textFromElements(msg.Elements))
-		if strings.TrimSpace(text) == "" {
-			text = ""
-		}
 	}
 	if len(msg.Resources) > 1 || (text != "" && len(msg.Resources) > 0) {
 		return uvim.SendResourceSequence(ctx, msg, p.Send)
@@ -726,10 +723,8 @@ func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[
 	if err != nil {
 		return "", err
 	}
-	req, err := httpchannel.MultipartRequest(ctx, p.baseURL()+path, httpchannel.MultipartBody{
-		Fields: fields,
-		Files:  []httpchannel.MultipartFile{{Field: fileField, Name: name, MIME: mimeType, Reader: file, Size: size}},
-	})
+	req, err := httpchannel.MultipartRequest(ctx, p.baseURL()+path, fields,
+		httpchannel.MultipartFile{Field: fileField, Name: name, MIME: mimeType}, file, size)
 	if err != nil {
 		return "", err
 	}

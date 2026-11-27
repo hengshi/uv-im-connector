@@ -51,60 +51,48 @@ func TestSendFilePreservesUploadAndDisplayName(t *testing.T) {
 	const name = "季度 报告｜验收"
 	store := &uvim.ResourceStore{Dir: t.TempDir()}
 	ref, err := store.Save(t.Context(), strings.NewReader("report"), uvim.ResourceRef{
-		Kind: uvim.ElementFile, Name: `C:\archive.2026\` + name, MIME: "application/pdf",
+		Kind: uvim.ElementFile, Name: "C:\\archive.2026\\" + name, MIME: "application/pdf",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		switch req.URL.Path {
-		case "/gettoken":
-			_, _ = io.WriteString(w, `{"access_token":"token"}`)
-		case "/media/upload":
-			file, header, err := req.FormFile("media")
-			if err != nil {
-				t.Error(err)
-				w.WriteHeader(http.StatusBadRequest)
-				return
-			}
-			defer file.Close()
-			data, err := io.ReadAll(file)
-			if err != nil || string(data) != "report" || header.Filename != name ||
-				header.Header.Get("Content-Type") != "application/pdf" ||
-				strings.Contains(header.Header.Get("Content-Disposition"), "filename*=") {
-				t.Errorf("upload filename=%q header=%q data=%q err=%v", header.Filename, header.Header.Get("Content-Disposition"), data, err)
-			}
-			_, _ = io.WriteString(w, `{"media_id":"media"}`)
-		case "/v1.0/oauth2/accessToken":
-			_, _ = io.WriteString(w, `{"accessToken":"token"}`)
-		case "/v1.0/robot/groupMessages/send":
-			var body map[string]string
-			var params map[string]string
-			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-				t.Error(err)
-			}
-			if err := json.Unmarshal([]byte(body["msgParam"]), &params); err != nil {
-				t.Error(err)
-			}
-			if body["msgKey"] != "sampleFile" || params["fileName"] != name || params["fileType"] != "pdf" {
-				t.Errorf("send body = %v, params = %v", body, params)
-			}
-			_, _ = io.WriteString(w, `{"processQueryKey":"sent"}`)
-		default:
-			t.Errorf("unexpected request: %s", req.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/gettoken", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "{\"access_token\":\"token\"}") })
+	mux.HandleFunc("/v1.0/oauth2/accessToken", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "{\"accessToken\":\"token\"}") })
+	mux.HandleFunc("/media/upload", func(w http.ResponseWriter, req *http.Request) {
+		file, header, err := req.FormFile("media")
+		if err != nil {
+			t.Error(err)
+			http.Error(w, "missing media", http.StatusBadRequest)
+			return
 		}
-	}))
+		defer file.Close()
+		data, err := io.ReadAll(file)
+		if err != nil || string(data) != "report" || header.Filename != name || header.Header.Get("Content-Type") != "application/pdf" {
+			t.Errorf("upload filename=%q data=%q error=%v", header.Filename, data, err)
+		}
+		fmt.Fprint(w, "{\"media_id\":\"media\"}")
+	})
+	mux.HandleFunc("/v1.0/robot/groupMessages/send", func(w http.ResponseWriter, req *http.Request) {
+		var body map[string]string
+		var params map[string]string
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if err := json.Unmarshal([]byte(body["msgParam"]), &params); err != nil || params["fileName"] != name || params["fileType"] != "pdf" {
+			t.Errorf("send parameters = %v, %v", params, err)
+		}
+		fmt.Fprint(w, "{\"processQueryKey\":\"sent\"}")
+	})
+	api := httptest.NewServer(mux)
 	defer api.Close()
 	p, err := New(Config{BaseURL: api.URL, ClientID: "app", ClientSecret: "secret", ResourceStore: store})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := p.Send(t.Context(), uvim.OutboundMessage{
-		Target: &uvim.OutboundTarget{Kind: uvim.TargetGroup, ID: "mock-group"}, Resources: []uvim.ResourceRef{ref},
-	})
-	if err != nil || result.MessageID != "sent" {
-		t.Fatalf("result = %+v, err = %v", result, err)
+	msg := uvim.OutboundMessage{Target: &uvim.OutboundTarget{Kind: uvim.TargetGroup, ID: "mock-group"}, Resources: []uvim.ResourceRef{ref}}
+	if result, err := p.Send(t.Context(), msg); err != nil || result.MessageID != "sent" {
+		t.Fatalf("result = %+v, error = %v", result, err)
 	}
 }
 

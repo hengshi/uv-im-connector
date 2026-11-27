@@ -77,9 +77,8 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	}
 	defer file.Close()
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
-	req, err := httpchannel.MultipartRequest(ctx, strings.TrimRight(config.BaseURL, "/")+"/api/v3/asset/create", httpchannel.MultipartBody{
-		Files: []httpchannel.MultipartFile{{Field: "file", Name: name, MIME: ref.MIME, Reader: file, Size: stored.SizeBytes}},
-	})
+	req, err := httpchannel.MultipartRequest(ctx, strings.TrimRight(config.BaseURL, "/")+"/api/v3/asset/create", nil,
+		httpchannel.MultipartFile{Field: "file", Name: name, MIME: ref.MIME}, file, stored.SizeBytes)
 	if err != nil {
 		return msg, err
 	}

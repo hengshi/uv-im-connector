@@ -409,11 +409,8 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 		return uvim.SendResult{}, uvim.NewProviderSendLogError("wecom send: rich elements are not supported", sendErr)
 	}
 	text := uvim.NormalizeOutboundText(msg.Text)
-	if strings.TrimSpace(text) == "" {
+	if text == "" && len(msg.Elements) > 0 {
 		text = uvim.NormalizeOutboundText(textFromElements(msg.Elements))
-		if strings.TrimSpace(text) == "" {
-			text = ""
-		}
 	}
 	if len(msg.Resources) > 1 || (text != "" && len(msg.Resources) > 0) {
 		return uvim.SendResourceSequence(ctx, msg, p.Send)

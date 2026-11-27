@@ -64,7 +64,7 @@ func (p *Provider) sendInteraction(ctx context.Context, msg uvim.OutboundMessage
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	req.Header.Set("x-acs-dingtalk-access-token", accessToken)
-	response, err := p.doJSON(req)
+	response, err := doDingTalkJSON(req)
 	if err != nil {
 		return result, err
 	}

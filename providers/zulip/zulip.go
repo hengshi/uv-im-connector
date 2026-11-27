@@ -112,9 +112,8 @@ func uploadResource(ctx context.Context, config httpchannel.Config, ref uvim.Res
 		return nil, uvim.NewProviderSendError("zulip resource is unavailable", err)
 	}
 	defer file.Close()
-	req, err := httpchannel.MultipartRequest(ctx, strings.TrimRight(config.BaseURL, "/")+"/api/v1/user_uploads", httpchannel.MultipartBody{
-		Files: []httpchannel.MultipartFile{{Field: "filename", Name: name, MIME: ref.MIME, Reader: file, Size: stored.SizeBytes}},
-	})
+	req, err := httpchannel.MultipartRequest(ctx, strings.TrimRight(config.BaseURL, "/")+"/api/v1/user_uploads", nil,
+		httpchannel.MultipartFile{Field: "filename", Name: name, MIME: ref.MIME}, file, stored.SizeBytes)
 	if err != nil {
 		return nil, err
 	}

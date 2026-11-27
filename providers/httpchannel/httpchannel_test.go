@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"testing"
 
@@ -236,77 +235,5 @@ func TestSendRejectsUnsupportedExplicitTarget(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("Send() error = %v", err)
-	}
-}
-
-type countedReaderAt struct {
-	*strings.Reader
-	reads atomic.Int32
-}
-
-func (r *countedReaderAt) ReadAt(p []byte, offset int64) (int, error) {
-	r.reads.Add(1)
-	return r.Reader.ReadAt(p, offset)
-}
-
-func TestMultipartRequestStreamsFilesWithExactLength(t *testing.T) {
-	source := &countedReaderAt{Reader: strings.NewReader("first-file")}
-	var redirected atomic.Bool
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path == "/upload" {
-			http.Redirect(w, req, "/destination", http.StatusTemporaryRedirect)
-			return
-		}
-		redirected.Store(req.URL.Path == "/destination" && req.Method == http.MethodPost)
-		body, err := io.ReadAll(req.Body)
-		if err != nil || int64(len(body)) != req.ContentLength || !strings.Contains(string(body), "first-file") {
-			t.Errorf("redirected upload bytes=%d length=%d error=%v", len(body), req.ContentLength, err)
-		}
-	}))
-	defer api.Close()
-	req, err := MultipartRequest(t.Context(), api.URL+"/upload", MultipartBody{
-		Fields: map[string]string{"key": "value"},
-		Files: []MultipartFile{
-			{Field: "first", Name: "报告.pdf", Reader: source, Size: source.Size()},
-			{Field: "second", Name: "empty.txt", Data: []byte{}},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if source.reads.Load() != 0 {
-		t.Fatal("multipart request construction read the attachment")
-	}
-	response, err := api.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
-	if response.StatusCode != 200 || !redirected.Load() {
-		t.Fatalf("did not replay upload: %s", response.Status)
-	}
-	req.Body, err = req.GetBody()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := req.ParseMultipartForm(1 << 20); err != nil {
-		t.Fatal(err)
-	}
-	defer req.MultipartForm.RemoveAll()
-	for _, check := range []struct{ field, name, content string }{
-		{"first", "报告.pdf", "first-file"}, {"second", "empty.txt", ""},
-	} {
-		file, header, err := req.FormFile(check.field)
-		if err != nil {
-			t.Fatal(err)
-		}
-		raw, err := io.ReadAll(file)
-		file.Close()
-		if err != nil || header.Filename != check.name || string(raw) != check.content {
-			t.Fatalf("%s: %q %q %v", check.field, header.Filename, raw, err)
-		}
-	}
-	if req.FormValue("key") != "value" {
-		t.Fatal("lost non-file form field")
 	}
 }

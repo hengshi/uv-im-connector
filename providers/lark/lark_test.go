@@ -667,6 +667,8 @@ func TestSendResourceUploadsThenReplies(t *testing.T) {
 				case "/open-apis/auth/v3/tenant_access_token/internal":
 					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
 				case "/open-apis/im/v1/files":
+					http.Redirect(w, req, "/native-upload", http.StatusTemporaryRedirect)
+				case "/native-upload":
 					operations = append(operations, "upload")
 					if err := req.ParseMultipartForm(1 << 20); err != nil {
 						t.Error(err)

@@ -3,7 +3,6 @@ package dingtalk
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -13,7 +12,6 @@ import (
 )
 
 type Config struct {
-	HTTPClient     *http.Client
 	ConnectorID    string
 	BaseURL        string
 	Token          string
@@ -25,9 +23,6 @@ type Config struct {
 }
 
 func New(config Config) (*Provider, error) {
-	if config.HTTPClient == nil {
-		config.HTTPClient = http.DefaultClient
-	}
 	clientID := strings.TrimSpace(config.ClientID)
 	clientSecret := strings.TrimSpace(config.ClientSecret)
 	if (clientID == "") != (clientSecret == "") {
@@ -59,7 +54,6 @@ func New(config Config) (*Provider, error) {
 		Token:             config.Token,
 		WebhookSecret:     config.WebhookSecret,
 		ResourceStore:     config.ResourceStore,
-		HTTPClient:        config.HTTPClient,
 		Decode:            Decode,
 		Send:              Send,
 		ParseSendResponse: ParseSendResponse,

@@ -81,9 +81,8 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	defer file.Close()
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	endpoint := strings.TrimRight(config.BaseURL, "/") + "/cgi-bin/media/upload?access_token=" + url.QueryEscape(config.Token) + "&type=" + url.QueryEscape(mediaType)
-	req, err := httpchannel.MultipartRequest(ctx, endpoint, httpchannel.MultipartBody{
-		Files: []httpchannel.MultipartFile{{Field: "media", Name: name, MIME: ref.MIME, Reader: file, Size: stored.SizeBytes}},
-	})
+	req, err := httpchannel.MultipartRequest(ctx, endpoint, nil,
+		httpchannel.MultipartFile{Field: "media", Name: name, MIME: ref.MIME}, file, stored.SizeBytes)
 	if err != nil {
 		return msg, err
 	}

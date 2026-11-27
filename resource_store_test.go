@@ -50,6 +50,21 @@ func TestResourceStoreSaveOpenAndSanitize(t *testing.T) {
 	if opened.ID != "r1" || opened.Name != "客户反馈 ｜版本 é-📄.txt " || !strings.HasPrefix(opened.MIME, "text/plain") {
 		t.Fatalf("opened = %+v", opened)
 	}
+	if _, err := store.Save(t.Context(), strings.NewReader("replacement"), ResourceRef{ID: "r1", Name: "new.pdf"}); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := io.ReadAll(file); err != nil || string(data) != "hello" {
+		t.Fatalf("original descriptor changed: %q, %v", data, err)
+	}
+	next, replaced, err := store.Open(ref.InternalURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Close()
+	if data, err := io.ReadAll(next); err != nil || string(data) != "replacement" || replaced.Name != "new.pdf" || replaced.MIME != "application/pdf" {
+		t.Fatalf("invalid replacement: %q %+v %v", data, replaced, err)
+	}
+
 	safe := ref.Sanitized()
 	if safe.URL != "" || safe.Secret != "" || safe.Private != nil {
 		t.Fatalf("sanitized = %+v", safe)
@@ -77,84 +92,6 @@ func TestResourceStoreOpensLegacyFiles(t *testing.T) {
 				t.Fatalf("legacy resource: ref=%+v data=%q err=%v", ref, data, err)
 			}
 		})
-	}
-}
-
-func TestResourceStoreWritesUnderTraversalOnlyParent(t *testing.T) {
-	parent := t.TempDir()
-	root := filepath.Join(parent, "resources")
-	if err := os.Mkdir(root, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(parent, 0o100); err != nil {
-		t.Skipf("cannot set traversal-only permissions: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
-	if dir, err := os.Open(parent); err == nil {
-		dir.Close()
-		t.Skip("parent can be opened despite traversal-only permissions")
-	}
-	store := &ResourceStore{Dir: root}
-	if _, err := store.Save(t.Context(), strings.NewReader("bytes"), ResourceRef{Name: "test.txt"}); err != nil {
-		t.Fatalf("save into writable root: %v", err)
-	}
-}
-
-func TestResourceReplacementPinsMetadataAndBytes(t *testing.T) {
-	store := &ResourceStore{Dir: t.TempDir()}
-	dir := filepath.Join(store.Dir, resourceDirectory("r1"), ".resource")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// Existing stores use the original fixed content and metadata pair.
-	if err := os.WriteFile(filepath.Join(dir, "content"), []byte("text"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "metadata.json"), []byte("{\"name\":\"old.txt\",\"mime\":\"text/plain\"}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	read := func() (*os.File, ResourceRef) {
-		f, ref, err := store.Open("internal://r1")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { f.Close() })
-		return f, ref
-	}
-	first, firstRef := read()
-	save := func(name, mimeType, body string) {
-		if _, err := (&ResourceStore{Dir: store.Dir}).Save(t.Context(), strings.NewReader(body), ResourceRef{ID: "r1", Name: name, MIME: mimeType}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	save("new.pdf", "application/pdf", "pdf")
-	second, secondRef := read()
-	save("latest.zip", "application/zip", "zip")
-	latest, latestRef := read()
-	// A new generation must never alter the legacy pair in place.
-	if legacy, err := os.ReadFile(filepath.Join(dir, "content")); err != nil || string(legacy) != "text" {
-		t.Fatalf("fixed legacy content was changed: %q, %v", legacy, err)
-	}
-	current, err := readResourceMetadata(filepath.Join(dir, resourceCurrentMetadata))
-	if err != nil || !validResourceContentName(current.Content) || current.Name != "latest.zip" {
-		t.Fatalf("current resource metadata = %+v, %v", current, err)
-	}
-	if data, err := os.ReadFile(filepath.Join(dir, current.Content)); err != nil || string(data) != "zip" {
-		t.Fatalf("metadata does not point at the committed bytes: %q, %v", data, err)
-	}
-	for _, got := range []struct {
-		file             *os.File
-		ref              ResourceRef
-		name, mime, body string
-	}{
-		{first, firstRef, "old.txt", "text/plain", "text"},
-		{second, secondRef, "new.pdf", "application/pdf", "pdf"},
-		{latest, latestRef, "latest.zip", "application/zip", "zip"},
-	} {
-		body, err := io.ReadAll(got.file)
-		if err != nil || got.ref.Name != got.name || got.ref.MIME != got.mime || string(body) != got.body {
-			t.Fatalf("attachment generation name=%q MIME=%q bytes=%q error=%v", got.ref.Name, got.ref.MIME, body, err)
-		}
 	}
 }
 

@@ -185,10 +185,8 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	defer file.Close()
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	endpoint := strings.TrimRight(p.config.BaseURL, "/") + "/" + phoneNumberID + "/media"
-	uploadReq, err := httpchannel.MultipartRequest(ctx, endpoint, httpchannel.MultipartBody{
-		Fields: map[string]string{"messaging_product": "whatsapp"},
-		Files:  []httpchannel.MultipartFile{{Field: "file", Name: name, MIME: ref.MIME, Reader: file, Size: stored.SizeBytes}},
-	})
+	uploadReq, err := httpchannel.MultipartRequest(ctx, endpoint, map[string]string{"messaging_product": "whatsapp"},
+		httpchannel.MultipartFile{Field: "file", Name: name, MIME: ref.MIME}, file, stored.SizeBytes)
 	if err != nil {
 		return uvim.SendResult{}, err
 	}

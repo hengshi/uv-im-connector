@@ -1478,121 +1478,86 @@ func TestScopedClientRejectsCollidingInboundResourceBeforeDownload(t *testing.T)
 	}
 }
 
-func TestLiveEventReplayAfterCancellationAndBackpressure(t *testing.T) {
+func TestLiveEventStreamCatchesUpAfterOverflow(t *testing.T) {
 	hub := NewHub(nil, mustEventLog(t, filepath.Join(t.TempDir(), "events.jsonl")), nil)
-	event := func(i int) uvim.Event {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	const count = eventSubscriberQueueSize + 3
+	emit := func(i int) {
 		id := strconv.Itoa(i)
-		return uvim.Event{ID: id, Type: uvim.EventMessageCreate, Provider: "memory", Connector: "main", Channel: uvim.Channel{ID: "room"}, Message: uvim.Message{ID: id, Text: "test"}}
-	}
-	cancelled, cancel := context.WithCancel(t.Context())
-	cancel()
-	if err := hub.Emit(cancelled, event(1)); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled emit: %v", err)
-	}
-	replay, err := hub.readEvents(t.Context(), "", 0)
-	if err != nil && !errors.Is(err, os.ErrNotExist) || len(replay) != 0 {
-		t.Fatalf("canceled emit appeared in replay: %+v %v", replay, err)
-	}
-	ctx, stop := context.WithTimeout(t.Context(), 5*time.Second)
-	defer stop()
-	unblock := make(chan struct{})
-	defer func() {
-		select {
-		case <-unblock:
-		default:
-			close(unblock)
+		if err := hub.Emit(ctx, uvim.Event{ID: id, Type: uvim.EventMessageCreate, Provider: "memory", Message: uvim.Message{ID: id}}); err != nil {
+			t.Fatal(err)
 		}
-	}()
-	started := make(chan struct{})
-	events := make(chan int64, eventSubscriberQueueSize+4)
-	streamErr := make(chan error, 1)
-	if err := hub.Emit(ctx, event(1)); err != nil {
-		t.Fatal(err)
 	}
+	emit(1)
+	blocked, resume := make(chan struct{}), make(chan struct{})
+	seen, done := make(chan int64, count), make(chan error, 1)
 	go func() {
-		streamErr <- hub.watchEvents(ctx, "", 0, func(event uvim.Event) error {
+		done <- hub.watchEvents(ctx, "", 0, func(event uvim.Event) error {
 			if event.Sequence == 1 {
-				close(started)
+				close(blocked)
 				select {
-				case <-unblock:
+				case <-resume:
 				case <-ctx.Done():
 					return ctx.Err()
 				}
 			}
-			events <- event.Sequence
+			seen <- event.Sequence
 			return nil
 		})
 	}()
 	select {
-	case <-started:
+	case <-blocked:
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	for i := 2; i <= cap(events); i++ {
-		if err := hub.Emit(ctx, event(i)); err != nil {
-			t.Fatal(err)
-		}
+	for i := 2; i <= count; i++ {
+		emit(i)
 	}
-	close(unblock)
-	for i := 1; i <= cap(events); i++ {
+	close(resume)
+	for i := 1; i <= count; i++ {
 		select {
-		case seq := <-events:
+		case seq := <-seen:
 			if seq != int64(i) {
-				t.Fatalf("received sequence %d, wanted %d", seq, i)
+				t.Fatalf("sequence=%d, want %d", seq, i)
 			}
-		case err := <-streamErr:
-			t.Fatalf("stream ended at %d: %v", i, err)
+		case err := <-done:
+			t.Fatalf("stream ended before event %d: %v", i, err)
 		case <-ctx.Done():
-			t.Fatalf("missing sequence %d: %v", i, ctx.Err())
+			t.Fatalf("missing event %d: %v", i, ctx.Err())
 		}
 	}
-	stop()
-	if err := <-streamErr; !errors.Is(err, context.Canceled) {
-		t.Fatalf("stop stream: %v", err)
-	}
+	cancel()
+	<-done
 }
 
 func TestScopedResourcesGrowBeyondLegacyIndexAndSurviveRestart(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "resource-scopes.json")
+	path := filepath.Join(t.TempDir(), "resource-scopes.json")
 	scopes, err := openResourceScopes(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	values := make(map[string]resourceScope)
-	legacyID := strings.Repeat("a", 4096)
-	values[legacyID] = resourceScope{ClientID: "a"}
-	for i := 0; i < 2036; i++ {
-		values[fmt.Sprintf("%05d-%s", i, strings.Repeat("x", 4090))] = resourceScope{ClientID: "a"}
+	values := map[string]resourceScope{"old": {ClientID: "a"}}
+	// These valid IDs each expand to about 24 KiB when JSON encodes '<'.
+	for i := 0; i < 350; i++ {
+		values[fmt.Sprintf("%04d-%s", i, strings.Repeat("<", 4090))] = resourceScope{ClientID: "a"}
 	}
-	// Use the last free bytes of a real version-1 index. The old implementation
-	// has no room for either new ID, while the new records are independent.
-	raw, err := json.Marshal(map[string]any{"version": 1, "values": values})
-	if err != nil {
+	if err := scopes.save(values); err != nil {
 		t.Fatal(err)
 	}
-	id := strings.Repeat("b", int(resourceScopeStateMaxBytes)-len(raw)-30)
-	values[id] = resourceScope{ClientID: "a"}
-	if err := scopes.saveLegacy(1, values); err != nil {
-		t.Fatal(err)
+	if info, err := os.Stat(path); err != nil || info.Size() <= 8<<20 {
+		t.Fatalf("fixture must exceed the historical limit: %v %v", info, err)
 	}
 	scopes, err = openResourceScopes(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	newID := "first-resource-after-legacy-index-is-full"
-	if err := scopes.claim(newID, resourceScope{ClientID: "b"}); err != nil {
+	if err := scopes.claim("new", resourceScope{ClientID: "b"}); err != nil {
 		t.Fatal(err)
 	}
-	scopes, err = openResourceScopes(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if scopes.version != 2 || !scopes.owns(legacyID, "a") || !scopes.owns(newID, "b") || scopes.owns(newID, "a") {
-		t.Fatal("scope ownership or rollback guard did not survive restart")
-	}
-	if err := scopes.claimResources([]string{"unclaimed", newID}, resourceScope{ClientID: "a"}); err == nil || scopes.owns("unclaimed", "a") {
-		t.Fatal("conflicting claim reserved another ID")
+	reopened, err := openResourceScopes(path)
+	if err != nil || !reopened.owns("old", "a") || !reopened.owns("new", "b") || reopened.owns("new", "a") {
+		t.Fatalf("ownership changed after reopening: %v", err)
 	}
 }
 

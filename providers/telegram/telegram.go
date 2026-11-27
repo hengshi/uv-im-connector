@@ -183,10 +183,8 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 		fields["reply_parameters"] = string(raw)
 	}
 	endpoint := strings.TrimRight(p.config.BaseURL, "/") + "/bot" + p.config.Token + "/" + method
-	req, err := httpchannel.MultipartRequest(ctx, endpoint, httpchannel.MultipartBody{
-		Fields: fields,
-		Files:  []httpchannel.MultipartFile{{Field: field, Name: name, MIME: ref.MIME, Reader: file, Size: stored.SizeBytes}},
-	})
+	req, err := httpchannel.MultipartRequest(ctx, endpoint, fields,
+		httpchannel.MultipartFile{Field: field, Name: name, MIME: ref.MIME}, file, stored.SizeBytes)
 	if err != nil {
 		return uvim.SendResult{}, err
 	}

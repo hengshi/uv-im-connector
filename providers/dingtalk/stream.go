@@ -151,7 +151,7 @@ func (p *Provider) accessToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	body, err := p.doJSON(req)
+	body, err := doDingTalkJSON(req)
 	if err != nil {
 		return "", fmt.Errorf("dingtalk access token: %w", err)
 	}
@@ -183,7 +183,7 @@ func (p *Provider) downloadURL(ctx context.Context, token, robotCode, downloadCo
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	req.Header.Set("x-acs-dingtalk-access-token", token)
-	body, err := p.doJSON(req)
+	body, err := doDingTalkJSON(req)
 	if err != nil {
 		return "", fmt.Errorf("dingtalk message file: %w", err)
 	}
@@ -216,8 +216,8 @@ func (p *Provider) apiBaseURL() string {
 	return base
 }
 
-func (p *Provider) doJSON(req *http.Request) ([]byte, error) {
-	resp, err := p.config.HTTPClient.Do(req)
+func doDingTalkJSON(req *http.Request) ([]byte, error) {
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

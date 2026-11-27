@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -26,11 +27,6 @@ const resourceCurrentMetadata = "current.json"
 // Publishing and opening a generation share a short lock, even when callers
 // use separate ResourceStore values. The open descriptor pins the bytes.
 var resourcePublicationLocks [256]sync.Mutex
-
-var resourceRootInit = struct {
-	sync.Mutex
-	pending map[string]string
-}{pending: make(map[string]string)}
 
 type resourceFileMetadata struct {
 	Content string `json:"content,omitempty"`
@@ -73,15 +69,7 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 	ref.ID = id
 	// Names and inferred extensions are metadata, never filesystem components.
 	// The reserved subdirectory cannot collide with old sanitized basenames.
-	dir, err := filepath.Abs(dir)
-	if err != nil {
-		return ref, err
-	}
-	root := dir
-	if err := ensureResourceRoot(root); err != nil {
-		return ref, err
-	}
-	dir = filepath.Join(root, resourceDirectory(id), ".resource")
+	dir = filepath.Join(dir, resourceDirectory(id), ".resource")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return ref, err
 	}
@@ -97,15 +85,8 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 	}()
 	hash := sha256.New()
 	size, copyErr := io.Copy(io.MultiWriter(file, hash), src)
-	if copyErr == nil {
-		copyErr = file.Sync()
-	}
-	closeErr := file.Close()
-	if copyErr != nil {
-		return ref, copyErr
-	}
-	if closeErr != nil {
-		return ref, closeErr
+	if err := finishResourceFile(file, copyErr); err != nil {
+		return ref, err
 	}
 	metadata := resourceFileMetadata{
 		Content: filepath.Base(file.Name()),
@@ -119,16 +100,8 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 		return ref, err
 	}
 	defer os.Remove(metaFile.Name())
-	encodeErr := json.NewEncoder(metaFile).Encode(metadata)
-	if encodeErr == nil {
-		encodeErr = metaFile.Sync()
-	}
-	closeErr = metaFile.Close()
-	if encodeErr != nil {
-		return ref, encodeErr
-	}
-	if closeErr != nil {
-		return ref, closeErr
+	if err := finishResourceFile(metaFile, json.NewEncoder(metaFile).Encode(metadata)); err != nil {
+		return ref, err
 	}
 	lock := &resourcePublicationLocks[sha256.Sum256([]byte(id))[0]]
 	lock.Lock()
@@ -138,15 +111,13 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 	if err != nil && !os.IsNotExist(err) {
 		return ref, err
 	}
-	// Persist the staged blob's name and any new parent entries before the
-	// metadata can reference it, including when this is the first upload.
-	for folder := dir; ; folder = filepath.Dir(folder) {
-		if err := syncResourceDirectory(folder); err != nil {
-			return ref, err
-		}
-		if folder == root {
-			break
-		}
+	directory, err := os.Open(dir)
+	if err != nil {
+		return ref, err
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return ref, err
 	}
 	// The metadata rename is the single publication point. Readers always
 	// get the name, MIME, and descriptor of the same immutable generation.
@@ -154,7 +125,7 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 		return ref, err
 	}
 	committed = true
-	if err := syncResourceDirectory(dir); err != nil {
+	if err := directory.Sync(); err != nil {
 		return ref, err
 	}
 	if validResourceContentName(previous.Content) {
@@ -224,50 +195,12 @@ func (s *ResourceStore) Open(internalURL string) (*os.File, ResourceRef, error) 
 	return nil, ResourceRef{}, os.ErrNotExist
 }
 
-// Initialize a missing root before writers can mistake it for an established
-// directory. A retry after a failed sync must cover the same ancestors.
-func ensureResourceRoot(root string) error {
-	resourceRootInit.Lock()
-	defer resourceRootInit.Unlock()
-
-	ancestor, pending := resourceRootInit.pending[root]
-	if !pending {
-		if _, err := os.Stat(root); !os.IsNotExist(err) {
-			return err
-		}
-		for ancestor = filepath.Dir(root); ; ancestor = filepath.Dir(ancestor) {
-			_, err := os.Stat(ancestor)
-			if !os.IsNotExist(err) {
-				if err != nil {
-					return err
-				}
-				break
-			}
-		}
-		resourceRootInit.pending[root] = ancestor
+func finishResourceFile(file *os.File, writeErr error) error {
+	if writeErr != nil {
+		_ = file.Close()
+		return writeErr
 	}
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return err
-	}
-	for folder := filepath.Dir(root); ; folder = filepath.Dir(folder) {
-		if err := syncResourceDirectory(folder); err != nil {
-			return err
-		}
-		if folder == ancestor {
-			break
-		}
-	}
-	delete(resourceRootInit.pending, root)
-	return nil
-}
-
-func syncResourceDirectory(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
+	return errors.Join(file.Sync(), file.Close())
 }
 
 func readResourceMetadata(path string) (resourceFileMetadata, error) {

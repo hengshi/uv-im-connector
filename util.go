@@ -154,6 +154,9 @@ func NowUTC() time.Time {
 }
 
 func NormalizeOutboundText(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
 	return strings.ReplaceAll(text, "\r\n", "\n")
 }
 
