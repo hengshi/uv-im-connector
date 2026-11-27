@@ -103,17 +103,23 @@ func localResourceName(index int, ref ResourceRef, contentType string) string {
 // ResourceUploadName retains the display name while removing path components
 // and characters that cannot be safely used in upload headers.
 func ResourceUploadName(index int, ref ResourceRef, contentType string) string {
-	ref.Name = resourceBasename(ref.Name)
+	ref.Name = resourceDisplayName(ref.Name)
 	if ref.Name == "" {
+		ref.Key = ""
 		return localResourceName(index, ref, contentType)
 	}
-	return fileNameControls.ReplaceAllString(ref.Name, "-")
+	return ref.Name
+}
+
+func resourceDisplayName(name string) string {
+	return fileNameControls.ReplaceAllString(resourceBasename(name), "-")
 }
 
 // ResourceMediaExtension infers the type suffix independently of display-name
 // escaping, using the original basename and legacy extension fallback.
 func ResourceMediaExtension(ref ResourceRef, contentType string) string {
 	ref.Name = resourceBasename(ref.Name)
+	ref.Key = ""
 	return filepath.Ext(localResourceName(0, ref, contentType))
 }
 

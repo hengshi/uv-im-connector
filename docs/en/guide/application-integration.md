@@ -169,7 +169,7 @@ The event log is sequence-based. A consumer can reconnect with the last processe
 /v1/events/ws?after=42
 ```
 
-The connector sends backlog events after that sequence before streaming fresh events. If a slow receiver exhausts its live queue, the connector uses the same event log to replay the gap on that connection.
+The connector sends backlog events after that sequence before streaming fresh events. With a persistent event log, the connector can replay gaps on the same connection when a slow receiver exhausts its live queue.
 
 ## Caller Boundary
 

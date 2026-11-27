@@ -646,12 +646,12 @@ func TestFrameRoundTrip(t *testing.T) {
 func TestSendResourceUploadsThenReplies(t *testing.T) {
 	const title = "企业 AI 工作产品｜Jarvis 有何不同"
 	for _, tc := range []struct {
-		name, fileName, mimeType, text string
+		name, fileName, mimeType, text, suffix string
 	}{
-		{"existing suffix", title + ".pdf", "text/plain", ""},
-		{"existing suffix with caption", title + ".pdf", "text/plain", "file summary"},
-		{"inferred suffix", title, "application/pdf", ""},
-		{"inferred suffix with caption", title, "application/pdf", "file summary"},
+		{"existing suffix", title + ".pdf", "text/plain", "", ".pdf"},
+		{"inferred suffix with caption", title, "application/pdf", "file summary", ".pdf"},
+		{"unknown MIME with caption", title, "", "file summary", ".bin"},
+		{"trailing dot", title + ".", "application/pdf", "", ".pdf"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			text := tc.text
@@ -673,8 +673,8 @@ func TestSendResourceUploadsThenReplies(t *testing.T) {
 					if err := req.ParseMultipartForm(1 << 20); err != nil {
 						t.Error(err)
 					}
-					if got := req.FormValue("file_name"); got != title+".pdf" {
-						t.Errorf("file_name = %q, want %q", got, title+".pdf")
+					if got := req.FormValue("file_name"); got != title+tc.suffix {
+						t.Errorf("file_name = %q, want %q", got, title+tc.suffix)
 						http.Error(w, "invalid file_name", http.StatusBadRequest)
 						return
 					}
@@ -685,7 +685,7 @@ func TestSendResourceUploadsThenReplies(t *testing.T) {
 						defer file.Close()
 						var data bytes.Buffer
 						_, _ = data.ReadFrom(file)
-						if header.Filename != title+".pdf" || data.String() != "report" || req.FormValue("file_type") != "stream" {
+						if header.Filename != title+tc.suffix || data.String() != "report" || req.FormValue("file_type") != "stream" {
 							t.Errorf("upload filename=%q data=%q type=%q", header.Filename, data.String(), req.FormValue("file_type"))
 						}
 					}

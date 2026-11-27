@@ -167,10 +167,12 @@ func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
 			return err
 		}
 	}
-	// Keep live fan-out in the same sequence order as the durable log.
+	// Once ingress is prepared, finish publication even if the callback has
+	// disconnected. Keep fan-out in the same sequence order as the log.
+	publishCtx := context.WithoutCancel(ctx)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	written, fresh, err := h.eventLog.AppendForAudience(ctx, event, audience)
+	written, fresh, err := h.eventLog.AppendForAudience(publishCtx, event, audience)
 	if err != nil {
 		if h.receivedContext != nil {
 			h.receivedContext.discard(pendingReceived)
@@ -184,11 +186,10 @@ func (h *Hub) Emit(ctx context.Context, event uvim.Event) error {
 		return nil
 	}
 	if h.receivedContext != nil {
-		ctx = context.WithoutCancel(ctx)
-		if err := h.receivedContext.commit(ctx, pendingReceived, token, written); err != nil {
+		if err := h.receivedContext.commit(publishCtx, pendingReceived, token, written); err != nil {
 			slog.Warn("received context resource was not committed", "provider", written.Provider, "connector", written.Connector)
 		}
-		h.receivedContext.observe(ctx)
+		h.receivedContext.observe(publishCtx)
 	}
 	for ch, subscriberAudience := range h.subscribers {
 		if h.scoped() && subscriberAudience != audience {
@@ -522,6 +523,9 @@ func (h *Hub) handleMessageCreate(w http.ResponseWriter, req *http.Request) {
 			confirmed := uvim.SendResult{MessageIDs: failure.DeliveredMessageIDs}
 			if receiptErr := h.persistScopedOutboundReceipt(caller, provider, confirmed); receiptErr != nil {
 				slog.Error("partial outbound receipt persistence failed", "provider", provider.ID(), "connector", provider.ConnectorID(), "reason", receiptErr.Error())
+				failure.Category, failure.DeliveryState, failure.Retryable = uvim.SendFailureUnknown, uvim.DeliveryUnknown, false
+				writeProviderError(w, uvim.NewProviderSendFailure(failure, "outbound edit authorization could not be saved; do not retry the send", receiptErr))
+				return
 			}
 		}
 		reason := uvim.ProviderSendErrorLogDetail(err)

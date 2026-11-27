@@ -696,8 +696,10 @@ func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (ki
 		return uvim.ElementImage, map[string]string{"image_key": key}, nil
 	}
 	// Lark's file API requires a suffix in file_name.
-	if path.Ext(name) == "" {
-		name += uvim.ResourceMediaExtension(ref, ref.MIME)
+	if ext := path.Ext(name); ext == "" || ext == "." {
+		ref.Name = strings.TrimSuffix(name, ".")
+		extension := uvim.ResourceMediaExtension(ref, uvim.FirstNonEmpty(ref.MIME, stored.MIME))
+		name = ref.Name + uvim.FirstNonEmpty(extension, ".bin")
 	}
 	key, err := p.uploadMultipart(ctx, "/open-apis/im/v1/files", map[string]string{"file_type": "stream", "file_name": name}, "file", name, ref.MIME, file, stored.SizeBytes, "file_key")
 	if err != nil {

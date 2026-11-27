@@ -719,12 +719,16 @@ func TestHubLogsCredentialSafeProviderSendFailureDetail(t *testing.T) {
 	}
 }
 
-func TestHubDownloadsInboundResourcesBeforeEventLog(t *testing.T) {
+func TestHubPublishesDownloadedInboundResourceAfterCancellation(t *testing.T) {
 	dir := t.TempDir()
-	provider := &downloadProvider{id: "test", connector: "main"}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	provider := &downloadProvider{id: "test", connector: "main", afterDownload: cancel}
 	log := mustEventLog(t, filepath.Join(dir, "events.jsonl"))
 	hub := NewHub(uvim.NewProviderRegistry(provider), log, &uvim.ResourceStore{Dir: filepath.Join(dir, "resources")})
-	err := hub.Emit(context.Background(), uvim.Event{
+	live := make(chan uvim.Event, 1)
+	hub.subscribers[live] = ""
+	err := hub.Emit(ctx, uvim.Event{
 		ID:        "evt-1",
 		Type:      uvim.EventMessageCreate,
 		Provider:  "test",
@@ -741,8 +745,8 @@ func TestHubDownloadsInboundResourcesBeforeEventLog(t *testing.T) {
 			}},
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || ctx.Err() != context.Canceled || provider.downloadCalls != 1 {
+		t.Fatalf("emit=%v context=%v downloads=%d", err, ctx.Err(), provider.downloadCalls)
 	}
 	events, err := log.ReadAfter(context.Background(), 0)
 	if err != nil {
@@ -754,6 +758,14 @@ func TestHubDownloadsInboundResourcesBeforeEventLog(t *testing.T) {
 	ref := events[0].Message.Resources[0]
 	if ref.InternalURL == "" || ref.Key != "" || ref.Metadata != nil {
 		t.Fatalf("resource was not resolved and sanitized: %+v", ref)
+	}
+	select {
+	case event := <-live:
+		if event.Sequence != events[0].Sequence || !reflect.DeepEqual(event.Message.Resources, events[0].Message.Resources) {
+			t.Fatalf("live event diverges from persisted event: %+v", event)
+		}
+	default:
+		t.Fatal("persisted event did not reach the live subscriber")
 	}
 }
 
@@ -1161,6 +1173,8 @@ func TestScopedClientUpdateRequiresOwnedReceiptAndReplyProofWithLarkStub(t *test
 			fmt.Fprint(w, `{"code":0,"data":{"message_id":"sent-b"}}`)
 		case "POST /open-apis/im/v1/messages/message-partial/reply":
 			fmt.Fprint(w, `{"code":0,"data":{"message_id":"partial-caption"}}`)
+		case "POST /open-apis/im/v1/messages/message-without-receipt/reply":
+			fmt.Fprint(w, `{"code":0,"data":{"message_id":"caption-without-receipt"}}`)
 		case "POST /open-apis/im/v1/files":
 			http.Error(w, `{"code":234001,"msg":"test file rejection"}`, http.StatusBadRequest)
 		case "GET /open-apis/im/v1/messages/partial-caption":
@@ -1224,6 +1238,23 @@ func TestScopedClientUpdateRequiresOwnedReceiptAndReplyProofWithLarkStub(t *test
 	if !ok || failure.Retryable || failure.DeliveredCount != 1 || !reflect.DeepEqual(failure.DeliveredMessageIDs, []string{"partial-caption"}) {
 		t.Fatalf("partial send: %+v, %v", failure, err)
 	}
+	withoutReceipt := eventA
+	withoutReceipt.ID, withoutReceipt.Message.ID, withoutReceipt.Referrer.MessageID = "event-without-receipt", "message-without-receipt", "message-without-receipt"
+	if err := first.Emit(ctx, withoutReceipt); err != nil {
+		t.Fatal(err)
+	}
+	receiptKey := outboundReceiptKey("lark", "main", "caption-without-receipt")
+	if err := os.Mkdir(first.resourceScopes.receiptPath(receiptKey), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.Send(ctx, uvim.OutboundMessage{Provider: "lark", Connector: "main", Referrer: withoutReceipt.Referrer, Text: "caption", Resources: []uvim.ResourceRef{file}})
+	failure, ok = client.ProviderSendFailure(err)
+	var sendErr *client.HTTPError
+	if !ok || failure.Retryable || failure.Category != uvim.SendFailureUnknown || failure.DeliveryState != uvim.DeliveryUnknown ||
+		!slices.Equal(failure.DeliveredMessageIDs, []string{"caption-without-receipt"}) ||
+		!errors.As(err, &sendErr) || !strings.Contains(sendErr.Detail, "edit authorization") {
+		t.Fatalf("partial send with unavailable receipt: %+v, %v", failure, err)
+	}
 	firstAPI.Close()
 
 	second := NewHub(uvim.NewProviderRegistry(provider, memory.NewConnector("memory", "secondary")), mustEventLog(t, logPath), resources)
@@ -1247,7 +1278,7 @@ func TestScopedClientUpdateRequiresOwnedReceiptAndReplyProofWithLarkStub(t *test
 	if err != nil || secondSend.MessageID != "sent-b" {
 		t.Fatalf("B new send: %+v %v", secondSend, err)
 	}
-	if len(calls) != 5 {
+	if len(calls) != 7 {
 		t.Fatalf("native requests before edits = %d", len(calls))
 	}
 	for len(calls) > 0 {
@@ -1265,6 +1296,7 @@ func TestScopedClientUpdateRequiresOwnedReceiptAndReplyProofWithLarkStub(t *test
 		{"owner proactive after route move", a, firstSend.MessageID, uvim.Referrer{}, target, 200, []string{"GET /open-apis/im/v1/messages/sent-a", "PUT /open-apis/im/v1/messages/sent-a"}},
 		{"owner historic reply", a, firstSend.MessageID, eventA.Referrer, nil, 200, []string{"GET /open-apis/im/v1/messages/sent-a", "PUT /open-apis/im/v1/messages/sent-a"}},
 		{"owner edits confirmed partial delivery after restart", a, "partial-caption", partialEvent.Referrer, nil, 200, []string{"GET /open-apis/im/v1/messages/partial-caption", "PUT /open-apis/im/v1/messages/partial-caption"}},
+		{"failed receipt cannot authorize edits after restart", a, "caption-without-receipt", withoutReceipt.Referrer, nil, 403, nil},
 		{"new route owner cannot edit confirmed partial delivery", b, "partial-caption", eventB.Referrer, nil, 403, nil},
 		{"new route owner cannot edit old receipt", b, firstSend.MessageID, eventB.Referrer, nil, 403, nil},
 		{"old owner cannot edit new receipt", a, secondSend.MessageID, eventA.Referrer, nil, 403, nil},
@@ -3363,6 +3395,7 @@ type downloadProvider struct {
 	conversationMaterializeCalls   int
 	conversationMaterializeErr     error
 	downloadCalls                  int
+	afterDownload                  func()
 	payload                        string
 }
 
@@ -3408,8 +3441,11 @@ func (p *downloadProvider) Send(context.Context, uvim.OutboundMessage) (uvim.Sen
 func (p *downloadProvider) Download(ctx context.Context, req uvim.ResourceDownloadRequest) (uvim.ResourceRef, error) {
 	p.downloadCalls++
 	store := &uvim.ResourceStore{Dir: req.Dir}
-	ref := req.Resource
-	return store.Save(ctx, strings.NewReader(uvim.FirstNonEmpty(p.payload, "downloaded")), ref)
+	ref, err := store.Save(ctx, strings.NewReader(uvim.FirstNonEmpty(p.payload, "downloaded")), req.Resource)
+	if err == nil && p.afterDownload != nil {
+		p.afterDownload()
+	}
+	return ref, err
 }
 func (p *downloadProvider) ReadConversationWindow(_ context.Context, trigger uvim.Event) uvim.ConversationWindowResult {
 	p.conversationWindowCalls++

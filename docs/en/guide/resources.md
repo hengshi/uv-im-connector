@@ -60,10 +60,6 @@ resp, err := c.ResolveInternalURL(ctx, event.Message.Resources[0].InternalURL)
 
 Callers should copy allowed files into caller-owned storage before starting long-running work. The connector resource store is infrastructure state, not the caller application's artifact store.
 
-The new version can read existing attachments in place. To retain the option to roll back, take a pre-upgrade snapshot of the entire connector state directory and consumer cursors at the same point in time. Older binaries cannot read the attachment format written by the new version. If an existing deployment snapshot covers this data, use it for rollback.
-
-If you roll back, preserve post-upgrade events and delivery receipts for reconciliation, restore state and cursors from the same point in time, and reconcile before resuming delivery. Delete the temporary snapshot once you have validated the upgrade and decided to stay on the new version, or once you have completed and validated the rollback.
-
 ## Shared-caller ownership
 
 When `UV_IM_CLIENTS_FILE` is configured, every stored inbound resource is durably owned by the caller selected by the source event route, and every upload is owned by its authenticated caller. `GET /v1/internal/<id>`, `POST /v1/resource.download`, and an outbound `ResourceRef` require that same owner. An `internal://` string is therefore not a transferable bearer capability. A resource may occur in multiple events for its existing owner, but it is never reassigned to another caller; unscoped historical resources are unavailable in this mode.
@@ -100,7 +96,7 @@ Attachment display names keep Unicode, spaces, and punctuation. The connector us
 In the standalone binary, WeCom, Lark / Feishu, DingTalk (with application credentials), Discord, KOOK, Telegram, Matrix, Slack, WhatsApp, Zulip, WeChat Official Account, and Mail share the HTTP upload resource store and declare `upload_resource=true`. See the [provider capability matrix](/en/architecture.html#provider-capability-matrix) for every provider.
 
 - WeCom: WebSocket upload uses 512 KiB chunks, and the provider validates total size and chunk count.
-- Lark / Feishu: Supported image formats use the image API regardless of size; other resources use file upload. The provider validates size. The file API requires a filename extension. If the name has no extension and the MIME type identifies one, the connector appends it for upload.
+- Lark / Feishu: Supported image formats use the image API regardless of size; other resources use file upload. The provider validates size. The file API requires a filename extension. For extensionless names, only the upload filename gets an extension inferred from the MIME type, with `.bin` as the fallback.
 - DingTalk: Application credentials upload media and send to an explicit user or group. Images use image messages; files, audio and video use downloadable file messages. A current session webhook is not required.
 - Discord: Direct multipart message upload; the provider validates attachment size.
 - KOOK: Asset upload followed by an image or attachment-card message.
@@ -116,4 +112,4 @@ The remaining providers can currently receive and download resources but cannot 
 
 Providers that do not support a requested outbound resource kind should return explicit errors instead of silently dropping content.
 
-The connector does not impose byte/count caps on resources, webhook bodies, Lark event assembly, event-log records, or provider-response reads. Empty resources reach the provider for validation. Text, safe filename components, and error metadata are not length-truncated. Authentication, path/header safety, supported message formats, and native protocol validation still apply. Memory, filesystem, standard-library transport, proxy, and provider constraints remain external boundaries.
+The provider validates empty attachments. Authentication, path and header safety, filesystem constraints, and provider rules still apply.

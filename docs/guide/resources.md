@@ -60,10 +60,6 @@ resp, err := c.ResolveInternalURL(ctx, event.Message.Resources[0].InternalURL)
 
 调用方应该在启动长耗时任务前，把允许的文件复制到调用方自己的存储。Connector 的 resource store 是基础设施状态，不是调用方应用的 artifact store。
 
-新版可以直接读取已有附件。若需保留退回旧版的能力，请在升级前保存同一时点的整个 Connector 状态目录及调用方的消费游标。旧版无法读取新版写入的附件格式。现有部署快照已覆盖这些数据时，无需再复制一份。
-
-如需退回旧版，先保留升级后产生的事件和发送回执以供核对，再恢复同一时点的状态和游标，核对完成后恢复投递。升级验收通过且确认无需回退，或回退已完成并验收通过，即可删除本次升级的临时快照。
-
 ## 共享调用方所有权
 
 配置 `UV_IM_CLIENTS_FILE` 后，每个已存入的入站资源都会按源 event route 持久地归属一个调用方，每次上传也归属其已认证调用方。`GET /v1/internal/<id>`、`POST /v1/resource.download` 和携带该 `ResourceRef` 的出站发送都要求同一 owner。因此 `internal://` 字符串不是可转交的 bearer capability。一个资源可以再次出现在原 owner 的多个 event 中，但永不重新分配给其他调用方；旧的未分配历史资源在此模式下不可访问。
@@ -100,7 +96,7 @@ POST /v1/resource.download
 standalone binary 中，WeCom、Lark / Feishu、DingTalk（配置应用凭据）、Discord、KOOK、Telegram、Matrix、Slack、WhatsApp、Zulip、WeChat Official Account 和 Mail 与 HTTP upload endpoint 使用同一个 resource store，并真正声明 `upload_resource=true`。完整逐 provider 清单见 [Provider 能力矩阵](/architecture.html#provider-能力矩阵)。
 
 - WeCom：WebSocket 上传每片 512 KiB，总大小和分片数量由平台校验。
-- Lark / Feishu：支持格式的图片始终使用图片 API，不按大小转为文件；其他资源走文件上传，由平台校验大小。文件 API 要求文件名带后缀。文件名缺后缀且可从 MIME 推断时，仅在上传时补上后缀。
+- Lark / Feishu：支持格式的图片始终使用图片 API，不按大小转为文件；其他资源走文件上传，由平台校验大小。文件 API 要求文件名带后缀。缺后缀时仅在上传文件名中按 MIME 补齐，无法推断时使用 `.bin`。
 - DingTalk：使用应用凭据上传媒体，再向明确的用户或群发送。图片为图片消息，文件、音频和视频为可下载文件；无需保留有效的 session webhook。
 - Discord：资源随消息直接 multipart 上传，由平台校验大小。
 - KOOK：先上传 asset，再发送图片消息或附件卡片。
@@ -116,4 +112,4 @@ standalone binary 中，WeCom、Lark / Feishu、DingTalk（配置应用凭据）
 
 Provider 不支持某种 outbound resource 时，应该返回显式错误，而不是静默丢弃内容。
 
-connector 不对资源、webhook 请求体、飞书事件拼装、事件日志记录或平台响应读取设置字节数/条数上限。空资源交由平台校验；文本、安全文件名片段和错误元数据不按长度截断。鉴权、路径/请求头安全、支持的消息格式和原生协议校验仍然有效。内存、文件系统、标准库传输、代理和平台自身的约束仍是外部边界。
+空附件由平台校验。传输仍受鉴权、路径和请求头安全、文件系统及平台规则约束。

@@ -90,7 +90,7 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 	}
 	metadata := resourceFileMetadata{
 		Content: filepath.Base(file.Name()),
-		Name:    ResourceUploadName(0, ref, ""),
+		Name:    resourceDisplayName(ref.Name),
 		// Preserve the content type that ServeContent previously inferred from
 		// the on-disk extension, including names whose MIME supplied that suffix.
 		MIME: mime.TypeByExtension(ResourceMediaExtension(ref, ref.MIME)),
@@ -130,7 +130,12 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 	}
 	if validResourceContentName(previous.Content) {
 		_ = os.Remove(filepath.Join(dir, previous.Content))
+	} else {
+		// The published generation replaces the previous release's file pair.
+		_ = os.Remove(filepath.Join(dir, "metadata.json"))
+		_ = os.Remove(filepath.Join(dir, "content"))
 	}
+	ref.Name = metadata.Name
 	ref.SizeBytes = size
 	ref.SHA256 = hex.EncodeToString(hash.Sum(nil))
 	ref.InternalURL = "internal://" + id

@@ -32,7 +32,8 @@ func TestResourceStoreSavesBeyondLegacySizeLimits(t *testing.T) {
 
 func TestResourceStoreSaveOpenAndSanitize(t *testing.T) {
 	store := &ResourceStore{Dir: t.TempDir()}
-	ref, err := store.Save(context.Background(), strings.NewReader("hello"), ResourceRef{ID: "r1", Kind: ElementFile, Name: "客户反馈 ｜版本 é-📄.txt "})
+	const name = "客户反馈-版本 é-📄.txt "
+	ref, err := store.Save(context.Background(), strings.NewReader("hello"), ResourceRef{ID: "r1", Kind: ElementFile, Name: "folder/客户反馈\r\n版本 é-📄.txt "})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,8 +48,8 @@ func TestResourceStoreSaveOpenAndSanitize(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	if opened.ID != "r1" || opened.Name != "客户反馈 ｜版本 é-📄.txt " || !strings.HasPrefix(opened.MIME, "text/plain") {
-		t.Fatalf("opened = %+v", opened)
+	if ref.Name != name || opened.ID != "r1" || opened.Name != name || !strings.HasPrefix(opened.MIME, "text/plain") {
+		t.Fatalf("saved name=%q opened=%+v", ref.Name, opened)
 	}
 	if _, err := store.Save(t.Context(), strings.NewReader("replacement"), ResourceRef{ID: "r1", Name: "new.pdf"}); err != nil {
 		t.Fatal(err)
@@ -68,6 +69,18 @@ func TestResourceStoreSaveOpenAndSanitize(t *testing.T) {
 	safe := ref.Sanitized()
 	if safe.URL != "" || safe.Secret != "" || safe.Private != nil {
 		t.Fatalf("sanitized = %+v", safe)
+	}
+	unnamed, err := store.Save(t.Context(), strings.NewReader("data"), ResourceRef{Key: "private-key"})
+	if err != nil || unnamed.Sanitized().Name != "" {
+		t.Fatalf("unnamed public resource: %+v, %v", unnamed.Sanitized(), err)
+	}
+	unnamedFile, reopened, err := store.Open(unnamed.InternalURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unnamedFile.Close()
+	if reopened.Name != "" {
+		t.Fatalf("unnamed resource reopened with a name: %q", reopened.Name)
 	}
 }
 
@@ -92,6 +105,46 @@ func TestResourceStoreOpensLegacyFiles(t *testing.T) {
 				t.Fatalf("legacy resource: ref=%+v data=%q err=%v", ref, data, err)
 			}
 		})
+	}
+}
+
+func TestResourceStoreReplacesReleasedLayout(t *testing.T) {
+	store := &ResourceStore{Dir: t.TempDir()}
+	dir := filepath.Join(store.Dir, resourceDirectory("r1"), ".resource")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	metadataPath := filepath.Join(dir, "metadata.json")
+	contentPath := filepath.Join(dir, "content")
+	if err := os.WriteFile(metadataPath, []byte(`{"name":"old.txt","mime":"text/plain"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(contentPath, []byte("old bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, old, err := store.Open("internal://r1")
+	if err != nil || old.Name != "old.txt" {
+		t.Fatalf("open released format: %+v, %v", old, err)
+	}
+	defer file.Close()
+	if _, err := store.Save(t.Context(), strings.NewReader("new bytes"), ResourceRef{ID: "r1", Name: "new.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := io.ReadAll(file); err != nil || string(data) != "old bytes" {
+		t.Fatalf("already opened attachment changed: %q, %v", data, err)
+	}
+	for _, path := range []string{metadataPath, contentPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("superseded file remains: %s (%v)", filepath.Base(path), err)
+		}
+	}
+	file, current, err := (&ResourceStore{Dir: store.Dir}).Open("internal://r1")
+	if err != nil || current.Name != "new.txt" {
+		t.Fatalf("open published format: %+v, %v", current, err)
+	}
+	defer file.Close()
+	if data, err := io.ReadAll(file); err != nil || string(data) != "new bytes" {
+		t.Fatalf("replacement attachment: %q, %v", data, err)
 	}
 }
 
@@ -150,7 +203,7 @@ func TestResourceUploadNameKeepsNamesWithoutSuffix(t *testing.T) {
 			t.Fatalf("ResourceUploadName(%q) = %q", name, got)
 		}
 	}
-	if got := ResourceUploadName(0, ResourceRef{Key: "upload token+v1"}, "application/pdf"); got != "upload-token-v1.pdf" {
+	if got := ResourceUploadName(0, ResourceRef{Key: "upload token+v1"}, "application/pdf"); got != "resource-0.pdf" {
 		t.Fatalf("fallback ResourceUploadName() = %q", got)
 	}
 }
