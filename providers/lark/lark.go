@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -702,6 +703,10 @@ func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (ki
 			return "", nil, err
 		}
 		return uvim.ElementImage, map[string]string{"image_key": key}, nil
+	}
+	// Lark's file API requires a suffix in file_name.
+	if path.Ext(name) == "" {
+		name += uvim.ResourceMediaExtension(ref, ref.MIME)
 	}
 	key, err := p.uploadMultipart(ctx, "/open-apis/im/v1/files", map[string]string{"file_type": "stream", "file_name": name}, "file", name, ref.MIME, data, "file_key")
 	if err != nil {

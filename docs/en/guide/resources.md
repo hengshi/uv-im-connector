@@ -96,7 +96,7 @@ Attachment display names keep Unicode, spaces, and punctuation. The connector us
 In the standalone binary, WeCom, Lark / Feishu, DingTalk (with application credentials), Discord, KOOK, Telegram, Matrix, Slack, WhatsApp, Zulip, WeChat Official Account, and Mail share the HTTP upload resource store and declare `upload_resource=true`. See the [provider capability matrix](/en/architecture.html#provider-capability-matrix) for every provider.
 
 - WeCom: WebSocket upload uses 512 KiB chunks, and the provider validates total size and chunk count.
-- Lark / Feishu: Supported image formats use the image API regardless of size; other resources use file upload. The provider validates size.
+- Lark / Feishu: Supported image formats use the image API regardless of size; other resources use file upload. The provider validates size. The file API requires a filename extension. If the name has no extension and the MIME type identifies one, the connector appends it for upload.
 - DingTalk: Application credentials upload media and send to an explicit user or group. Images use image messages; files, audio and video use downloadable file messages. A current session webhook is not required.
 - Discord: Direct multipart message upload; the provider validates attachment size.
 - KOOK: Asset upload followed by an image or attachment-card message.

@@ -641,10 +641,19 @@ func TestFrameRoundTrip(t *testing.T) {
 }
 
 func TestSendResourceUploadsThenReplies(t *testing.T) {
-	for _, text := range []string{"", "file summary"} {
-		t.Run("text="+text, func(t *testing.T) {
+	const title = "企业 AI 工作产品｜Jarvis 有何不同"
+	for _, tc := range []struct {
+		name, fileName, mimeType, text string
+	}{
+		{"existing suffix", title + ".pdf", "text/plain", ""},
+		{"existing suffix with caption", title + ".pdf", "text/plain", "file summary"},
+		{"inferred suffix", title, "application/pdf", ""},
+		{"inferred suffix with caption", title, "application/pdf", "file summary"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := tc.text
 			store := &uvim.ResourceStore{Dir: t.TempDir()}
-			ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "企业 AI 工作产品｜Jarvis 有何不同.pdf", MIME: "text/plain"})
+			ref, err := store.Save(context.Background(), bytes.NewBufferString("report"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: tc.fileName, MIME: tc.mimeType})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -659,6 +668,11 @@ func TestSendResourceUploadsThenReplies(t *testing.T) {
 					if err := req.ParseMultipartForm(1 << 20); err != nil {
 						t.Error(err)
 					}
+					if got := req.FormValue("file_name"); got != title+".pdf" {
+						t.Errorf("file_name = %q, want %q", got, title+".pdf")
+						http.Error(w, "invalid file_name", http.StatusBadRequest)
+						return
+					}
 					file, header, err := req.FormFile("file")
 					if err != nil {
 						t.Error(err)
@@ -666,7 +680,7 @@ func TestSendResourceUploadsThenReplies(t *testing.T) {
 						defer file.Close()
 						var data bytes.Buffer
 						_, _ = data.ReadFrom(file)
-						if header.Filename != "企业 AI 工作产品｜Jarvis 有何不同.pdf" || req.FormValue("file_name") != "企业 AI 工作产品｜Jarvis 有何不同.pdf" || data.String() != "report" || req.FormValue("file_type") != "stream" {
+						if header.Filename != title+".pdf" || data.String() != "report" || req.FormValue("file_type") != "stream" {
 							t.Errorf("upload filename=%q data=%q type=%q", header.Filename, data.String(), req.FormValue("file_type"))
 						}
 					}
