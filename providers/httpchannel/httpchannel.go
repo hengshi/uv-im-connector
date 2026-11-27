@@ -44,7 +44,7 @@ type MultipartFile struct {
 	Name   string
 	MIME   string
 	Data   []byte
-	Reader io.ReadCloser
+	Reader io.ReaderAt
 	Size   int64
 }
 
@@ -169,8 +169,8 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	var req *http.Request
 	if outReq.Multipart != nil {
 		for _, file := range outReq.Multipart.Files {
-			if file.Reader != nil {
-				defer file.Reader.Close()
+			if closer, ok := file.Reader.(io.Closer); ok {
+				defer closer.Close()
 			}
 		}
 		req, err = multipartRequest(ctx, method, strings.TrimRight(p.config.BaseURL, "/")+outReq.Path, *outReq.Multipart)
@@ -320,7 +320,7 @@ func multipartRequest(ctx context.Context, method, endpoint string, form Multipa
 			return nil, err
 		}
 	}
-	var segments []io.Reader
+	var segments []requestSection
 	var length int64
 	for _, file := range form.Files {
 		name := uvim.ResourceUploadName(0, uvim.ResourceRef{Name: file.Name, MIME: file.MIME}, file.MIME)
@@ -333,28 +333,56 @@ func multipartRequest(ctx context.Context, method, endpoint string, form Multipa
 			return nil, err
 		}
 		length += int64(envelope.Len())
-		segments = append(segments, bytes.NewReader(bytes.Clone(envelope.Bytes())))
+		segments = append(segments, requestSection{bytes.NewReader(bytes.Clone(envelope.Bytes())), int64(envelope.Len())})
 		envelope.Reset()
 		if file.Reader != nil {
 			length += file.Size
-			segments = append(segments, io.LimitReader(file.Reader, file.Size))
+			segments = append(segments, requestSection{file.Reader, file.Size})
 		} else {
 			length += int64(len(file.Data))
-			segments = append(segments, bytes.NewReader(file.Data))
+			segments = append(segments, requestSection{bytes.NewReader(file.Data), int64(len(file.Data))})
 		}
 	}
 	if err := writer.Close(); err != nil {
 		return nil, err
 	}
 	length += int64(envelope.Len())
-	segments = append(segments, bytes.NewReader(envelope.Bytes()))
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, io.MultiReader(segments...))
+	segments = append(segments, requestSection{bytes.NewReader(envelope.Bytes()), int64(envelope.Len())})
+	req, err := newSectionRequest(ctx, method, endpoint, length, segments)
 	if err != nil {
 		return nil, err
 	}
-	req.ContentLength = length
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	return req, nil
+}
+
+type requestSection struct {
+	reader io.ReaderAt
+	length int64
+}
+
+// UploadRequest builds a streaming POST with a replayable body for 307/308 redirects.
+func UploadRequest(ctx context.Context, endpoint string, reader io.ReaderAt, size int64) (*http.Request, error) {
+	return newSectionRequest(ctx, http.MethodPost, endpoint, size, []requestSection{{reader, size}})
+}
+
+func newSectionRequest(ctx context.Context, method, endpoint string, size int64, sections []requestSection) (*http.Request, error) {
+	if size == 0 {
+		return http.NewRequestWithContext(ctx, method, endpoint, http.NoBody)
+	}
+	body := func() (io.ReadCloser, error) {
+		readers := make([]io.Reader, 0, len(sections))
+		for _, section := range sections {
+			readers = append(readers, io.NewSectionReader(section.reader, 0, section.length))
+		}
+		return io.NopCloser(io.MultiReader(readers...)), nil
+	}
+	initial, _ := body()
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, initial)
+	if err == nil {
+		req.ContentLength, req.GetBody = size, body
+	}
+	return req, err
 }
 
 func newRequest(ctx context.Context, method, endpoint string, input Request) (*http.Request, error) {

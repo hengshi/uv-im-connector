@@ -72,7 +72,7 @@ Provider credentials 是独占 deployment identity。Production、E2E、developm
 
 token 只授权该 manifest client。`/v1/meta`、HTTP 历史、WebSocket、回复、更新、资源和动态身份关联都会按它隔离。事件 sequence 仍是服务全局序号，因此重连 cursor 跳过其他 client 的序号是正常现象。旧的未分配 event/resource/link 在共享模式不可访问。route 改动不会把历史 event、reply 权限或身份关联移交给其他 client；移除 client token 会撤销 API 访问，而其持久化状态仍不会暴露给其他调用方。
 
-新附件的归属独立存放在 `UV_IM_STATE_DIR/resource-scopes.json.resources/`，已有归属仍从 `resource-scopes.json` 读取。首次记录新归属时会将索引标记为版本 2，避免旧版程序继续使用存储却遗漏新归属。回滚到旧版程序时需恢复对应的升级前状态快照。出站回执归属保存在 `resource-scopes.json.receipts/`，且不会自动过期。备份和恢复须覆盖整个状态目录；消息仍可编辑时，不能靠删除回执释放空间。启动时会先迁移旧 `resource-scopes.json` 中的回执，再开放服务；只有每条记录都持久化后才移除旧回执 map。迁移中断可继续，归属冲突或旧记录不可读则启动失败。原生发送完成后如遇磁盘或 I/O 故障，仍返回不可重试的 `delivery_state=unknown`，调用方不能重发该消息。
+新附件的归属独立存放在 `UV_IM_STATE_DIR/resource-scopes.json.resources/`，已有归属仍从 `resource-scopes.json` 读取。首次记录新归属时会将索引标记为版本 2，避免旧版程序继续使用存储却遗漏新归属。回滚到旧版程序时需恢复对应的升级前状态快照。资源内容与显示元数据一起发布，旧版程序无法读取新保存的资源版本。出站回执归属保存在 `resource-scopes.json.receipts/`，且不会自动过期。备份和恢复须覆盖整个状态目录；消息仍可编辑时，不能靠删除回执释放空间。启动时会先迁移旧 `resource-scopes.json` 中的回执，再开放服务；只有每条记录都持久化后才移除旧回执 map。迁移中断可继续，归属冲突或旧记录不可读则启动失败。原生发送完成后如遇磁盘或 I/O 故障，仍返回不可重试的 `delivery_state=unknown`，调用方不能重发该消息。
 
 企微 BotID/Secret 与自建应用凭据属于两套身份。仅收发消息时无需配置自建应用；企业账号查询是可选能力，查询失败仍发布基础事件。完整的取值位置、可信 IP、环境注入、CLI 标识关系和验证步骤见[企微接入与通讯录](./guide/wecom.md)。
 

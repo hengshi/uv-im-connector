@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -148,12 +147,11 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	defer file.Close()
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	uploadURL := strings.TrimRight(p.config.BaseURL, "/") + "/_matrix/media/v3/upload?filename=" + url.QueryEscape(name)
-	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, io.NewSectionReader(file, 0, stored.SizeBytes))
+	uploadReq, err := httpchannel.UploadRequest(ctx, uploadURL, file, stored.SizeBytes)
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
 	p.authorize(uploadReq)
-	uploadReq.ContentLength = stored.SizeBytes
 	if strings.TrimSpace(ref.MIME) != "" {
 		uploadReq.Header.Set("Content-Type", ref.MIME)
 	}

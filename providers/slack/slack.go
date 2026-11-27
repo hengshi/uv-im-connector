@@ -143,11 +143,10 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 		businessErr := fmt.Errorf("slack upload init: error=%q", initResponse.Error)
 		return uvim.SendResult{}, uvim.NewProviderResponseErrorWithCode(initRaw, initResponse.Error, businessErr)
 	}
-	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPost, initResponse.UploadURL, io.NewSectionReader(file, 0, stored.SizeBytes))
+	uploadReq, err := httpchannel.UploadRequest(ctx, initResponse.UploadURL, file, stored.SizeBytes)
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
-	uploadReq.ContentLength = stored.SizeBytes
 	if strings.TrimSpace(ref.MIME) != "" {
 		uploadReq.Header.Set("Content-Type", ref.MIME)
 	} else {

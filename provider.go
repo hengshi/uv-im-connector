@@ -66,11 +66,11 @@ func SendResourceSequence(ctx context.Context, msg OutboundMessage, send func(co
 	if err := collectText(msg.Elements); err != nil {
 		return SendResult{}, err
 	}
-	if msg.Text == "" {
+	if strings.TrimSpace(msg.Text) == "" {
 		msg.Text = strings.Join(textParts, "\n")
 	}
 	var parts []OutboundMessage
-	if msg.Text != "" {
+	if strings.TrimSpace(msg.Text) != "" {
 		part := msg
 		part.Resources, part.Elements = nil, nil
 		parts = append(parts, part)

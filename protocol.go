@@ -419,7 +419,7 @@ type MessageUpdate struct {
 // Providers must also call this for direct Go callers, before upload or send.
 func ValidateOutboundText(msg OutboundMessage, capabilities Capabilities) error {
 	text := msg.Text
-	if text == "" {
+	if strings.TrimSpace(text) == "" {
 		var parts []string
 		var collect func([]Element)
 		collect = func(elements []Element) {

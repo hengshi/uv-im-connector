@@ -80,6 +80,53 @@ func TestResourceStoreOpensLegacyFiles(t *testing.T) {
 	}
 }
 
+func TestResourceReplacementPinsMetadataAndBytes(t *testing.T) {
+	store := &ResourceStore{Dir: t.TempDir()}
+	dir := filepath.Join(store.Dir, resourceDirectory("r1"), ".resource")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Existing stores use the original fixed content and metadata pair.
+	if err := os.WriteFile(filepath.Join(dir, "content"), []byte("text"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "metadata.json"), []byte("{\"name\":\"old.txt\",\"mime\":\"text/plain\"}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	read := func() (*os.File, ResourceRef) {
+		f, ref, err := store.Open("internal://r1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { f.Close() })
+		return f, ref
+	}
+	first, firstRef := read()
+	save := func(name, mimeType, body string) {
+		if _, err := (&ResourceStore{Dir: store.Dir}).Save(t.Context(), strings.NewReader(body), ResourceRef{ID: "r1", Name: name, MIME: mimeType}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save("new.pdf", "application/pdf", "pdf")
+	second, secondRef := read()
+	save("latest.zip", "application/zip", "zip")
+	latest, latestRef := read()
+	for _, got := range []struct {
+		file             *os.File
+		ref              ResourceRef
+		name, mime, body string
+	}{
+		{first, firstRef, "old.txt", "text/plain", "text"},
+		{second, secondRef, "new.pdf", "application/pdf", "pdf"},
+		{latest, latestRef, "latest.zip", "application/zip", "zip"},
+	} {
+		body, err := io.ReadAll(got.file)
+		if err != nil || got.ref.Name != got.name || got.ref.MIME != got.mime || string(body) != got.body {
+			t.Fatalf("attachment generation name=%q MIME=%q bytes=%q error=%v", got.ref.Name, got.ref.MIME, body, err)
+		}
+	}
+}
+
 func TestResourceStoreCleansFailedSave(t *testing.T) {
 	for _, stage := range []string{"copy", "metadata"} {
 		t.Run(stage, func(t *testing.T) {
@@ -88,7 +135,7 @@ func TestResourceStoreCleansFailedSave(t *testing.T) {
 			var src io.Reader = io.MultiReader(strings.NewReader("partial"), iotest.ErrReader(errors.New("read failed")))
 			if stage == "metadata" {
 				// An existing directory prevents the metadata-file rename.
-				if err := os.MkdirAll(filepath.Join(dir, "metadata.json"), 0o700); err != nil {
+				if err := os.MkdirAll(filepath.Join(dir, resourceCurrentMetadata), 0o700); err != nil {
 					t.Fatal(err)
 				}
 				src = strings.NewReader("complete")

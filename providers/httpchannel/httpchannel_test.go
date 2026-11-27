@@ -240,10 +240,23 @@ func TestSendRejectsUnsupportedExplicitTarget(t *testing.T) {
 
 func TestMultipartRequestStreamsFilesWithExactLength(t *testing.T) {
 	source := strings.NewReader("first-file")
-	req, err := MultipartRequest(t.Context(), "https://example.invalid/upload", MultipartBody{
+	var redirected bool
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/upload" {
+			http.Redirect(w, req, "/destination", http.StatusTemporaryRedirect)
+			return
+		}
+		redirected = req.URL.Path == "/destination" && req.Method == http.MethodPost
+		body, err := io.ReadAll(req.Body)
+		if err != nil || int64(len(body)) != req.ContentLength || !strings.Contains(string(body), "first-file") {
+			t.Errorf("redirected upload bytes=%d length=%d error=%v", len(body), req.ContentLength, err)
+		}
+	}))
+	defer api.Close()
+	req, err := MultipartRequest(t.Context(), api.URL+"/upload", MultipartBody{
 		Fields: map[string]string{"key": "value"},
 		Files: []MultipartFile{
-			{Field: "first", Name: "报告.pdf", Reader: io.NopCloser(source), Size: source.Size()},
+			{Field: "first", Name: "报告.pdf", Reader: source, Size: source.Size()},
 			{Field: "second", Name: "empty.txt", Data: []byte{}},
 		},
 	})
@@ -253,11 +266,18 @@ func TestMultipartRequestStreamsFilesWithExactLength(t *testing.T) {
 	if source.Len() != int(source.Size()) {
 		t.Fatal("multipart request construction read the attachment")
 	}
-	body, err := io.ReadAll(req.Body)
-	if err != nil || int64(len(body)) != req.ContentLength {
-		t.Fatalf("body length = %d, advertised = %d, error = %v", len(body), req.ContentLength, err)
+	response, err := api.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
 	}
-	req.Body = io.NopCloser(strings.NewReader(string(body)))
+	response.Body.Close()
+	if response.StatusCode != 200 || !redirected {
+		t.Fatalf("did not replay upload: %s", response.Status)
+	}
+	req.Body, err = req.GetBody()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := req.ParseMultipartForm(1 << 20); err != nil {
 		t.Fatal(err)
 	}

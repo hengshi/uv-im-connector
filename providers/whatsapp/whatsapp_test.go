@@ -13,30 +13,37 @@ import (
 )
 
 func TestSendDocumentKeepsCaptionInOneMessage(t *testing.T) {
-	for _, reject := range []bool{false, true} {
-		name := "send"
-		if reject {
-			name = "upload rejected"
-		}
-		t.Run(name, func(t *testing.T) {
-			const caption = "  document description\n"
+	for _, tc := range []struct {
+		name, kind, nativeType, caption string
+		rejectUpload                    bool
+	}{
+		{"document with caption", uvim.ElementFile, "document", "  document description\n", false},
+		{"upload rejected", uvim.ElementFile, "document", "  document description\n", true},
+		{"audio with a blank caption", uvim.ElementAudio, "audio", " \n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			calls := make(chan string, 4)
 			native := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				calls <- req.URL.Path
 				switch req.URL.Path {
 				case "/test-phone/media":
-					if reject {
+					if tc.rejectUpload {
 						http.Error(w, "test rejected media", http.StatusBadRequest)
 						return
 					}
 					fmt.Fprint(w, "{\"id\":\"media\"}")
 				case "/test-phone/messages":
-					var body struct {
-						Type     string
-						Document map[string]string
+					var body map[string]json.RawMessage
+					if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+						t.Error(err)
 					}
-					if err := json.NewDecoder(req.Body).Decode(&body); err != nil || body.Type != "document" || body.Document["caption"] != caption || body.Document["filename"] != "报告.pdf" {
-						t.Errorf("request = %+v, %v", body, err)
+					var media map[string]string
+					wantCaption := tc.caption
+					if strings.TrimSpace(wantCaption) == "" {
+						wantCaption = ""
+					}
+					if err := json.Unmarshal(body[tc.nativeType], &media); err != nil || media["id"] != "media" || media["caption"] != wantCaption || (tc.nativeType == "document" && media["filename"] != "报告.pdf") {
+						t.Errorf("media = %+v, %v", media, err)
 					}
 					fmt.Fprint(w, "{\"messages\":[{\"id\":\"sent\"}]}")
 				default:
@@ -47,7 +54,7 @@ func TestSendDocumentKeepsCaptionInOneMessage(t *testing.T) {
 			defer native.Close()
 
 			store := &uvim.ResourceStore{Dir: t.TempDir()}
-			ref, err := store.Save(t.Context(), strings.NewReader("attachment"), uvim.ResourceRef{Kind: uvim.ElementFile, Name: "报告.pdf", MIME: "application/pdf"})
+			ref, err := store.Save(t.Context(), strings.NewReader("attachment"), uvim.ResourceRef{Kind: tc.kind, Name: "报告.pdf", MIME: "application/pdf"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -55,9 +62,9 @@ func TestSendDocumentKeepsCaptionInOneMessage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := provider.Send(t.Context(), uvim.OutboundMessage{Target: &uvim.OutboundTarget{Kind: uvim.TargetUser, ID: "123"}, Text: caption, Resources: []uvim.ResourceRef{ref}})
+			result, err := provider.Send(t.Context(), uvim.OutboundMessage{Target: &uvim.OutboundTarget{Kind: uvim.TargetUser, ID: "123"}, Text: tc.caption, Resources: []uvim.ResourceRef{ref}})
 			want := []string{"/test-phone/media"}
-			if reject {
+			if tc.rejectUpload {
 				if err == nil {
 					t.Fatal("send succeeded after upload rejection")
 				}

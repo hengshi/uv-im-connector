@@ -96,7 +96,7 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	if err := uvim.ValidateOutboundResources(msg, p.Capabilities()); err != nil {
 		return uvim.SendResult{}, fmt.Errorf("telegram send: %w", err)
 	}
-	if len(msg.Resources) > 1 || len(msg.Elements) > 0 || utf8.RuneCountInString(msg.Text) > 1024 {
+	if len(msg.Resources) > 1 || len(msg.Elements) > 0 || (strings.TrimSpace(msg.Text) != "" && utf8.RuneCountInString(msg.Text) > 1024) {
 		return uvim.SendResourceSequence(ctx, msg, p.Send)
 	}
 	return p.sendResource(ctx, msg, msg.Resources[0])
@@ -175,7 +175,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	}
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	fields := map[string]string{"chat_id": target.ID}
-	if msg.Text != "" {
+	if strings.TrimSpace(msg.Text) != "" {
 		fields["caption"] = msg.Text
 	}
 	if replyTo, err := strconv.ParseInt(msg.Referrer.MessageID, 10, 64); err == nil && replyTo != 0 {

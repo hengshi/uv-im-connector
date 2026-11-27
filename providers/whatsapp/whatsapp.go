@@ -101,7 +101,7 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 		return uvim.SendResult{}, fmt.Errorf("whatsapp send: %w", err)
 	}
 	if len(msg.Resources) > 1 || len(msg.Elements) > 0 ||
-		(msg.Text != "" && (whatsappMediaRoute(msg.Resources[0].Kind) == "audio" || utf8.RuneCountInString(msg.Text) > 1024)) {
+		(strings.TrimSpace(msg.Text) != "" && (whatsappMediaRoute(msg.Resources[0].Kind) == "audio" || utf8.RuneCountInString(msg.Text) > 1024)) {
 		return uvim.SendResourceSequence(ctx, msg, p.Send)
 	}
 	return p.sendResource(ctx, msg, msg.Resources[0])
@@ -221,7 +221,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 		recipientType = "group"
 	}
 	media := map[string]string{"id": uploadResponse.ID}
-	if msg.Text != "" {
+	if strings.TrimSpace(msg.Text) != "" {
 		media["caption"] = msg.Text
 	}
 	if mediaType == "document" {

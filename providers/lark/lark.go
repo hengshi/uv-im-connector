@@ -568,8 +568,11 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 		return uvim.SendResult{}, fmt.Errorf("lark send: rich elements are not supported")
 	}
 	text := uvim.NormalizeOutboundText(msg.Text)
-	if text == "" && len(msg.Elements) > 0 {
+	if strings.TrimSpace(text) == "" {
 		text = uvim.NormalizeOutboundText(textFromElements(msg.Elements))
+		if strings.TrimSpace(text) == "" {
+			text = ""
+		}
 	}
 	if len(msg.Resources) > 1 || (text != "" && len(msg.Resources) > 0) {
 		return uvim.SendResourceSequence(ctx, msg, p.Send)
@@ -715,7 +718,7 @@ func larkNativeImageMIME(mimeType string) bool {
 	}
 }
 
-func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[string]string, fileField, name, mimeType string, file io.ReadCloser, size int64, responseKey string) (key string, err error) {
+func (p *Provider) uploadMultipart(ctx context.Context, path string, fields map[string]string, fileField, name, mimeType string, file io.ReaderAt, size int64, responseKey string) (key string, err error) {
 	defer func() {
 		err = uvim.NewProviderSendOperationError("lark upload", err)
 	}()

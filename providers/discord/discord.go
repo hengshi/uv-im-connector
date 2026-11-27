@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
 	uvim "github.com/hengshi/uv-im-connector"
@@ -142,10 +143,11 @@ func Send(msg uvim.OutboundMessage, config httpchannel.Config) (request httpchan
 	if len(msg.Resources) > 0 {
 		var attachments []map[string]any
 		var files []httpchannel.MultipartFile
+		var opened []*os.File
 		defer func() {
 			if err != nil {
-				for _, file := range files {
-					_ = file.Reader.Close()
+				for _, file := range opened {
+					_ = file.Close()
 				}
 			}
 		}()
@@ -157,6 +159,7 @@ func Send(msg uvim.OutboundMessage, config httpchannel.Config) (request httpchan
 			if err != nil {
 				return httpchannel.Request{}, uvim.NewProviderSendError("discord resource is unavailable", err)
 			}
+			opened = append(opened, file)
 			name := uvim.ResourceUploadName(index, ref, ref.MIME)
 			attachments = append(attachments, map[string]any{"id": index, "filename": name})
 			files = append(files, httpchannel.MultipartFile{Field: fmt.Sprintf("files[%d]", index), Name: name, MIME: ref.MIME, Reader: file, Size: stored.SizeBytes})
