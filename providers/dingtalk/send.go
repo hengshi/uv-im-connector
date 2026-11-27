@@ -140,6 +140,8 @@ func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (ke
 	if err != nil {
 		return "", nil, err
 	}
+	// Keep the existing no-replay behavior for the token-bearing upload URL.
+	req.GetBody = nil
 	response, err := doDingTalkJSON(req)
 	if err != nil {
 		return "", nil, err

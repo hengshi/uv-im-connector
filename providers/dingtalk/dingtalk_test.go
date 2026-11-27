@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -56,10 +57,15 @@ func TestSendFilePreservesUploadAndDisplayName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var redirectMedia atomic.Bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("/gettoken", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "{\"access_token\":\"token\"}") })
 	mux.HandleFunc("/v1.0/oauth2/accessToken", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "{\"accessToken\":\"token\"}") })
 	mux.HandleFunc("/media/upload", func(w http.ResponseWriter, req *http.Request) {
+		if redirectMedia.Load() {
+			http.Redirect(w, req, "/redirected-upload", http.StatusTemporaryRedirect)
+			return
+		}
 		file, header, err := req.FormFile("media")
 		if err != nil {
 			t.Error(err)
@@ -93,6 +99,12 @@ func TestSendFilePreservesUploadAndDisplayName(t *testing.T) {
 	msg := uvim.OutboundMessage{Target: &uvim.OutboundTarget{Kind: uvim.TargetGroup, ID: "mock-group"}, Resources: []uvim.ResourceRef{ref}}
 	if result, err := p.Send(t.Context(), msg); err != nil || result.MessageID != "sent" {
 		t.Fatalf("result = %+v, error = %v", result, err)
+	}
+
+	redirectMedia.Store(true)
+	_, err = p.Send(t.Context(), msg)
+	if failure, ok := uvim.ProviderSendFailure(err); !ok || failure.HTTPStatus != http.StatusTemporaryRedirect {
+		t.Fatalf("redirected media upload was replayed or lost its status: %v", err)
 	}
 }
 

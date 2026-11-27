@@ -832,8 +832,7 @@ func (h *Hub) handleUploadCreate(w http.ResponseWriter, req *http.Request) {
 	}
 	refInput := uvim.ResourceRef{Kind: input.Kind, Name: input.Name, MIME: input.MIME}
 	if h.scoped() {
-		// Reserve the Hub-generated storage ID before bytes are written, so a
-		// bounded scope index cannot fail after an irreversible resource write.
+		// Reserve the Hub-generated storage ID before writing resource bytes.
 		refInput.ID = uvim.NewID("res")
 		if err := h.resourceScopes.claim(refInput.ID, resourceScope{ClientID: clientPrincipal(req)}); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "resource_scope_unavailable")
