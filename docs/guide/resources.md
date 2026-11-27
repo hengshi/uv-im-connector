@@ -60,6 +60,8 @@ resp, err := c.ResolveInternalURL(ctx, event.Message.Resources[0].InternalURL)
 
 调用方应该在启动长耗时任务前，把允许的文件复制到调用方自己的存储。Connector 的 resource store 是基础设施状态，不是调用方应用的 artifact store。
 
+升级前备份整个 Connector 状态目录。旧版二进制只能读取升级前的资源内容和元数据，无法读取新保存的资源版本。共享模式写入新附件归属后，旧版也会拒绝打开该归属索引。回滚时恢复对应的升级前快照，将每个调用方的已处理 sequence 调回该快照对应的位置，并在恢复投递前核对快照之后的事件和发送回执。
+
 ## 共享调用方所有权
 
 配置 `UV_IM_CLIENTS_FILE` 后，每个已存入的入站资源都会按源 event route 持久地归属一个调用方，每次上传也归属其已认证调用方。`GET /v1/internal/<id>`、`POST /v1/resource.download` 和携带该 `ResourceRef` 的出站发送都要求同一 owner。因此 `internal://` 字符串不是可转交的 bearer capability。一个资源可以再次出现在原 owner 的多个 event 中，但永不重新分配给其他调用方；旧的未分配历史资源在此模式下不可访问。

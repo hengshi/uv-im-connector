@@ -96,7 +96,7 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 		if strings.TrimSpace(msg.Text) == "" {
 			msg.Text = link
 		} else {
-			msg.Text = strings.TrimSpace(msg.Text) + "\n\n" + link
+			msg.Text += "\n\n" + link
 		}
 	}
 	msg.Resources = nil

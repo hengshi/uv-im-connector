@@ -18,6 +18,9 @@ import (
 
 func (p *Provider) send(ctx context.Context, msg uvim.OutboundMessage) (result uvim.SendResult, err error) {
 	defer func() { err = uvim.NewProviderSendOperationError("dingtalk send", err) }()
+	if err := uvim.ValidateOutboundText(msg, p.Capabilities()); err != nil {
+		return uvim.SendResult{}, err
+	}
 	if err := uvim.ValidateOutboundTarget(msg, p.Capabilities()); err != nil {
 		return result, err
 	}

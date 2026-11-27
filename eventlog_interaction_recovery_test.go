@@ -10,6 +10,42 @@ import (
 	"time"
 )
 
+// Simulate cancellation immediately after Append's acceptance check. If
+// Append asks Done after writing, the cancellation is already visible.
+type cancelAtAppendBoundary struct {
+	context.Context
+	cancel context.CancelFunc
+}
+
+func (c cancelAtAppendBoundary) Err() error {
+	err := c.Context.Err()
+	c.cancel()
+	return err
+}
+
+func (c cancelAtAppendBoundary) Done() <-chan struct{} {
+	c.cancel()
+	return c.Context.Done()
+}
+
+func TestEventLogReportsAcceptedEventAfterCancellation(t *testing.T) {
+	log, err := NewEventLog(filepath.Join(t.TempDir(), "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	event := Event{ID: "accepted", Type: EventMessageCreate, Provider: "test", Message: Message{ID: "one"}}
+	written, fresh, err := log.Append(cancelAtAppendBoundary{ctx, cancel}, event)
+	if ctx.Err() == nil || err != nil || !fresh || written.Sequence != 1 {
+		t.Fatalf("cancellation hid a committed event: %+v fresh=%t err=%v", written, fresh, err)
+	}
+	replay, err := log.ReadAfter(t.Context(), 0)
+	if err != nil || len(replay) != 1 || replay[0].ID != event.ID {
+		t.Fatalf("replay: %+v %v", replay, err)
+	}
+}
+
 func recoveryInteractionEvent() Event {
 	actor := User{ID: "original-user", Kind: UserKindUser}
 	return Event{ID: "click-before-ack", Type: EventInteractionAction, Provider: "lark", Connector: "main", Channel: Channel{ID: "chat"}, User: actor, Referrer: Referrer{MessageID: "card-message"}, Interaction: &InteractionActionEvent{SchemaVersion: InteractionSchemaV1, EventID: "click-before-ack", Provider: "lark", Connector: "main", ConversationID: "chat", MessageID: "card-message", CardID: "card", Revision: 1, ActionID: "answer", Kind: InteractionAnswer, Token: "private-handle", Actor: actor, OccurredAt: time.Now().UTC(), BotAppID: "app", BotProofDigest: strings.Repeat("a", 64)}}

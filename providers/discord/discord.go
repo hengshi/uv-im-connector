@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -37,7 +38,7 @@ func New(config Config) (*httpchannel.Provider, error) {
 		HTTPClient:        config.HTTPClient,
 		Decode:            Decode,
 		PrepareSend:       PrepareSend,
-		Send:              Send,
+		Send:              sendStreaming,
 		ParseSendResponse: ParseSendResponse,
 		Capabilities: uvim.Capabilities{
 			Inbound:          true,
@@ -124,7 +125,15 @@ func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {
 	}, true, nil
 }
 
-func Send(msg uvim.OutboundMessage, config httpchannel.Config) (request httpchannel.Request, err error) {
+func Send(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Request, error) {
+	return send(msg, config, false)
+}
+
+func sendStreaming(msg uvim.OutboundMessage, config httpchannel.Config) (httpchannel.Request, error) {
+	return send(msg, config, true)
+}
+
+func send(msg uvim.OutboundMessage, config httpchannel.Config, stream bool) (request httpchannel.Request, err error) {
 	target := msg.ResolvedTarget()
 	if target.ID == "" {
 		return httpchannel.Request{}, fmt.Errorf("discord send: target id is required")
@@ -159,10 +168,24 @@ func Send(msg uvim.OutboundMessage, config httpchannel.Config) (request httpchan
 			if err != nil {
 				return httpchannel.Request{}, uvim.NewProviderSendError("discord resource is unavailable", err)
 			}
-			opened = append(opened, file)
 			name := uvim.ResourceUploadName(index, ref, ref.MIME)
+			part := httpchannel.MultipartFile{Field: fmt.Sprintf("files[%d]", index), Name: name, MIME: ref.MIME}
+			if stream {
+				opened = append(opened, file)
+				part.Reader, part.Size = file, stored.SizeBytes
+			} else {
+				data, readErr := io.ReadAll(file)
+				closeErr := file.Close()
+				if readErr != nil {
+					return httpchannel.Request{}, uvim.NewProviderSendError("discord resource read failed", readErr)
+				}
+				if closeErr != nil {
+					return httpchannel.Request{}, uvim.NewProviderSendError("discord resource close failed", closeErr)
+				}
+				part.Data = data
+			}
 			attachments = append(attachments, map[string]any{"id": index, "filename": name})
-			files = append(files, httpchannel.MultipartFile{Field: fmt.Sprintf("files[%d]", index), Name: name, MIME: ref.MIME, Reader: file, Size: stored.SizeBytes})
+			files = append(files, part)
 		}
 		body["attachments"] = attachments
 		payload, err := json.Marshal(body)

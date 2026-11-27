@@ -111,6 +111,17 @@ func TestResourceReplacementPinsMetadataAndBytes(t *testing.T) {
 	second, secondRef := read()
 	save("latest.zip", "application/zip", "zip")
 	latest, latestRef := read()
+	// A new generation must never alter the legacy pair in place.
+	if legacy, err := os.ReadFile(filepath.Join(dir, "content")); err != nil || string(legacy) != "text" {
+		t.Fatalf("fixed legacy content was changed: %q, %v", legacy, err)
+	}
+	current, err := readResourceMetadata(filepath.Join(dir, resourceCurrentMetadata))
+	if err != nil || !validResourceContentName(current.Content) || current.Name != "latest.zip" {
+		t.Fatalf("current resource metadata = %+v, %v", current, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, current.Content)); err != nil || string(data) != "zip" {
+		t.Fatalf("metadata does not point at the committed bytes: %q, %v", data, err)
+	}
 	for _, got := range []struct {
 		file             *os.File
 		ref              ResourceRef

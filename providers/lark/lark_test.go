@@ -164,7 +164,7 @@ func TestChunkAssemblerWithoutCountOrDefaultExpiry(t *testing.T) {
 func TestDecodePayloadPostResources(t *testing.T) {
 	for _, chatType := range []string{"p2p", "group"} {
 		t.Run(chatType, func(t *testing.T) {
-			content := `{"title":"Review","content":[[{"tag":"text","text":"flattened text"},{"tag":"img","image_key":"image-1"}]],"content_v2":[[{"tag":"md","text":"| A | B |\n|---|---|\n| 1 | 2 |"}],[{"tag":"img","image_key":"image-1"},{"tag":"media","file_key":"video-1","image_key":"preview-1"}]]}`
+			content := `{"title":"Review","content":[[{"tag":"text","text":"flattened text"},{"tag":"img","image_key":"legacy-only"},{"tag":"img","image_key":"image-1"}]],"content_v2":[[{"tag":"md","text":"| A | B |\n|---|---|\n| 1 | 2 |"}],[{"tag":"img","image_key":"image-1"},{"tag":"media","file_key":"video-1","image_key":"preview-1"}]]}`
 			payload, err := json.Marshal(map[string]any{
 				"header": map[string]any{"event_type": "im.message.receive_v1", "event_id": "event-1"},
 				"event": map[string]any{"message": map[string]any{
@@ -177,13 +177,13 @@ func TestDecodePayloadPostResources(t *testing.T) {
 				t.Fatal(err)
 			}
 			event, ok, err := DecodePayload(payload, DecoderConfig{Connector: "main", BotOpenID: "bot"})
-			if err != nil || !ok || !event.Addressed || len(event.Message.Resources) != 2 {
+			if err != nil || !ok || !event.Addressed || len(event.Message.Resources) != 3 {
 				t.Fatalf("ok=%t err=%v event=%+v", ok, err, event)
 			}
 			if !strings.Contains(event.Message.Text, "| A | B |\n|---|---|\n| 1 | 2 |") || strings.Contains(event.Message.Text, "flattened text") {
 				t.Fatalf("expected intact v2 Markdown in post: %q", event.Message.Text)
 			}
-			for i, want := range []uvim.ResourceRef{{Kind: "image", Key: "image-1"}, {Kind: "video", Key: "video-1"}} {
+			for i, want := range []uvim.ResourceRef{{Kind: "image", Key: "legacy-only"}, {Kind: "image", Key: "image-1"}, {Kind: "video", Key: "video-1"}} {
 				ref := event.Message.Resources[i]
 				if ref.ID == "" || ref.Kind != want.Kind || ref.Key != want.Key || ref.Metadata["message_id"] != "message-1" || ref.Provider != "lark" || ref.Connector != "main" {
 					t.Fatalf("resource %d = %+v", i, ref)
@@ -194,16 +194,16 @@ func TestDecodePayloadPostResources(t *testing.T) {
 				}
 			}
 			ambient, _, err := DecodePayload(payload, DecoderConfig{Connector: "main", BotOpenID: "another-bot"})
-			if err != nil || ambient.Addressed != (chatType == "p2p") || len(ambient.Message.Resources) != 2 {
+			if err != nil || ambient.Addressed != (chatType == "p2p") || len(ambient.Message.Resources) != 3 {
 				t.Fatalf("ambient addressed=%t resources=%d err=%v", ambient.Addressed, len(ambient.Message.Resources), err)
 			}
 			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				switch req.URL.Path {
 				case "/open-apis/auth/v3/tenant_access_token/internal":
 					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
-				case "/open-apis/im/v1/messages/message-1/resources/image-1", "/open-apis/im/v1/messages/message-1/resources/video-1":
+				case "/open-apis/im/v1/messages/message-1/resources/legacy-only", "/open-apis/im/v1/messages/message-1/resources/image-1", "/open-apis/im/v1/messages/message-1/resources/video-1":
 					wantType := "file"
-					if req.URL.Path == "/open-apis/im/v1/messages/message-1/resources/image-1" {
+					if !strings.HasSuffix(req.URL.Path, "/video-1") {
 						wantType = "image"
 					}
 					if req.URL.Query().Get("type") != wantType || req.Header.Get("Authorization") != "Bearer token" {

@@ -68,6 +68,21 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 	ref.ID = id
 	// Names and inferred extensions are metadata, never filesystem components.
 	// The reserved subdirectory cannot collide with old sanitized basenames.
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return ref, err
+	}
+	syncRoot := filepath.Dir(dir)
+	for {
+		_, err := os.Stat(syncRoot)
+		if !os.IsNotExist(err) {
+			if err != nil {
+				return ref, err
+			}
+			break
+		}
+		syncRoot = filepath.Dir(syncRoot)
+	}
 	dir = filepath.Join(dir, resourceDirectory(id), ".resource")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return ref, err
@@ -125,18 +140,23 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 	if err != nil && !os.IsNotExist(err) {
 		return ref, err
 	}
+	// Persist the staged blob's name and any new parent entries before the
+	// metadata can reference it, including when this is the first upload.
+	for folder := dir; ; folder = filepath.Dir(folder) {
+		if err := syncResourceDirectory(folder); err != nil {
+			return ref, err
+		}
+		if folder == syncRoot {
+			break
+		}
+	}
 	// The metadata rename is the single publication point. Readers always
 	// get the name, MIME, and descriptor of the same immutable generation.
 	if err := os.Rename(metaFile.Name(), metadataPath); err != nil {
 		return ref, err
 	}
 	committed = true
-	directory, err := os.Open(dir)
-	if err != nil {
-		return ref, err
-	}
-	defer directory.Close()
-	if err := directory.Sync(); err != nil {
+	if err := syncResourceDirectory(dir); err != nil {
 		return ref, err
 	}
 	if validResourceContentName(previous.Content) {
@@ -204,6 +224,15 @@ func (s *ResourceStore) Open(internalURL string) (*os.File, ResourceRef, error) 
 		}
 	}
 	return nil, ResourceRef{}, os.ErrNotExist
+}
+
+func syncResourceDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func readResourceMetadata(path string) (resourceFileMetadata, error) {

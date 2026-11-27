@@ -60,6 +60,8 @@ resp, err := c.ResolveInternalURL(ctx, event.Message.Resources[0].InternalURL)
 
 Callers should copy allowed files into caller-owned storage before starting long-running work. The connector resource store is infrastructure state, not the caller application's artifact store.
 
+Back up the entire connector state directory before upgrading. Older connector binaries can read pre-upgrade resource bytes and metadata, but cannot read new resource generations. In shared mode an older binary also refuses the resource ownership index once new claims have been written. Roll back with a matching pre-upgrade state snapshot. Restore each consumer’s saved sequence to its position in that snapshot, and reconcile any events and delivery receipts recorded after it before resuming delivery.
+
 ## Shared-caller ownership
 
 When `UV_IM_CLIENTS_FILE` is configured, every stored inbound resource is durably owned by the caller selected by the source event route, and every upload is owned by its authenticated caller. `GET /v1/internal/<id>`, `POST /v1/resource.download`, and an outbound `ResourceRef` require that same owner. An `internal://` string is therefore not a transferable bearer capability. A resource may occur in multiple events for its existing owner, but it is never reassigned to another caller; unscoped historical resources are unavailable in this mode.

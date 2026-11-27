@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 
@@ -238,15 +239,25 @@ func TestSendRejectsUnsupportedExplicitTarget(t *testing.T) {
 	}
 }
 
+type countedReaderAt struct {
+	*strings.Reader
+	reads atomic.Int32
+}
+
+func (r *countedReaderAt) ReadAt(p []byte, offset int64) (int, error) {
+	r.reads.Add(1)
+	return r.Reader.ReadAt(p, offset)
+}
+
 func TestMultipartRequestStreamsFilesWithExactLength(t *testing.T) {
-	source := strings.NewReader("first-file")
-	var redirected bool
+	source := &countedReaderAt{Reader: strings.NewReader("first-file")}
+	var redirected atomic.Bool
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path == "/upload" {
 			http.Redirect(w, req, "/destination", http.StatusTemporaryRedirect)
 			return
 		}
-		redirected = req.URL.Path == "/destination" && req.Method == http.MethodPost
+		redirected.Store(req.URL.Path == "/destination" && req.Method == http.MethodPost)
 		body, err := io.ReadAll(req.Body)
 		if err != nil || int64(len(body)) != req.ContentLength || !strings.Contains(string(body), "first-file") {
 			t.Errorf("redirected upload bytes=%d length=%d error=%v", len(body), req.ContentLength, err)
@@ -263,7 +274,7 @@ func TestMultipartRequestStreamsFilesWithExactLength(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if source.Len() != int(source.Size()) {
+	if source.reads.Load() != 0 {
 		t.Fatal("multipart request construction read the attachment")
 	}
 	response, err := api.Client().Do(req)
@@ -271,7 +282,7 @@ func TestMultipartRequestStreamsFilesWithExactLength(t *testing.T) {
 		t.Fatal(err)
 	}
 	response.Body.Close()
-	if response.StatusCode != 200 || !redirected {
+	if response.StatusCode != 200 || !redirected.Load() {
 		t.Fatalf("did not replay upload: %s", response.Status)
 	}
 	req.Body, err = req.GetBody()
