@@ -79,7 +79,7 @@ func (p *Provider) sendOne(ctx context.Context, msg uvim.OutboundMessage) (uvim.
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	req.Header.Set("x-acs-dingtalk-access-token", token)
-	response, err := doDingTalkJSON(req)
+	response, err := p.doJSON(req)
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
@@ -158,7 +158,7 @@ func (p *Provider) uploadResource(ctx context.Context, ref uvim.ResourceRef) (ke
 	}
 	req.ContentLength = int64(len(prefix)) + info.Size() + int64(len(suffix))
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	response, err := doDingTalkJSON(req)
+	response, err := p.doJSON(req)
 	if err != nil {
 		return "", nil, err
 	}
@@ -188,7 +188,7 @@ func (p *Provider) mediaAccessToken(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	response, err := doDingTalkJSON(req)
+	response, err := p.doJSON(req)
 	if err != nil {
 		return "", err
 	}

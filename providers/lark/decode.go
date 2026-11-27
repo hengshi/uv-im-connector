@@ -223,26 +223,8 @@ func messageResources(msgType, rawContent string) []uvim.ResourceRef {
 	}
 	switch msgType {
 	case "post":
-		var post postContent
-		if err := json.Unmarshal([]byte(rawContent), &post); err != nil {
-			return nil
-		}
-		var refs []uvim.ResourceRef
-		for _, paragraph := range post.Content {
-			for _, span := range paragraph {
-				switch span.Tag {
-				case "img":
-					if span.ImageKey != "" {
-						refs = append(refs, uvim.ResourceRef{Kind: uvim.ElementImage, Key: span.ImageKey})
-					}
-				case "media":
-					if span.FileKey != "" {
-						refs = append(refs, uvim.ResourceRef{Kind: uvim.ElementVideo, Key: span.FileKey})
-					}
-				}
-			}
-		}
-		return refs
+		post, _ := selectQuotedPostBody(doc)
+		return quotedPostBodyResources(post)
 	case "image":
 		key := uvim.StringValue(doc["image_key"])
 		if key == "" {
@@ -287,13 +269,19 @@ func unsupportedMessageBody(messageType string) string {
 }
 
 type postContent struct {
-	Title   string       `json:"title"`
-	Content [][]postSpan `json:"content"`
+	Title     string       `json:"title"`
+	Content   [][]postSpan `json:"content"`
+	ContentV2 [][]postSpan `json:"content_v2"`
+}
+
+func (p postContent) paragraphs() [][]postSpan {
+	if len(p.ContentV2) != 0 {
+		return p.ContentV2
+	}
+	return p.Content
 }
 
 type postSpan struct {
-	ImageKey string `json:"image_key"`
-	FileKey  string `json:"file_key"`
 	Tag      string `json:"tag"`
 	Text     string `json:"text"`
 	Href     string `json:"href"`
@@ -310,11 +298,11 @@ func flattenPost(raw string) string {
 	if strings.TrimSpace(doc.Title) != "" {
 		lines = append(lines, doc.Title)
 	}
-	for _, para := range doc.Content {
+	for _, para := range doc.paragraphs() {
 		parts := make([]string, 0, len(para))
 		for _, span := range para {
 			switch span.Tag {
-			case "text", "code_block":
+			case "text", "md", "code_block":
 				if span.Text != "" {
 					parts = append(parts, span.Text)
 				}
@@ -344,7 +332,11 @@ func flattenPost(raw string) string {
 		}
 		lines = append(lines, strings.Join(parts, " "))
 	}
-	return strings.TrimSpace(strings.Join(lines, "\n"))
+	text := strings.Join(lines, "\n")
+	if len(doc.ContentV2) == 0 {
+		return strings.TrimSpace(text)
+	}
+	return text
 }
 
 func resolveMentions(text string, mentions []mention, botOpenID, botUnionID string) string {

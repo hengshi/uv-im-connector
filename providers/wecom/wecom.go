@@ -487,22 +487,22 @@ func (p *Provider) uploadResource(ctx context.Context, conn WSConn, writeMu *syn
 	if err != nil {
 		return uploadedMedia{}, uvim.NewProviderSendError("wecom resource is unavailable", err)
 	}
-	data, readErr := io.ReadAll(file)
-	closeErr := file.Close()
-	if readErr != nil {
-		return uploadedMedia{}, uvim.NewProviderSendError("wecom resource read failed", readErr)
+	defer file.Close()
+	// WeCom requires MD5 as a transport checksum; stream once to calculate it.
+	digest := md5.New() // #nosec G401 -- required by the WeCom upload protocol
+	size, err := io.Copy(digest, file)
+	if err != nil {
+		return uploadedMedia{}, uvim.NewProviderSendError("wecom resource read failed", err)
 	}
-	if closeErr != nil {
-		return uploadedMedia{}, uvim.NewProviderSendError("wecom resource close failed", closeErr)
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return uploadedMedia{}, uvim.NewProviderSendError("wecom resource seek failed", err)
 	}
-	totalChunks, err := wecomUploadChunkCount(len(data))
+	totalChunks, err := wecomUploadChunkCount(size)
 	if err != nil {
 		return uploadedMedia{}, err
 	}
 	kind := wecomMediaKind(ref.Kind)
 	filename := uvim.ResourceUploadName(0, ref, ref.MIME)
-	// WeCom requires MD5 as a transport checksum; it is not used for security.
-	digest := md5.Sum(data) // #nosec G401 -- required by the WeCom upload protocol
 	initReqID := p.reqID(cmdUploadInit)
 	initAck, err := p.requestWithAck(ctx, conn, writeMu, initReqID, frame{
 		Cmd:     cmdUploadInit,
@@ -510,9 +510,9 @@ func (p *Provider) uploadResource(ctx context.Context, conn WSConn, writeMu *syn
 		Body: map[string]any{
 			"type":         kind,
 			"filename":     filename,
-			"total_size":   len(data),
+			"total_size":   size,
 			"total_chunks": totalChunks,
-			"md5":          fmt.Sprintf("%x", digest),
+			"md5":          fmt.Sprintf("%x", digest.Sum(nil)),
 		},
 	})
 	if err != nil {
@@ -523,9 +523,12 @@ func (p *Provider) uploadResource(ctx context.Context, conn WSConn, writeMu *syn
 		missingErr := fmt.Errorf("wecom upload: init response missing upload_id")
 		return uploadedMedia{}, uvim.NewProviderSendLogError("wecom upload: upload ID missing", missingErr)
 	}
-	for index := 0; index < totalChunks; index++ {
-		start := index * uploadChunkSize
-		end := min(start+uploadChunkSize, len(data))
+	chunk := make([]byte, min(size, uploadChunkSize))
+	for index := int64(0); index < totalChunks; index++ {
+		part := chunk[:min(int64(len(chunk)), size-index*uploadChunkSize)]
+		if _, err := io.ReadFull(file, part); err != nil {
+			return uploadedMedia{}, uvim.NewProviderSendError("wecom resource read failed", err)
+		}
 		chunkReqID := p.reqID(cmdUploadChunk)
 		if _, err := p.requestWithAck(ctx, conn, writeMu, chunkReqID, frame{
 			Cmd:     cmdUploadChunk,
@@ -533,7 +536,7 @@ func (p *Provider) uploadResource(ctx context.Context, conn WSConn, writeMu *syn
 			Body: map[string]any{
 				"upload_id":   uploadID,
 				"chunk_index": index,
-				"base64_data": base64.StdEncoding.EncodeToString(data[start:end]),
+				"base64_data": base64.StdEncoding.EncodeToString(part),
 			},
 		}); err != nil {
 			return uploadedMedia{}, err
@@ -556,7 +559,7 @@ func (p *Provider) uploadResource(ctx context.Context, conn WSConn, writeMu *syn
 	return uploadedMedia{kind: kind, mediaID: mediaID}, nil
 }
 
-func wecomUploadChunkCount(size int) (int, error) {
+func wecomUploadChunkCount(size int64) (int64, error) {
 	if size < 0 {
 		return 0, fmt.Errorf("wecom upload: negative resource size")
 	}

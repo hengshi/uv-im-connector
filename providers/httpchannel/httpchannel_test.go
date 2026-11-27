@@ -237,3 +237,45 @@ func TestSendRejectsUnsupportedExplicitTarget(t *testing.T) {
 		t.Fatalf("Send() error = %v", err)
 	}
 }
+
+func TestMultipartRequestStreamsFilesWithExactLength(t *testing.T) {
+	source := strings.NewReader("first-file")
+	req, err := MultipartRequest(t.Context(), "https://example.invalid/upload", MultipartBody{
+		Fields: map[string]string{"key": "value"},
+		Files: []MultipartFile{
+			{Field: "first", Name: "报告.pdf", Reader: io.NopCloser(source), Size: source.Size()},
+			{Field: "second", Name: "empty.txt", Data: []byte{}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.Len() != int(source.Size()) {
+		t.Fatal("multipart request construction read the attachment")
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil || int64(len(body)) != req.ContentLength {
+		t.Fatalf("body length = %d, advertised = %d, error = %v", len(body), req.ContentLength, err)
+	}
+	req.Body = io.NopCloser(strings.NewReader(string(body)))
+	if err := req.ParseMultipartForm(1 << 20); err != nil {
+		t.Fatal(err)
+	}
+	defer req.MultipartForm.RemoveAll()
+	for _, check := range []struct{ field, name, content string }{
+		{"first", "报告.pdf", "first-file"}, {"second", "empty.txt", ""},
+	} {
+		file, header, err := req.FormFile(check.field)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := io.ReadAll(file)
+		file.Close()
+		if err != nil || header.Filename != check.name || string(raw) != check.content {
+			t.Fatalf("%s: %q %q %v", check.field, header.Filename, raw, err)
+		}
+	}
+	if req.FormValue("key") != "value" {
+		t.Fatal("lost non-file form field")
+	}
+}

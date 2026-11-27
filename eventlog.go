@@ -113,6 +113,9 @@ func (l *EventLog) AppendForAudience(ctx context.Context, event Event, audience 
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return event, false, err
+	}
 	if l.appendErr != nil {
 		return event, false, l.appendErr
 	}
@@ -181,12 +184,8 @@ func (l *EventLog) AppendForAudience(ctx context.Context, event Event, audience 
 	if key != "" {
 		l.seen[key] = struct{}{}
 	}
-	select {
-	case <-ctx.Done():
-		return event, false, ctx.Err()
-	default:
-		return event, true, nil
-	}
+	// Once written, the event must still reach the live fan-out.
+	return event, true, nil
 }
 
 // ReadForAudience returns only events durably assigned to audience. Empty

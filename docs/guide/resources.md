@@ -4,7 +4,7 @@
 
 Connector 不对附件大小设置额外上限：入站下载、本地存储、HTTP 上传和出站发送均不按字节数拦截，大小限制由 IM 平台或邮件服务器执行。
 
-群聊和私聊使用相同的附件下载链路，资源会在事件持久化前下载。企业微信会提取消息本身以及 `quote` 中的文件、图片、视频和引用文本，支持引用群文件后 @ 机器人；DingTalk 在配置 Stream 凭据时会用入站 `downloadCode` 换取临时文件 URL；飞书会提取图文消息中的图片和视频，也会提取本次显式选中的被引用父消息的可下载附件。更早的飞书回复链节点只作为引用文本：其中媒体仅作说明，不会成为资源或被隐式下载。飞书 `folder` 会作为文件资源识别，但平台资源 API 不保证可以下载文件夹。显式引用的 `merge_forward` 会提取同一响应中可归属的子消息正文及支持的图片、文件等资源，包括嵌套转发；下载使用顶层转发容器的 message ID。`interactive` 消息卡片仍只提供正文/摘要，不提取卡片子资源。企业微信 AI Bot 回调标记为 `addressed=true`，飞书群消息仍按是否 @ 机器人设置该字段。入站事件只处理平台实际投递的消息；原生近期窗口是另行授权的只读查询。文件内容识别由调用方应用负责。
+群聊和私聊使用相同的附件下载链路，资源会在事件持久化前下载。企业微信会提取消息本身以及 `quote` 中的文件、图片、视频和引用文本，支持引用群文件后 @ 机器人；DingTalk 在配置 Stream 凭据时会用入站 `downloadCode` 换取临时文件 URL；飞书普通图文优先读取非空的 `content_v2` 以保留 Markdown，缺失时读取 `content`，同时提取两种结构中的图片和视频。飞书也会提取本次显式选中的被引用父消息的可下载附件。更早的飞书回复链节点只作为引用文本：其中媒体仅作说明，不会成为资源或被隐式下载。飞书 `folder` 会作为文件资源识别，但平台资源 API 不保证可以下载文件夹。显式引用的 `merge_forward` 会提取同一响应中可归属的子消息正文及支持的图片、文件等资源，包括嵌套转发；下载使用顶层转发容器的 message ID。`interactive` 消息卡片仍只提供正文/摘要，不提取卡片子资源。企业微信 AI Bot 回调标记为 `addressed=true`，飞书群消息仍按是否 @ 机器人设置该字段。入站事件只处理平台实际投递的消息；原生近期窗口是另行授权的只读查询。文件内容识别由调用方应用负责。
 
 ## 公开形态
 
@@ -108,7 +108,7 @@ standalone binary 中，WeCom、Lark / Feishu、DingTalk（配置应用凭据）
 - WeChat Official Account：临时素材上传后通过客服消息发送；不支持任意文件。
 - Mail：作为 MIME 附件发送；大小和数量由邮件服务器校验。
 
-其余 provider 当前只能接收 / 下载资源，不能从 `internal://` 直接发送；矩阵逐项记录了缺失的 provider-native 上传环节。一次发送可同时提交 text 和多个 resources，connector 不设附件数量上限。Discord、Mail、Zulip 将它们合并为一条平台消息；其他支持上传的适配器先发送文本，再按顺序发送各附件（Slack 单附件仍可携带说明文字）。顺序发送的结果通过 `message_ids` 返回全部 ID，`message_id` 为最后一条 ID。中途失败时，`failure.delivered_count` 和 `failure.delivered_message_ids` 标明已完成部分，`retryable=false`、`delivery_state=unknown` 表示不能重放整批；失败的那一条仍可能已送达。
+其余 provider 当前只能接收 / 下载资源，不能从 `internal://` 直接发送；矩阵逐项记录了缺失的 provider-native 上传环节。一次发送可同时提交 text 和多个 resources，connector 不设附件数量上限。Discord、Mail、Zulip 将它们合并为一条平台消息。Slack、Telegram、WhatsApp 在平台支持的单附件场景下把说明放在同一条消息里。Telegram 和 WhatsApp 在原生格式不支持说明或说明超出原生长度时另发完整正文。其他顺序发送场景先发文本，再发附件。顺序发送的结果通过 `message_ids` 返回全部 ID，`message_id` 为最后一条 ID。中途失败时，`failure.delivered_count` 和 `failure.delivered_message_ids` 标明已完成部分，`retryable=false`、`delivery_state=unknown` 表示不能重放整批；失败的那一条仍可能已送达。
 
 Provider 不支持某种 outbound resource 时，应该返回显式错误，而不是静默丢弃内容。
 

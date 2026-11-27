@@ -26,7 +26,7 @@ func TestSendResourceUsesMultipartBotAPI(t *testing.T) {
 		if err := req.ParseMultipartForm(1 << 20); err != nil {
 			t.Error(err)
 		}
-		if req.FormValue("chat_id") != "123" || req.FormValue("reply_parameters") != `{"message_id":9}` {
+		if req.FormValue("caption") != "  file description\n" || req.FormValue("chat_id") != "123" || req.FormValue("reply_parameters") != `{"message_id":9}` {
 			t.Errorf("form = %+v", req.MultipartForm.Value)
 		}
 		file, header, err := req.FormFile("document")
@@ -52,6 +52,7 @@ func TestSendResourceUsesMultipartBotAPI(t *testing.T) {
 	}
 	result, err := provider.Send(context.Background(), uvim.OutboundMessage{
 		ChannelID: "123",
+		Text:      "  file description\n",
 		Resources: []uvim.ResourceRef{ref},
 		Referrer:  uvim.Referrer{MessageID: "9"},
 	})

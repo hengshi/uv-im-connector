@@ -40,10 +40,12 @@ type MultipartBody struct {
 }
 
 type MultipartFile struct {
-	Field string
-	Name  string
-	MIME  string
-	Data  []byte
+	Field  string
+	Name   string
+	MIME   string
+	Data   []byte
+	Reader io.ReadCloser
+	Size   int64
 }
 
 type Config struct {
@@ -164,16 +166,19 @@ func (p *Provider) Send(ctx context.Context, msg uvim.OutboundMessage) (result u
 	if method == "" {
 		method = http.MethodPost
 	}
-	body, contentType, err := encodeBody(outReq)
+	var req *http.Request
+	if outReq.Multipart != nil {
+		for _, file := range outReq.Multipart.Files {
+			if file.Reader != nil {
+				defer file.Reader.Close()
+			}
+		}
+		req, err = multipartRequest(ctx, method, strings.TrimRight(p.config.BaseURL, "/")+outReq.Path, *outReq.Multipart)
+	} else {
+		req, err = newRequest(ctx, method, strings.TrimRight(p.config.BaseURL, "/")+outReq.Path, outReq)
+	}
 	if err != nil {
 		return uvim.SendResult{}, err
-	}
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(p.config.BaseURL, "/")+outReq.Path, body)
-	if err != nil {
-		return uvim.SendResult{}, err
-	}
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
 	}
 	for key, values := range outReq.Header {
 		req.Header.Del(key)
@@ -301,46 +306,76 @@ func (p *Provider) store(dir string) *uvim.ResourceStore {
 	return store
 }
 
-func encodeBody(req Request) (io.Reader, string, error) {
-	if req.Multipart != nil {
-		var body bytes.Buffer
-		writer := multipart.NewWriter(&body)
-		for key, value := range req.Multipart.Fields {
-			if err := writer.WriteField(key, value); err != nil {
-				return nil, "", err
-			}
+// MultipartRequest streams attachment bytes after their encoded form headers.
+// The caller owns its file readers until the HTTP request returns.
+func MultipartRequest(ctx context.Context, endpoint string, form MultipartBody) (*http.Request, error) {
+	return multipartRequest(ctx, http.MethodPost, endpoint, form)
+}
+
+func multipartRequest(ctx context.Context, method, endpoint string, form MultipartBody) (*http.Request, error) {
+	var envelope bytes.Buffer
+	writer := multipart.NewWriter(&envelope)
+	for key, value := range form.Fields {
+		if err := writer.WriteField(key, value); err != nil {
+			return nil, err
 		}
-		for _, file := range req.Multipart.Files {
-			name := uvim.ResourceUploadName(0, uvim.ResourceRef{Name: file.Name, MIME: file.MIME}, file.MIME)
-			header := make(textproto.MIMEHeader)
-			header.Set("Content-Disposition", uvim.MultipartFileDisposition(file.Field, name))
-			if strings.TrimSpace(file.MIME) != "" {
-				header.Set("Content-Type", file.MIME)
-			}
-			part, err := writer.CreatePart(header)
-			if err != nil {
-				return nil, "", err
-			}
-			if _, err := part.Write(file.Data); err != nil {
-				return nil, "", err
-			}
+	}
+	var segments []io.Reader
+	var length int64
+	for _, file := range form.Files {
+		name := uvim.ResourceUploadName(0, uvim.ResourceRef{Name: file.Name, MIME: file.MIME}, file.MIME)
+		header := make(textproto.MIMEHeader)
+		header.Set("Content-Disposition", uvim.MultipartFileDisposition(file.Field, name))
+		if strings.TrimSpace(file.MIME) != "" {
+			header.Set("Content-Type", file.MIME)
 		}
-		if err := writer.Close(); err != nil {
-			return nil, "", err
+		if _, err := writer.CreatePart(header); err != nil {
+			return nil, err
 		}
-		return bytes.NewReader(body.Bytes()), writer.FormDataContentType(), nil
+		length += int64(envelope.Len())
+		segments = append(segments, bytes.NewReader(bytes.Clone(envelope.Bytes())))
+		envelope.Reset()
+		if file.Reader != nil {
+			length += file.Size
+			segments = append(segments, io.LimitReader(file.Reader, file.Size))
+		} else {
+			length += int64(len(file.Data))
+			segments = append(segments, bytes.NewReader(file.Data))
+		}
 	}
-	if req.Form != nil {
-		return strings.NewReader(req.Form.Encode()), "application/x-www-form-urlencoded", nil
+	if err := writer.Close(); err != nil {
+		return nil, err
 	}
-	if req.Body == nil {
-		return http.NoBody, "", nil
-	}
-	raw, err := json.Marshal(req.Body)
+	length += int64(envelope.Len())
+	segments = append(segments, bytes.NewReader(envelope.Bytes()))
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, io.MultiReader(segments...))
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	return bytes.NewReader(raw), "application/json; charset=utf-8", nil
+	req.ContentLength = length
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	return req, nil
+}
+
+func newRequest(ctx context.Context, method, endpoint string, input Request) (*http.Request, error) {
+	var body io.Reader = http.NoBody
+	var contentType string
+	if input.Form != nil {
+		body = strings.NewReader(input.Form.Encode())
+		contentType = "application/x-www-form-urlencoded"
+	} else if input.Body != nil {
+		raw, err := json.Marshal(input.Body)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(raw)
+		contentType = "application/json; charset=utf-8"
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	if err == nil && contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	return req, err
 }
 
 func resourceKindSupported(kind string, supported []string) bool {

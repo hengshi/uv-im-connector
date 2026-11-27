@@ -66,17 +66,12 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 	}
 	path := filepath.Join(dir, "content")
 	metadataPath := filepath.Join(dir, "metadata.json")
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	file, err := os.CreateTemp(dir, ".content-*")
 	if err != nil {
 		return ref, err
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = os.Remove(path)
-			_ = os.Remove(metadataPath)
-		}
-	}()
+	// Readers keep their file descriptor when an existing resource is replaced.
+	defer os.Remove(file.Name())
 	hash := sha256.New()
 	size, copyErr := io.Copy(io.MultiWriter(file, hash), src)
 	closeErr := file.Close()
@@ -108,7 +103,9 @@ func (s *ResourceStore) Save(ctx context.Context, src io.Reader, ref ResourceRef
 	if err := os.Rename(metaFile.Name(), metadataPath); err != nil {
 		return ref, err
 	}
-	committed = true
+	if err := os.Rename(file.Name(), path); err != nil {
+		return ref, err
+	}
 	ref.SizeBytes = size
 	ref.SHA256 = hex.EncodeToString(hash.Sum(nil))
 	ref.InternalURL = "internal://" + id

@@ -259,14 +259,15 @@ type outboundReceiptScope struct {
 
 const resourceScopeStateMaxBytes int64 = 8 << 20
 
-// resourceScopes is a small durable authorization index. Resource bytes remain
+// resourceScopes is a durable authorization index. Resource bytes remain
 // in the existing provider store, while this index prevents an internal:// ID
 // from becoming a bearer capability for another scoped caller.
 type resourceScopes struct {
-	mu     sync.Mutex
-	path   string
-	values map[string]resourceScope
-	err    error
+	mu      sync.Mutex
+	path    string
+	version int
+	values  map[string]resourceScope
+	err     error
 }
 
 func openResourceScopes(path string) (*resourceScopes, error) {
@@ -276,12 +277,13 @@ func openResourceScopes(path string) (*resourceScopes, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	// Persist the receipt directory before accepting any native sends. Receipts
-	// grow independently of the bounded resource index and are never evicted.
-	if err := os.MkdirAll(path+".receipts", 0o700); err != nil {
-		return nil, err
+	// New claims are recorded independently of the legacy snapshot.
+	for _, directory := range []string{path + ".receipts", path + ".resources"} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			return nil, err
+		}
 	}
-	for _, directory := range []string{path + ".receipts", filepath.Dir(path)} {
+	for _, directory := range []string{path + ".receipts", path + ".resources", filepath.Dir(path)} {
 		dir, err := os.Open(directory)
 		if err != nil {
 			return nil, err
@@ -312,7 +314,7 @@ func openResourceScopes(path string) (*resourceScopes, error) {
 		Values   map[string]resourceScope        `json:"values"`
 		Receipts map[string]outboundReceiptScope `json:"receipts,omitempty"`
 	}
-	if err := decoder.Decode(&state); err != nil || state.Version != 1 || state.Values == nil {
+	if err := decoder.Decode(&state); err != nil || (state.Version != 1 && state.Version != 2) || state.Values == nil {
 		return nil, errors.New("resource scope state cannot be loaded")
 	}
 	if decoder.Decode(new(any)) != io.EOF {
@@ -328,7 +330,7 @@ func openResourceScopes(path string) (*resourceScopes, error) {
 			return nil, errors.New("invalid persisted outbound receipt scope")
 		}
 	}
-	store.values = state.Values
+	store.version, store.values = state.Version, state.Values
 	// Migrate only after validating the entire old index. A failed or interrupted
 	// migration leaves the old JSON intact; identical files can be replayed.
 	for _, receipt := range state.Receipts {
@@ -337,7 +339,7 @@ func openResourceScopes(path string) (*resourceScopes, error) {
 		}
 	}
 	if len(state.Receipts) > 0 {
-		if err := store.save(state.Values); err != nil {
+		if err := store.saveLegacy(state.Version, state.Values); err != nil {
 			return nil, err
 		}
 	}
@@ -367,13 +369,10 @@ func (s *resourceScopes) claimResources(ids []string, scope resourceScope) error
 	if s.err != nil {
 		return errors.New("resource scope state requires restart")
 	}
-	next := make(map[string]resourceScope, len(s.values)+len(unique))
-	for key, value := range s.values {
-		next[key] = value
-	}
-	changed := false
+	var pending []string
 	for id := range unique {
-		if current, exists := next[id]; exists {
+		current, err := s.readResourceScope(id)
+		if err == nil {
 			// A provider can expose the same stored attachment in more than one
 			// event. It remains private to the original client; a later event must
 			// not turn that ordinary reuse into a delivery failure or transfer it.
@@ -382,16 +381,29 @@ func (s *resourceScopes) claimResources(ids []string, scope resourceScope) error
 			}
 			continue
 		}
-		next[id] = scope
-		changed = true
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		pending = append(pending, id)
 	}
-	if !changed {
-		return nil
+	// Older readers must refuse this store once they could otherwise miss
+	// an independent claim and overwrite another caller's bytes.
+	if len(pending) != 0 && s.version != 2 {
+		if err := s.saveLegacy(2, s.values); err != nil {
+			return err
+		}
+		s.version = 2
 	}
-	if err := s.save(next); err != nil {
-		return err
+	// Check every ID before writing or allowing any native resource download.
+	for _, id := range pending {
+		raw, err := json.Marshal(resourceScopeRecord{ID: id, ClientID: scope.ClientID})
+		if err != nil {
+			return err
+		}
+		if err := s.saveFile(s.resourcePath(id), raw); err != nil {
+			return err
+		}
 	}
-	s.values = next
 	return nil
 }
 
@@ -478,7 +490,35 @@ func (s *resourceScopes) owns(id, clientID string) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.err == nil && s.values[id].ClientID == clientID
+	if s.err != nil {
+		return false
+	}
+	scope, err := s.readResourceScope(id)
+	return err == nil && scope.ClientID == clientID
+}
+
+type resourceScopeRecord struct {
+	ID       string `json:"id"`
+	ClientID string `json:"client_id"`
+}
+
+func (s *resourceScopes) resourcePath(id string) string {
+	return filepath.Join(s.path+".resources", fmt.Sprintf("%x.json", sha256.Sum256([]byte(id))))
+}
+
+func (s *resourceScopes) readResourceScope(id string) (resourceScope, error) {
+	if scope, ok := s.values[id]; ok {
+		return scope, nil
+	}
+	var record resourceScopeRecord
+	err := readScopeRecord(s.resourcePath(id), &record)
+	if err != nil {
+		return resourceScope{}, err
+	}
+	if record.ID != id || !safeConfigAtom(record.ClientID, 128) {
+		return resourceScope{}, errors.New("invalid persisted resource scope")
+	}
+	return resourceScope{ClientID: record.ClientID}, nil
 }
 
 func (s *resourceScopes) receiptPath(key string) string {
@@ -491,38 +531,46 @@ func validOutboundReceipt(receipt outboundReceiptScope) bool {
 
 func (s *resourceScopes) readOutboundReceipt(key string) (outboundReceiptScope, error) {
 	var receipt outboundReceiptScope
-	path := s.receiptPath(key)
-	info, err := os.Lstat(path)
-	if err != nil {
+	if err := readScopeRecord(s.receiptPath(key), &receipt); err != nil {
 		return receipt, err
 	}
-	// Includes worst-case JSON escaping of all bounded fields. The hash is only
-	// a filename; the complete persisted identity must match before granting use.
-	const maxBytes = 32 << 10
-	if !info.Mode().IsRegular() || info.Size() > maxBytes {
-		return receipt, errors.New("invalid outbound receipt file")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return receipt, err
-	}
-	defer file.Close()
-	decoder := json.NewDecoder(io.LimitReader(file, maxBytes))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&receipt); err != nil {
-		return receipt, err
-	}
-	if decoder.Decode(new(any)) != io.EOF || !validOutboundReceipt(receipt) || key != outboundReceiptKey(receipt.Provider, receipt.Connector, receipt.MessageID) {
+	if !validOutboundReceipt(receipt) || key != outboundReceiptKey(receipt.Provider, receipt.Connector, receipt.MessageID) {
 		return receipt, errors.New("invalid outbound receipt identity")
 	}
 	return receipt, nil
 }
 
-func (s *resourceScopes) save(values map[string]resourceScope) error {
+func readScopeRecord(path string, record any) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	// A single record must also accommodate JSON escaping of a bounded ID.
+	const maxBytes = 32 << 10
+	if !info.Mode().IsRegular() || info.Size() > maxBytes {
+		return errors.New("invalid scope record file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	decoder := json.NewDecoder(io.LimitReader(file, maxBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(record); err != nil {
+		return err
+	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return errors.New("invalid scope record trailer")
+	}
+	return nil
+}
+
+func (s *resourceScopes) saveLegacy(version int, values map[string]resourceScope) error {
 	raw, err := json.Marshal(struct {
 		Version int                      `json:"version"`
 		Values  map[string]resourceScope `json:"values"`
-	}{Version: 1, Values: values})
+	}{Version: version, Values: values})
 	if err != nil {
 		return err
 	}

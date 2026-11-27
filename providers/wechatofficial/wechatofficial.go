@@ -1,15 +1,11 @@
 package wechatofficial
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"io"
-	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"net/url"
 	"strings"
 
@@ -78,42 +74,19 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	if config.ResourceStore == nil || !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
 		return msg, fmt.Errorf("wechat-official upload: internal resource is required")
 	}
-	file, _, err := config.ResourceStore.Open(ref.InternalURL)
+	file, stored, err := config.ResourceStore.Open(ref.InternalURL)
 	if err != nil {
 		return msg, uvim.NewProviderSendError("wechat-official resource is unavailable", err)
 	}
-	data, readErr := io.ReadAll(file)
-	closeErr := file.Close()
-	if readErr != nil {
-		return msg, uvim.NewProviderSendError("wechat-official resource read failed", readErr)
-	}
-	if closeErr != nil {
-		return msg, uvim.NewProviderSendError("wechat-official resource close failed", closeErr)
-	}
+	defer file.Close()
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", uvim.MultipartFileDisposition("media", name))
-	if strings.TrimSpace(ref.MIME) != "" {
-		header.Set("Content-Type", ref.MIME)
-	}
-	part, err := writer.CreatePart(header)
-	if err != nil {
-		return msg, err
-	}
-	if _, err := part.Write(data); err != nil {
-		return msg, err
-	}
-	if err := writer.Close(); err != nil {
-		return msg, err
-	}
 	endpoint := strings.TrimRight(config.BaseURL, "/") + "/cgi-bin/media/upload?access_token=" + url.QueryEscape(config.Token) + "&type=" + url.QueryEscape(mediaType)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
+	req, err := httpchannel.MultipartRequest(ctx, endpoint, httpchannel.MultipartBody{
+		Files: []httpchannel.MultipartFile{{Field: "media", Name: name, MIME: ref.MIME, Reader: file, Size: stored.SizeBytes}},
+	})
 	if err != nil {
 		return msg, err
 	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
 	client := config.HTTPClient
 	if client == nil {
 		client = http.DefaultClient

@@ -154,7 +154,7 @@ func NowUTC() time.Time {
 }
 
 func NormalizeOutboundText(text string) string {
-	return strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+	return strings.ReplaceAll(text, "\r\n", "\n")
 }
 
 // OptionalDeadline leaves transport I/O unbounded unless the caller configures a timeout.

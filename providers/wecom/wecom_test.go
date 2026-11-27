@@ -408,8 +408,8 @@ func TestSendResourceReplyUploadsChunksAndSendsMedia(t *testing.T) {
 
 func TestWeComUploadChunkCountBoundaries(t *testing.T) {
 	for _, test := range []struct {
-		size int
-		want int
+		size int64
+		want int64
 		ok   bool
 	}{
 		{size: 0, want: 0, ok: true},

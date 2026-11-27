@@ -164,7 +164,7 @@ func TestChunkAssemblerWithoutCountOrDefaultExpiry(t *testing.T) {
 func TestDecodePayloadPostResources(t *testing.T) {
 	for _, chatType := range []string{"p2p", "group"} {
 		t.Run(chatType, func(t *testing.T) {
-			content := `{"title":"Review","content":[[{"tag":"text","text":"analyze this"},{"tag":"img","image_key":"image-1"}],[{"tag":"media","file_key":"video-1","image_key":"preview-1"},{"tag":"img"}]]}`
+			content := `{"title":"Review","content":[[{"tag":"text","text":"flattened text"},{"tag":"img","image_key":"image-1"}]],"content_v2":[[{"tag":"md","text":"| A | B |\n|---|---|\n| 1 | 2 |"}],[{"tag":"img","image_key":"image-1"},{"tag":"media","file_key":"video-1","image_key":"preview-1"}]]}`
 			payload, err := json.Marshal(map[string]any{
 				"header": map[string]any{"event_type": "im.message.receive_v1", "event_id": "event-1"},
 				"event": map[string]any{"message": map[string]any{
@@ -179,6 +179,9 @@ func TestDecodePayloadPostResources(t *testing.T) {
 			event, ok, err := DecodePayload(payload, DecoderConfig{Connector: "main", BotOpenID: "bot"})
 			if err != nil || !ok || !event.Addressed || len(event.Message.Resources) != 2 {
 				t.Fatalf("ok=%t err=%v event=%+v", ok, err, event)
+			}
+			if !strings.Contains(event.Message.Text, "| A | B |\n|---|---|\n| 1 | 2 |") || strings.Contains(event.Message.Text, "flattened text") {
+				t.Fatalf("expected intact v2 Markdown in post: %q", event.Message.Text)
 			}
 			for i, want := range []uvim.ResourceRef{{Kind: "image", Key: "image-1"}, {Kind: "video", Key: "video-1"}} {
 				ref := event.Message.Resources[i]
@@ -881,6 +884,7 @@ func TestSendTextRoutesRecipientsAndReplies(t *testing.T) {
 		{"conversation", uvim.OutboundMessage{Target: &uvim.OutboundTarget{ID: "oc_chat", Kind: uvim.TargetConversation}}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", ""},
 		{"legacy direct channel", uvim.OutboundMessage{ChannelID: "oc_chat", ChannelType: uvim.ChannelDirect}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", ""},
 		{"reply", uvim.OutboundMessage{Referrer: uvim.Referrer{MessageID: "om_original"}}, "/open-apis/im/v1/messages/om_original/reply", "", "", ""},
+		{"preserve outer whitespace", uvim.OutboundMessage{ChannelID: "oc_chat"}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", "    first\n    second\n"},
 		{"20 KiB text", uvim.OutboundMessage{ChannelID: "oc_chat"}, "/open-apis/im/v1/messages", "chat_id", "oc_chat", strings.Repeat("x", 20*1024)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

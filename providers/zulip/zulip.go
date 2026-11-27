@@ -1,14 +1,10 @@
 package zulip
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
@@ -64,57 +60,8 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 		return msg, nil
 	}
 	for index, ref := range msg.Resources {
-		if config.ResourceStore == nil || !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
-			return msg, fmt.Errorf("zulip upload: internal resource is required")
-		}
-		file, _, err := config.ResourceStore.Open(ref.InternalURL)
-		if err != nil {
-			return msg, uvim.NewProviderSendError("zulip resource is unavailable", err)
-		}
-		data, readErr := io.ReadAll(file)
-		closeErr := file.Close()
-		if readErr != nil {
-			return msg, uvim.NewProviderSendError("zulip resource read failed", readErr)
-		}
-		if closeErr != nil {
-			return msg, uvim.NewProviderSendError("zulip resource close failed", closeErr)
-		}
 		name := uvim.ResourceUploadName(index, ref, ref.MIME)
-		var body bytes.Buffer
-		writer := multipart.NewWriter(&body)
-		header := make(textproto.MIMEHeader)
-		header.Set("Content-Disposition", uvim.MultipartFileDisposition("filename", name))
-		if strings.TrimSpace(ref.MIME) != "" {
-			header.Set("Content-Type", ref.MIME)
-		}
-		part, err := writer.CreatePart(header)
-		if err != nil {
-			return msg, err
-		}
-		if _, err := part.Write(data); err != nil {
-			return msg, err
-		}
-		if err := writer.Close(); err != nil {
-			return msg, err
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(config.BaseURL, "/")+"/api/v1/user_uploads", &body)
-		if err != nil {
-			return msg, err
-		}
-		if token := strings.TrimSpace(config.Token); token != "" {
-			req.Header.Set("Authorization", httpchannel.Authorization(token))
-		}
-		req.Header.Set("Content-Type", writer.FormDataContentType())
-		client := config.HTTPClient
-		if client == nil {
-			client = http.DefaultClient
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return msg, err
-		}
-		raw, err := httpchannel.ReadSendResponse(resp, "zulip upload")
-		resp.Body.Close()
+		raw, err := uploadResource(ctx, config, ref, name)
 		if err != nil {
 			return msg, err
 		}
@@ -154,6 +101,36 @@ func prepareSend(ctx context.Context, msg uvim.OutboundMessage, config httpchann
 	}
 	msg.Resources = nil
 	return msg, nil
+}
+
+func uploadResource(ctx context.Context, config httpchannel.Config, ref uvim.ResourceRef, name string) ([]byte, error) {
+	if config.ResourceStore == nil || !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
+		return nil, fmt.Errorf("zulip upload: internal resource is required")
+	}
+	file, stored, err := config.ResourceStore.Open(ref.InternalURL)
+	if err != nil {
+		return nil, uvim.NewProviderSendError("zulip resource is unavailable", err)
+	}
+	defer file.Close()
+	req, err := httpchannel.MultipartRequest(ctx, strings.TrimRight(config.BaseURL, "/")+"/api/v1/user_uploads", httpchannel.MultipartBody{
+		Files: []httpchannel.MultipartFile{{Field: "filename", Name: name, MIME: ref.MIME, Reader: file, Size: stored.SizeBytes}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if token := strings.TrimSpace(config.Token); token != "" {
+		req.Header.Set("Authorization", httpchannel.Authorization(token))
+	}
+	client := config.HTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return httpchannel.ReadSendResponse(resp, "zulip upload")
 }
 
 func Decode(raw []byte, config httpchannel.Config) (uvim.Event, bool, error) {

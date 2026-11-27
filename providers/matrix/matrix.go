@@ -141,25 +141,19 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 	if p.config.ResourceStore == nil || !strings.HasPrefix(strings.TrimSpace(ref.InternalURL), "internal://") {
 		return uvim.SendResult{}, fmt.Errorf("matrix upload: internal resource is required")
 	}
-	file, _, err := p.config.ResourceStore.Open(ref.InternalURL)
+	file, stored, err := p.config.ResourceStore.Open(ref.InternalURL)
 	if err != nil {
 		return uvim.SendResult{}, uvim.NewProviderSendError("matrix resource is unavailable", err)
 	}
-	data, readErr := io.ReadAll(file)
-	closeErr := file.Close()
-	if readErr != nil {
-		return uvim.SendResult{}, uvim.NewProviderSendError("matrix resource read failed", readErr)
-	}
-	if closeErr != nil {
-		return uvim.SendResult{}, uvim.NewProviderSendError("matrix resource close failed", closeErr)
-	}
+	defer file.Close()
 	name := uvim.ResourceUploadName(0, ref, ref.MIME)
 	uploadURL := strings.TrimRight(p.config.BaseURL, "/") + "/_matrix/media/v3/upload?filename=" + url.QueryEscape(name)
-	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(data))
+	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, io.NewSectionReader(file, 0, stored.SizeBytes))
 	if err != nil {
 		return uvim.SendResult{}, err
 	}
 	p.authorize(uploadReq)
+	uploadReq.ContentLength = stored.SizeBytes
 	if strings.TrimSpace(ref.MIME) != "" {
 		uploadReq.Header.Set("Content-Type", ref.MIME)
 	}
@@ -184,7 +178,7 @@ func (p *Provider) sendResource(ctx context.Context, msg uvim.OutboundMessage, r
 		"msgtype": matrixMessageType(ref.Kind),
 		"body":    name,
 		"url":     upload.ContentURI,
-		"info":    map[string]any{"mimetype": ref.MIME, "size": len(data)},
+		"info":    map[string]any{"mimetype": ref.MIME, "size": stored.SizeBytes},
 	}
 	if msg.Referrer.MessageID != "" {
 		body["m.relates_to"] = map[string]any{"m.in_reply_to": map[string]string{"event_id": msg.Referrer.MessageID}}
